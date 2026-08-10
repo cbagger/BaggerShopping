@@ -47,7 +47,7 @@ final class ShoppingCategoryService: ObservableObject {
                 "æble", "aeble", "banan", "appelsin", "citron", "lime", "pære", "paere", "vindrue", "melon", "ananas",
                 "jordbær", "jordbaer", "hindbær", "hindbaer", "blåbær", "blaabaer", "avocado", "tomat", "agurk", "peberfrugt",
                 "gulerod", "kartoffel", "løg", "loeg", "hvidløg", "hvidloeg", "salat", "spinat", "broccoli", "blomkål", "blomkaal",
-                "champignon", "svampe", "porre", "selleri", "squash", "majs", "kål", "kaal", "frugt", "grønt", "groent"
+                "champignon", "svamp", "porre", "selleri", "squash", "majs", "kål", "kaal", "frugt", "grønt", "groent"
             ]),
             (.meat, [
                 "kylling", "oksekød", "oksekoed", "hakket okse", "svinekød", "svinekoed", "flæsk", "flaesk", "bøf", "boef",
@@ -73,8 +73,8 @@ final class ShoppingCategoryService: ObservableObject {
             ]),
             (.household, [
                 "toiletpapir", "køkkenrulle", "koekkenrulle", "opvasketabs", "opvask", "vaskemiddel", "skyllemiddel", "affaldsposer",
-                "skraldeposer", "stanniol", "sølvpapir", "soelvpapir", "bagepapir", "madpapir", "rengøring", "rengoering", "svampe",
-                "klude", "servietter", "lys", "batterier"
+                "skraldeposer", "stanniol", "sølvpapir", "soelvpapir", "bagepapir", "madpapir", "rengøring", "rengoering",
+                "rengøringssvamp", "rengoeringssvamp", "opvaskesvamp", "klude", "servietter", "lys", "batterier"
             ]),
             (.personalCare, [
                 "shampoo", "balsam", "sæbe", "saebe", "tandpasta", "tandbørste", "tandboerste", "deodorant", "bleer", "vådservietter",
@@ -88,12 +88,38 @@ final class ShoppingCategoryService: ObservableObject {
         ]
 
         for (category, terms) in rules {
-            if terms.contains(where: { normalized == $0 || normalized.contains("\($0) ") || normalized.contains(" \($0)") }) {
+            if terms.contains(where: { matches(normalized, term: $0) }) {
                 return category
             }
         }
 
         return .other
+    }
+
+    nonisolated private static func matches(_ normalized: String, term: String) -> Bool {
+        if normalized == term {
+            return true
+        }
+
+        if term.contains(" ") {
+            return normalized.contains(term)
+        }
+
+        let tokens = normalized.split(separator: " ").map(String.init)
+        return tokens.contains { token in
+            if token == term {
+                return true
+            }
+
+            // Danish shopping entries often use plurals (bananer, æbler) and
+            // compounds (letmælk, minimælk). Avoid fuzzy matching for very
+            // short terms such as "is", "te" and "æg" to prevent false hits.
+            guard term.count >= 4 else {
+                return false
+            }
+
+            return token.hasPrefix(term) || token.hasSuffix(term)
+        }
     }
 
     private func save() {
