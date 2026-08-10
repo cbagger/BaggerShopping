@@ -10,6 +10,7 @@ final class AppModel: ObservableObject {
 
     let stores = StoreRepository()
     let geofence = GeofenceManager()
+    let categories = ShoppingCategoryService()
     private let api = APIClient()
 
     func bootstrap() async {
@@ -56,6 +57,15 @@ final class AppModel: ObservableObject {
     func clearChecked() async {
         guard let items = shoppingList?.items.filter(\.checked) else { return }
         for item in items { await deleteItem(item) }
+    }
+
+    func category(for item: ShoppingItem) -> ShoppingCategory {
+        categories.category(for: item.name)
+    }
+
+    func setCategory(_ category: ShoppingCategory, for item: ShoppingItem) {
+        categories.setCategory(category, for: item.name)
+        objectWillChange.send()
     }
 
     func saveToken(_ token: String) throws {
