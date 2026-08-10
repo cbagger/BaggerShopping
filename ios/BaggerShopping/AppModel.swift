@@ -68,6 +68,15 @@ final class AppModel: ObservableObject {
         objectWillChange.send()
     }
 
+    func hasCategoryOverride(for item: ShoppingItem) -> Bool {
+        categories.hasOverride(for: item.name)
+    }
+
+    func resetCategory(for item: ShoppingItem) {
+        categories.removeOverride(for: item.name)
+        objectWillChange.send()
+    }
+
     func saveToken(_ token: String) throws {
         try KeychainStore.saveToken(token.trimmingCharacters(in: .whitespacesAndNewlines))
         tokenConfigured = true
