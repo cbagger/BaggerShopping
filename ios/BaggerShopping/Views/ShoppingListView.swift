@@ -170,6 +170,16 @@ struct ShoppingListView: View {
             Spacer()
 
             Menu {
+                if model.hasCategoryOverride(for: item) {
+                    Button {
+                        model.resetCategory(for: item)
+                    } label: {
+                        Label("Brug automatisk kategori", systemImage: "wand.and.stars")
+                    }
+
+                    Divider()
+                }
+
                 Section("Flyt til kategori") {
                     ForEach(ShoppingCategory.allCases) { category in
                         Button {
@@ -188,6 +198,7 @@ struct ShoppingListView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Kategori for \(item.name)")
 
             if model.mutatingItemIDs.contains(item.stableID) {
                 ProgressView().controlSize(.small)
