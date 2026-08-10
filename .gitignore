@@ -1,0 +1,29 @@
+# Secrets / local environment
+.env
+*.env
+!*.env.example
+data/
+**/data/
+chromium-profile/
+**/chromium-profile/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# macOS / Xcode
+.DS_Store
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xccheckout
+*.moved-aside
+
+# Build artifacts
+build/
+dist/
+*.zip
+*.tar.gz
