@@ -1,0 +1,21 @@
+name: BaggerShopping
+options:
+  bundleIdPrefix: dk.chewbagger
+targets:
+  BaggerShopping:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: BaggerShopping
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dk.chewbagger.BaggerShopping
+        PRODUCT_NAME: Bagger Shopping
+        SWIFT_VERSION: 5.0
+        INFOPLIST_FILE: BaggerShopping/Info.plist
+        CODE_SIGN_STYLE: Automatic
+    capabilities:
+      location:
+        modes:
+          - location

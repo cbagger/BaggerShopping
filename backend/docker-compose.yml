@@ -1,0 +1,56 @@
+services:
+  bagger-shopping:
+    build: .
+    container_name: bagger-shopping
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BROWSER_USER_DATA_DIR: /data/chromium-profile/.config/chromium
+    ports:
+      - "8088:8080"
+    volumes:
+      - ./data:/data
+    shm_size: "1gb"
+
+  mobile-api:
+    build: .
+    container_name: bagger-shopping-mobile
+    restart: unless-stopped
+    env_file:
+      - .env
+    command:
+      - uvicorn
+      - app.mobile_main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8081"
+    depends_on:
+      - bagger-shopping
+    ports:
+      - "8089:8081"
+    shm_size: "256mb"
+
+  login-ui:
+    image: lscr.io/linuxserver/chromium:latest
+    container_name: bagger-shopping-login-ui
+    restart: "no"
+    profiles:
+      - login
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      - PUID=${LOGIN_UI_PUID:-1000}
+      - PGID=${LOGIN_UI_PGID:-1000}
+      - TZ=${TZ:-Europe/Copenhagen}
+      - CUSTOM_USER=${LOGIN_UI_USER:-bagger}
+      - PASSWORD=${LOGIN_UI_PASSWORD}
+      - CHROME_CLI=https://app.samsungfood.com
+      - PIXELFLUX_WAYLAND=false
+      - TITLE=Bagger Shopping Samsung Login
+    volumes:
+      - ./data/chromium-profile:/config
+    ports:
+      - "3001:3001"
+    shm_size: "1gb"
