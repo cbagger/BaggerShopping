@@ -13,6 +13,27 @@ final class ShoppingCategoryServiceTests: XCTestCase {
         XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Shampoo")), .personalCare)
     }
 
+    func testPluralAndCompoundNames() {
+        XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Æbler")), .fruitAndVegetables)
+        XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Bananer øko")), .fruitAndVegetables)
+        XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Letmælk")), .dairy)
+        XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Minimælk 1 liter")), .dairy)
+        XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Kartofler")), .fruitAndVegetables)
+    }
+
+    func testShortTermsDoNotCreateFalsePositives() {
+        XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Ris")), .pantry)
+        XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Frisk pasta")), .pantry)
+        XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Mystisk vare")), .other)
+    }
+
+    func testCleaningSpongeDoesNotBecomeProduce() {
+        XCTAssertEqual(
+            ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Opvaskesvamp")),
+            .household
+        )
+    }
+
     func testUnknownItemFallsBackToOther() {
         XCTAssertEqual(
             ShoppingCategoryService.classify(ShoppingCategoryService.normalize("ChatGPT test vare")),
@@ -21,7 +42,7 @@ final class ShoppingCategoryServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testManualOverrideWinsAndPersistsWithinService() {
+    func testManualOverrideWinsAndCanBeRemoved() {
         let service = ShoppingCategoryService()
         let name = "Testprodukt-\(UUID().uuidString)"
 
