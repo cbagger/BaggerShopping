@@ -1,6 +1,12 @@
 import SwiftUI
 
 struct ShoppingListView: View {
+    private struct CategoryGroup: Identifiable {
+        let category: ShoppingCategory
+        let items: [ShoppingItem]
+        var id: String { category.id }
+    }
+
     @EnvironmentObject private var model: AppModel
     @State private var newItem = ""
 
@@ -12,10 +18,17 @@ struct ShoppingListView: View {
         model.shoppingList?.items.filter(\.checked) ?? []
     }
 
-    private var groupedActiveItems: [(category: ShoppingCategory, items: [ShoppingItem])] {
+    private var groupedActiveItems: [CategoryGroup] {
         let grouped = Dictionary(grouping: activeItems) { model.category(for: $0) }
         return grouped
-            .map { (category: $0.key, items: $0.value.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) }
+            .map {
+                CategoryGroup(
+                    category: $0.key,
+                    items: $0.value.sorted {
+                        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                    }
+                )
+            }
             .sorted { $0.category.sortOrder < $1.category.sortOrder }
     }
 
@@ -56,7 +69,7 @@ struct ShoppingListView: View {
                                 )
                             }
                         } else {
-                            ForEach(groupedActiveItems, id: \.category.id) { group in
+                            ForEach(groupedActiveItems) { group in
                                 Section {
                                     ForEach(group.items, id: \.stableID) { item in
                                         itemRow(item, showCategory: false)
