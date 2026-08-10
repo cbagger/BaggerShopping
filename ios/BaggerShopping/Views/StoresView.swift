@@ -29,49 +29,54 @@ private struct StoresListContent: View {
                 } else {
                     Section {
                         ForEach(stores.stores) { store in
-                            Button {
-                                editingStore = store
-                            } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: store.enabled ? "location.circle.fill" : "location.slash.circle")
-                                        .font(.title2)
-                                        .foregroundStyle(store.enabled ? .blue : .secondary)
+                            HStack(spacing: 12) {
+                                Button {
+                                    editingStore = store
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Image(systemName: store.enabled ? "location.circle.fill" : "location.slash.circle")
+                                            .font(.title2)
+                                            .foregroundStyle(store.enabled ? .blue : .secondary)
 
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(store.name)
-                                            .foregroundStyle(.primary)
-                                            .font(.headline)
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(store.name)
+                                                .foregroundStyle(.primary)
+                                                .font(.headline)
 
-                                        if !store.address.isEmpty {
-                                            Text(store.address)
-                                                .font(.caption)
+                                            if !store.address.isEmpty {
+                                                Text(store.address)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(2)
+                                            }
+
+                                            Text("Geofence · \(Int(store.radius)) m")
+                                                .font(.caption2)
                                                 .foregroundStyle(.secondary)
-                                                .lineLimit(2)
                                         }
 
-                                        Text("Geofence · \(Int(store.radius)) m")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
+                                        Spacer(minLength: 8)
+
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.tertiary)
                                     }
-
-                                    Spacer()
-
-                                    Toggle(
-                                        "",
-                                        isOn: Binding(
-                                            get: { store.enabled },
-                                            set: { enabled in
-                                                stores.setEnabled(enabled, for: store.id)
-                                                syncGeofences()
-                                            }
-                                        )
-                                    )
-                                    .labelsHidden()
-                                    .buttonStyle(.plain)
+                                    .contentShape(Rectangle())
                                 }
-                                .contentShape(Rectangle())
+                                .buttonStyle(.plain)
+
+                                Toggle(
+                                    "Geofence for \(store.name)",
+                                    isOn: Binding(
+                                        get: { store.enabled },
+                                        set: { enabled in
+                                            stores.setEnabled(enabled, for: store.id)
+                                            syncGeofences()
+                                        }
+                                    )
+                                )
+                                .labelsHidden()
                             }
-                            .buttonStyle(.plain)
                         }
                         .onDelete { offsets in
                             stores.delete(at: offsets)
