@@ -12,6 +12,7 @@ from .models import (
     HomeAssistantShoppingResponse,
     ItemMutationResponse,
     SetCheckedRequest,
+    SetQuantityRequest,
     ShoppingListResponse,
 )
 from .samsung import SamsungFoodClient, SamsungFoodError
@@ -22,7 +23,6 @@ _auth_refresh_lock = asyncio.Lock()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Warm/validate cached auth without making startup depend on Samsung being online.
     try:
         auth = SamsungAuthManager()
         state = auth.load_state()
@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Bagger Shopping",
-    version="0.5.0",
+    version="0.6.0",
     description="Private Samsung Food / Family Hub shopping-list connector",
     lifespan=lifespan,
 )
@@ -113,7 +113,6 @@ async def get_shopping() -> ShoppingListResponse:
 
 @app.get("/api/home-assistant/shopping", response_model=HomeAssistantShoppingResponse)
 async def home_assistant_shopping() -> HomeAssistantShoppingResponse:
-    """Compact, stable read endpoint intended for Home Assistant REST sensors/automations."""
     try:
         current = await SamsungFoodClient().get_list()
     except SamsungFoodError as exc:
@@ -166,6 +165,29 @@ async def set_shopping_item_checked(
             ok=True,
             item_id=item_id,
             checked=request.checked,
+            grpc_status=result.get("grpc_status"),
+        )
+    except SamsungFoodError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.patch("/api/shopping/items/{item_id}/quantity", response_model=ItemMutationResponse)
+async def set_shopping_item_quantity(
+    item_id: str,
+    request: SetQuantityRequest,
+) -> ItemMutationResponse:
+    unit = request.unit.strip() or "stk"
+    try:
+        result = await SamsungFoodClient().set_item_quantity(
+            item_id,
+            request.quantity,
+            unit,
+        )
+        return ItemMutationResponse(
+            ok=True,
+            item_id=item_id,
+            quantity=request.quantity,
+            unit=unit,
             grpc_status=result.get("grpc_status"),
         )
     except SamsungFoodError as exc:
