@@ -13,6 +13,11 @@ struct RootView: View {
                     Label("Tilbud", systemImage: "tag")
                 }
 
+            FlyersView()
+                .tabItem {
+                    Label("Aviser", systemImage: "book.pages")
+                }
+
             StoresView()
                 .tabItem {
                     Label("Butikker", systemImage: "mappin.and.ellipse")
