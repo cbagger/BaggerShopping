@@ -113,7 +113,7 @@ private struct AddStoreSearchView: View {
     @StateObject private var search = StoreSearchService()
     @State private var query = ""
     @State private var selected: StoreSearchResult?
-    @State private var radius = 180.0
+    @State private var radius = 100.0
 
     var body: some View {
         NavigationStack {
@@ -208,7 +208,7 @@ private struct StoreConfirmView: View {
                 Section("Geofence") {
                     Slider(value: $radius, in: 100...500, step: 25)
                     LabeledContent("Radius", value: "\(Int(radius)) m")
-                    Text("150–250 m er typisk et godt udgangspunkt. En større radius giver tidligere besked.")
+                    Text("100 m er standard og er afprøvet til at give besked omkring parkeringsområdet. Øg radius, hvis du vil have besked tidligere.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
