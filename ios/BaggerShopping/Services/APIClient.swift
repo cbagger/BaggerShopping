@@ -19,12 +19,17 @@ struct APIClient {
         }
     }
 
-    private func request(path: String, method: String = "GET", body: Data? = nil) throws -> URLRequest {
+    private func request(path: String, method: String = "GET", body: Data? = nil, queryItems: [URLQueryItem] = []) throws -> URLRequest {
         guard let token = KeychainStore.loadToken(), !token.isEmpty else { throw APIError.missingToken }
         let url = baseURL.appending(path: path)
-        var request = URLRequest(url: url)
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw APIError.invalidResponse }
+        if !queryItems.isEmpty {
+            components.queryItems = queryItems
+        }
+        guard let finalURL = components.url else { throw APIError.invalidResponse }
+        var request = URLRequest(url: finalURL)
         request.httpMethod = method
-        request.timeoutInterval = 15
+        request.timeoutInterval = 20
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
@@ -87,6 +92,21 @@ struct APIClient {
 
     func clearCategoryOverrides() async throws {
         _ = try await perform(request(path: "/api/mobile/v1/category-overrides", method: "DELETE"))
+    }
+
+    func fetchMenyOfferStatus() async throws -> MenyOfferStatusResponse {
+        let data = try await perform(request(path: "/api/mobile/v1/offers/meny"))
+        return try JSONDecoder().decode(MenyOfferStatusResponse.self, from: data)
+    }
+
+    func searchMenyOffers(query: String) async throws -> MenyOfferSearchResponse {
+        let data = try await perform(
+            request(
+                path: "/api/mobile/v1/offers/meny/search",
+                queryItems: [URLQueryItem(name: "q", value: query)]
+            )
+        )
+        return try JSONDecoder().decode(MenyOfferSearchResponse.self, from: data)
     }
 
     private func validate(response: URLResponse, data: Data) throws {
