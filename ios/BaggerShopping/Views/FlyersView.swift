@@ -15,26 +15,21 @@ struct FlyersView: View {
                 } else if let errorMessage, publications.isEmpty {
                     ContentUnavailableView("Kunne ikke hente aviser", systemImage: "wifi.exclamationmark", description: Text(errorMessage))
                 } else {
-                    List(publications) { publication in
-                        Button { selectedPublication = publication } label: {
-                            VStack(alignment: .leading, spacing: 7) {
-                                HStack {
-                                    Text(publication.retailer).font(.title3.bold())
-                                    Spacer()
-                                    Text(publication.status == "upcoming" ? "KOMMER SNART" : "AKTUEL")
-                                        .font(.caption2.bold())
-                                        .foregroundStyle(publication.status == "upcoming" ? .orange : .green)
+                    ScrollView {
+                        LazyVGrid(
+                            columns: [GridItem(.adaptive(minimum: 148, maximum: 190), spacing: 18)],
+                            alignment: .leading,
+                            spacing: 24
+                        ) {
+                            ForEach(publications) { publication in
+                                Button { selectedPublication = publication } label: {
+                                    FlyerCoverCard(publication: publication)
                                 }
-                                Text(publication.title).font(.headline)
-                                if let from = publication.validFrom, let until = publication.validUntil {
-                                    Text("Gyldig \(from)–\(until)").foregroundStyle(.secondary)
-                                }
-                                Text("\(publication.pageCount) sider · Åbn avis")
-                                    .font(.caption).foregroundStyle(.secondary)
+                                .buttonStyle(.plain)
                             }
-                            .padding(.vertical, 6)
                         }
-                        .buttonStyle(.plain)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 12)
                     }
                     .refreshable { await load() }
                 }
@@ -51,6 +46,115 @@ struct FlyersView: View {
         defer { isLoading = false }
         do { publications = try await api.fetchOfferPublications().publications }
         catch { errorMessage = error.localizedDescription }
+    }
+}
+
+private struct FlyerCoverCard: View {
+    let publication: OfferPublication
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color(uiColor: .secondarySystemBackground))
+
+                if let coverURL = publication.pageImageURLs.first {
+                    AsyncImage(url: coverURL) { phase in
+                        if let image = phase.image {
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        } else if phase.error != nil {
+                            Image(systemName: "newspaper")
+                                .font(.largeTitle)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ProgressView()
+                        }
+                    }
+                } else {
+                    Image(systemName: "newspaper")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .aspectRatio(694.0 / 1007.0, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(.black.opacity(0.08), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(publication.retailer)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 4)
+
+                Text(weekLabel)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Label(expiryLabel, systemImage: "clock")
+                .font(.subheadline)
+                .foregroundStyle(expiryColor)
+                .lineLimit(1)
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Åbner tilbudsavisen")
+    }
+
+    private var weekLabel: String {
+        let lowercased = publication.title.lowercased()
+        guard let range = lowercased.range(of: "uge") else { return publication.title }
+        let suffix = lowercased[range.upperBound...]
+            .drop(while: { !$0.isNumber })
+        let digits = suffix.prefix(while: { $0.isNumber })
+        guard digits.count >= 2 else { return publication.title }
+        return "Uge \(digits.prefix(2))"
+    }
+
+    private var expiryLabel: String {
+        if publication.status == "upcoming" { return "Kommer snart" }
+        guard let expiryDate else { return "Aktuel avis" }
+
+        let days = Calendar.current.dateComponents(
+            [.day],
+            from: Calendar.current.startOfDay(for: Date()),
+            to: Calendar.current.startOfDay(for: expiryDate)
+        ).day ?? 0
+
+        switch days {
+        case ..<0: return "Udløbet"
+        case 0: return "Slutter i dag"
+        case 1: return "Slutter i morgen"
+        default: return "\(days) dage tilbage"
+        }
+    }
+
+    private var expiryColor: Color {
+        guard let expiryDate else { return .secondary }
+        let days = Calendar.current.dateComponents(
+            [.day],
+            from: Calendar.current.startOfDay(for: Date()),
+            to: Calendar.current.startOfDay(for: expiryDate)
+        ).day ?? 0
+        return days <= 1 ? .orange : .secondary
+    }
+
+    private var expiryDate: Date? {
+        guard let value = publication.validUntil else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "da_DK")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "dd.MM.yyyy"
+        return formatter.date(from: value)
     }
 }
 
