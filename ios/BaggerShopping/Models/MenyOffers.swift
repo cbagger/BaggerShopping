@@ -62,6 +62,30 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         case safeToAdd = "safe_to_add"
         case variants
     }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        retailer = try values.decode(String.self, forKey: .retailer)
+        publicationID = try values.decode(String.self, forKey: .publicationID)
+        publicationTitle = try values.decode(String.self, forKey: .publicationTitle)
+        validFrom = try values.decodeIfPresent(String.self, forKey: .validFrom)
+        validUntil = try values.decodeIfPresent(String.self, forKey: .validUntil)
+        productName = try values.decode(String.self, forKey: .productName)
+        brand = try values.decodeIfPresent(String.self, forKey: .brand)
+        price = try values.decodeIfPresent(Double.self, forKey: .price)
+        normalPrice = try values.decodeIfPresent(Double.self, forKey: .normalPrice)
+        quantity = try values.decodeIfPresent(Double.self, forKey: .quantity)
+        unit = try values.decodeIfPresent(String.self, forKey: .unit)
+        unitPrice = try values.decodeIfPresent(String.self, forKey: .unitPrice)
+        discountPercent = try values.decodeIfPresent(Int.self, forKey: .discountPercent)
+        imageURL = try values.decodeIfPresent(URL.self, forKey: .imageURL)
+        sourceURL = try values.decode(URL.self, forKey: .sourceURL)
+        pageNumber = try values.decodeIfPresent(Int.self, forKey: .pageNumber)
+        rawText = try values.decodeIfPresent(String.self, forKey: .rawText) ?? ""
+        safeToAdd = try values.decodeIfPresent(Bool.self, forKey: .safeToAdd) ?? false
+        variants = try values.decodeIfPresent([OfferVariant].self, forKey: .variants) ?? []
+    }
 }
 
 struct OfferVariant: Codable, Identifiable, Hashable {
@@ -75,6 +99,16 @@ struct OfferVariant: Codable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey {
         case id, name, description, quantity, unit
         case matchesQuery = "matches_query"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        description = try values.decodeIfPresent(String.self, forKey: .description)
+        quantity = try values.decodeIfPresent(Double.self, forKey: .quantity)
+        unit = try values.decodeIfPresent(String.self, forKey: .unit)
+        matchesQuery = try values.decodeIfPresent(Bool.self, forKey: .matchesQuery) ?? false
     }
 }
 

@@ -157,6 +157,17 @@ def test_structured_search_ignores_descriptions_and_raw_advert_copy():
     assert search_publication(publication, "oksekød").offers == []
 
 
+def test_generic_meat_search_excludes_pet_food_flavour_but_pet_search_still_works():
+    publication = parse_meny_flyer_html(IPAPER_HTML)
+    publication.structured_offers = parse_enrichment_chunks(publication, [{"enrichments": [{
+        "type": 13, "pageIndex": 1, "productId": "cat-beef", "name": "Whiskas 1+ Oksekød",
+        "alttext": "Whiskas eller Frolic", "desc": "Kattemad med oksekød", "price": 25,
+    }]}])
+
+    assert search_publication(publication, "oksekød").offers == []
+    assert len(search_publication(publication, "Whiskas").offers) == 1
+
+
 def test_implausible_quantity_is_omitted_instead_of_guessed():
     publication = parse_meny_flyer_html(IPAPER_HTML)
     offers = parse_enrichment_chunks(publication, [{"enrichments": [{

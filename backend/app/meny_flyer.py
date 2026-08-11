@@ -263,6 +263,17 @@ def _friendly_product_name(name: str) -> str:
     return _normalize_space(name)
 
 
+PET_PRODUCT_RE = re.compile(
+    r"\b(whiskas|frolic|pedigree|kattemad|hundefoder|hunde(?:mad)?|katte(?:mad)?|petfood)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_pet_offer(offer: Offer) -> bool:
+    searchable = " ".join([offer.product_name, *(variant.name for variant in offer.variants)])
+    return bool(PET_PRODUCT_RE.search(searchable))
+
+
 def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> list[Offer]:
     groups: dict[tuple[int, str, float], list[dict]] = {}
     for chunk in chunks:
@@ -357,6 +368,11 @@ def search_publication(publication: Publication, query: str) -> OfferSearchResul
         matches: list[Offer] = []
         for source in publication.structured_offers:
             offer = source.model_copy(deep=True)
+            # Ingredient searches such as "oksekød" must not surface pet food
+            # merely because a Whiskas/Frolic variant contains that flavour.
+            # Explicit pet-food searches remain supported.
+            if _is_pet_offer(offer) and not PET_PRODUCT_RE.search(needle):
+                continue
             label_matches = needle in offer.product_name.casefold()
             matching_ids = {
                 variant.id for variant in offer.variants
