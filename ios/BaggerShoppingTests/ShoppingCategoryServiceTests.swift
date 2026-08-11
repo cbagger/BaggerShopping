@@ -53,4 +53,20 @@ final class ShoppingCategoryServiceTests: XCTestCase {
         service.removeOverride(for: name)
         XCTAssertEqual(service.category(for: name), .other)
     }
+
+    @MainActor
+    func testAllLearnedOverridesCanBeReset() {
+        let service = ShoppingCategoryService()
+        let first = "Reset-test-\(UUID().uuidString)-1"
+        let second = "Reset-test-\(UUID().uuidString)-2"
+
+        service.setCategory(.dairy, for: first)
+        service.setCategory(.household, for: second)
+        XCTAssertGreaterThanOrEqual(service.learnedCount, 2)
+
+        service.removeAllOverrides()
+        XCTAssertEqual(service.learnedCount, 0)
+        XCTAssertEqual(service.category(for: first), .other)
+        XCTAssertEqual(service.category(for: second), .other)
+    }
 }
