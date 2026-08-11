@@ -191,7 +191,12 @@ def test_publication_page_count_uses_ipaper_pages_not_text_layer_count():
 
 
 def test_structured_offer_exposes_native_hotspot_geometry():
-    publication = parse_meny_flyer_html(IPAPER_HTML)
+    publication = parse_meny_flyer_html(
+        IPAPER_HTML.replace(
+            "window.viewerState =",
+            'window.staticSettings = {"pages":[1],"aws":{"url":"https://cdn.test/paper"}}; window.viewerState =',
+        )
+    )
     offer = parse_enrichment_chunks(publication, [{"enrichments": [{
         "type": 13, "pageIndex": 0, "productId": "milk", "name": "Kakaomælk",
         "alttext": "Kakaomælk", "desc": "1 l", "price": 9.95,
@@ -200,6 +205,7 @@ def test_structured_offer_exposes_native_hotspot_geometry():
     assert (offer.hotspot_x, offer.hotspot_y) == (0.4, 0.7)
     assert offer.hotspot_width == pytest.approx(0.1)
     assert offer.hotspot_height == pytest.approx(0.08)
+    assert offer.image_url == "https://cdn.test/paper/Pages/1/Normal.jpg"
 
 
 def test_type_6_marker_supplies_geometry_to_type_13_variants_by_parent_id():

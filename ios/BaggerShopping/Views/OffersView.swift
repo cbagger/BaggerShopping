@@ -84,7 +84,12 @@ struct OffersView: View {
 
     private func add(_ itemName: String, from offer: GroceryOffer) {
         Task {
-            if await model.addItem(itemName, retailer: offer.retailer) {
+            if await model.addItem(
+                itemName,
+                retailer: offer.retailer,
+                offerPrice: offer.price,
+                offerValidUntil: offer.validUntil
+            ) {
                 withAnimation { addedOfferID = offer.id }
             }
         }
@@ -117,6 +122,12 @@ private struct OfferCard: View {
     var body: some View {
         let matchingCount = offer.variants.filter(\.matchesQuery).count
         VStack(alignment: .leading, spacing: 10) {
+            if offer.imageURL != nil {
+                OfferCropView(offer: offer)
+                    .frame(height: 150)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+
             HStack(alignment: .firstTextBaseline) {
                 Text(offer.productName)
                     .font(.headline)
@@ -169,6 +180,57 @@ private struct OfferCard: View {
     }
 }
 
+struct OfferCropView: View {
+    let offer: GroceryOffer
+
+    private var crop: CGRect {
+        let centerX = offer.hotspotX.map { $0 + (offer.hotspotWidth ?? 0) / 2 } ?? 0.5
+        let centerY = offer.hotspotY.map { $0 + (offer.hotspotHeight ?? 0) / 2 } ?? 0.5
+        let width = 0.48
+        let height = 0.30
+        return CGRect(
+            x: min(max(0, centerX - width / 2), 1 - width),
+            y: min(max(0, centerY - height / 2), 1 - height),
+            width: width,
+            height: height
+        )
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            if let url = offer.imageURL {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image {
+                        let pageRatio = 694.0 / 1007.0
+                        let scale = max(
+                            proxy.size.width / (crop.width * pageRatio),
+                            proxy.size.height / crop.height
+                        )
+                        let pageWidth = scale * pageRatio
+                        let pageHeight = scale
+                        let visibleWidth = crop.width * pageWidth
+                        let visibleHeight = crop.height * pageHeight
+                        image
+                            .resizable()
+                            .frame(width: pageWidth, height: pageHeight)
+                            .offset(
+                                x: -crop.minX * pageWidth + (proxy.size.width - visibleWidth) / 2,
+                                y: -crop.minY * pageHeight + (proxy.size.height - visibleHeight) / 2
+                            )
+                    } else if phase.error != nil {
+                        Color(uiColor: .tertiarySystemFill)
+                            .overlay { Image(systemName: "photo").foregroundStyle(.secondary) }
+                    } else {
+                        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+            }
+        }
+        .clipped()
+        .accessibilityLabel("Udsnit fra tilbudsavisen for \(offer.productName)")
+    }
+}
+
 private struct OfferVariantSheet: View {
     let offer: GroceryOffer
     let select: (OfferVariant) -> Void
@@ -182,21 +244,29 @@ private struct OfferVariantSheet: View {
 
     var body: some View {
         NavigationStack {
-            List(variants) { variant in
-                Button { select(variant) } label: {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(variant.name).font(.headline).foregroundStyle(.primary)
-                        HStack(spacing: 8) {
-                            if let quantity = variant.quantity, let unit = variant.unit {
-                                Text("\(quantity.formatted(.number.precision(.fractionLength(0...2)))) \(unit)")
+            List {
+                if offer.imageURL != nil {
+                    OfferCropView(offer: offer)
+                        .frame(height: 190)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .listRowInsets(EdgeInsets())
+                }
+                ForEach(variants) { variant in
+                    Button { select(variant) } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(variant.name).font(.headline).foregroundStyle(.primary)
+                            HStack(spacing: 8) {
+                                if let quantity = variant.quantity, let unit = variant.unit {
+                                    Text("\(quantity.formatted(.number.precision(.fractionLength(0...2)))) \(unit)")
+                                }
+                                if let price = offer.price {
+                                    Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                                }
                             }
-                            if let price = offer.price {
-                                Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
-                            }
+                            .font(.subheadline).foregroundStyle(.secondary)
                         }
-                        .font(.subheadline).foregroundStyle(.secondary)
+                        .padding(.vertical, 4)
                     }
-                    .padding(.vertical, 4)
                 }
             }
             .navigationTitle("Vælg vare")

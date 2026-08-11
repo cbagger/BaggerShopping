@@ -12,11 +12,16 @@ final class AppModel: ObservableObject {
     let geofence = GeofenceManager()
     let categories = ShoppingCategoryService()
     private let api = APIClient()
-    private let offerRetailerKey = "bagger-shopping-offer-retailers"
-    private var offerRetailers: [String: String]
+    private let offerMetadataKey = "bagger-shopping-offer-metadata-v2"
+    private var offerMetadata: [String: OfferItemMetadata]
 
     init() {
-        offerRetailers = UserDefaults.standard.dictionary(forKey: offerRetailerKey) as? [String: String] ?? [:]
+        if let data = UserDefaults.standard.data(forKey: offerMetadataKey),
+           let decoded = try? JSONDecoder().decode([String: OfferItemMetadata].self, from: data) {
+            offerMetadata = decoded
+        } else {
+            offerMetadata = [:]
+        }
     }
 
     func bootstrap() async {
@@ -53,7 +58,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func addItem(_ name: String, retailer: String? = nil) async -> Bool {
+    func addItem(
+        _ name: String,
+        retailer: String? = nil,
+        offerPrice: Double? = nil,
+        offerValidUntil: String? = nil
+    ) async -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
 
@@ -72,8 +82,18 @@ final class AppModel: ObservableObject {
         do {
             try await api.addItem(name: trimmed)
             if let retailer, !retailer.isEmpty {
-                offerRetailers[offerRetailerNameKey(trimmed)] = retailer
-                UserDefaults.standard.set(offerRetailers, forKey: offerRetailerKey)
+                offerMetadata[offerRetailerNameKey(trimmed)] = OfferItemMetadata(
+                    retailer: retailer,
+                    price: offerPrice,
+                    validUntil: offerValidUntil
+                )
+                saveOfferMetadata()
+                objectWillChange.send()
+            } else {
+                // Items typed in the app use the same plain Samsung Food flow
+                // as fridge-created items and must not inherit old offer data.
+                offerMetadata.removeValue(forKey: offerRetailerNameKey(trimmed))
+                saveOfferMetadata()
                 objectWillChange.send()
             }
             errorMessage = nil
@@ -145,8 +165,8 @@ final class AppModel: ObservableObject {
         defer { mutatingItemIDs.remove(key) }
         do {
             try await api.deleteItem(item)
-            offerRetailers.removeValue(forKey: offerRetailerNameKey(item.name))
-            UserDefaults.standard.set(offerRetailers, forKey: offerRetailerKey)
+            offerMetadata.removeValue(forKey: offerRetailerNameKey(item.name))
+            saveOfferMetadata()
             errorMessage = nil
         } catch {
             shoppingList = previous
@@ -164,7 +184,11 @@ final class AppModel: ObservableObject {
     }
 
     func offerRetailer(for item: ShoppingItem) -> String? {
-        offerRetailers[offerRetailerNameKey(item.name)]
+        currentOfferMetadata(for: item)?.retailer
+    }
+
+    func offerPrice(for item: ShoppingItem) -> Double? {
+        currentOfferMetadata(for: item)?.price
     }
 
     func setCategory(_ category: ShoppingCategory, for item: ShoppingItem) {
@@ -235,4 +259,25 @@ final class AppModel: ObservableObject {
     private func offerRetailerNameKey(_ name: String) -> String {
         name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
+
+    private func currentOfferMetadata(for item: ShoppingItem) -> OfferItemMetadata? {
+        guard let metadata = offerMetadata[offerRetailerNameKey(item.name)] else { return nil }
+        guard let validUntil = metadata.validUntil else { return metadata }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "da_DK")
+        formatter.dateFormat = "dd.MM.yyyy"
+        guard let expiry = formatter.date(from: validUntil) else { return metadata }
+        return Calendar.current.startOfDay(for: expiry) >= Calendar.current.startOfDay(for: Date()) ? metadata : nil
+    }
+
+    private func saveOfferMetadata() {
+        guard let data = try? JSONEncoder().encode(offerMetadata) else { return }
+        UserDefaults.standard.set(data, forKey: offerMetadataKey)
+    }
+}
+
+private struct OfferItemMetadata: Codable {
+    let retailer: String
+    let price: Double?
+    let validUntil: String?
 }

@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+import time
+from datetime import date, datetime
+
 from fastapi import APIRouter, HTTPException, Query
 
 from .meny_flyer import Publication, fetch_meny_flyer, search_publication
 
 
 router = APIRouter(prefix="/api/mobile/v1/offers", tags=["offers"])
+
+_CACHE_TTL_SECONDS = 15 * 60
+_publication_cache: Publication | None = None
+_publication_cache_time = 0.0
+_publication_lock = asyncio.Lock()
 
 
 def _coverage_payload(publication: Publication) -> dict:
@@ -42,10 +51,82 @@ def _publication_payload(publication: Publication) -> dict:
 
 
 async def _publication() -> Publication:
+    global _publication_cache, _publication_cache_time
+    now = time.monotonic()
+    if (
+        _publication_cache is not None
+        and not _health_problems(_publication_cache)
+        and now - _publication_cache_time < _CACHE_TTL_SECONDS
+    ):
+        return _publication_cache
+
+    async with _publication_lock:
+        now = time.monotonic()
+        if (
+            _publication_cache is not None
+            and not _health_problems(_publication_cache)
+            and now - _publication_cache_time < _CACHE_TTL_SECONDS
+        ):
+            return _publication_cache
+        try:
+            candidate = await fetch_meny_flyer()
+            problems = _health_problems(candidate)
+            if problems:
+                raise ValueError("; ".join(problems))
+            _publication_cache = candidate
+            _publication_cache_time = now
+            return candidate
+        except Exception as exc:
+            # A short upstream outage must not break a still-current flyer. An
+            # expired cached flyer is never served, even when MENY is down.
+            if _publication_cache is not None and not _health_problems(_publication_cache):
+                return _publication_cache
+            raise HTTPException(
+                status_code=503,
+                detail=f"Den aktuelle MENY-avis kunne ikke valideres: {exc}",
+            ) from exc
+
+
+def _parse_validity(value: str | None) -> date | None:
     try:
-        return await fetch_meny_flyer()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"MENY flyer unavailable: {exc}") from exc
+        return datetime.strptime(value or "", "%d.%m.%Y").date()
+    except ValueError:
+        return None
+
+
+def _health_problems(publication: Publication, *, today: date | None = None) -> list[str]:
+    """Report only failures that make the customer-facing flyer unusable."""
+    today = today or date.today()
+    problems: list[str] = []
+    valid_until = _parse_validity(publication.valid_until)
+    if valid_until is None:
+        problems.append("gyldighedsdato mangler")
+    elif valid_until < today:
+        problems.append("avisen er udløbet")
+    if publication.page_count <= 0 or len(publication.page_image_urls) != publication.page_count:
+        problems.append("sidebilleder mangler")
+    coverage = _coverage_payload(publication)
+    offers = coverage["offer_count"]
+    hotspots = coverage["hotspot_count"]
+    if offers <= 0:
+        problems.append("ingen tilbud fundet")
+    elif hotspots / offers < 0.90:
+        problems.append(f"kun {hotspots}/{offers} tilbud har markør")
+    return problems
+
+
+@router.get("/health")
+async def offers_health():
+    publication = await _publication()
+    coverage = _coverage_payload(publication)
+    return {
+        "ok": True,
+        "publication_id": publication.id,
+        "title": publication.title,
+        "valid_until": publication.valid_until,
+        "status": publication.status,
+        "coverage": coverage,
+    }
 
 
 @router.get("/publications")

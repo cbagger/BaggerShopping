@@ -472,6 +472,11 @@ def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> lis
             valid_until=publication.valid_until,
             product_name=label,
             price=price,
+            image_url=(
+                publication.page_image_urls[page_number - 1]
+                if 0 < page_number <= len(publication.page_image_urls)
+                else None
+            ),
             quantity=quantity,
             unit=unit,
             source_url=publication.source_url,

@@ -178,13 +178,17 @@ struct ShoppingListView: View {
             Spacer(minLength: 6)
 
             if let retailer = model.offerRetailer(for: item) {
-                Text(retailer)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.secondary.opacity(0.72), in: Capsule())
-                    .accessibilityLabel("Tilbud fra \(retailer)")
+                HStack(spacing: 4) {
+                    Text(retailer)
+                    if let price = model.offerPrice(for: item) {
+                        Text("·")
+                        Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                    }
+                }
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Tilbud fra \(retailer)")
             }
 
             if let quantity = item.quantity, quantity > 1, let displayQuantity = item.displayQuantity {

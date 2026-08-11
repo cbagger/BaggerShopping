@@ -1,4 +1,5 @@
 import asyncio
+from datetime import date
 
 from app import mobile_offers
 from app.meny_flyer import parse_enrichment_chunks, parse_meny_flyer_html
@@ -79,3 +80,32 @@ def test_current_offers_reports_hotspot_coverage_per_page(monkeypatch):
     assert response["coverage"]["pages_without_hotspots"] == [2]
     assert response["coverage"]["pages"][1] == {"page_number": 2, "offer_count": 1, "hotspot_count": 0}
     assert response["coverage"]["pages"][2] == {"page_number": 3, "offer_count": 0, "hotspot_count": 0}
+
+
+def test_health_only_fails_when_flyer_is_not_functionally_usable():
+    publication = parse_meny_flyer_html(
+        '<script>window.staticSettings = {"pages":[1],"aws":{"url":"https://cdn.test"}};</script>'
+        '<p>MENY uge 3326</p><p>Avisen gælder fra mandag 10.08.2026 til og med søndag 16.08.2026.</p>'
+    )
+    publication.structured_offers = parse_enrichment_chunks(publication, [{"enrichments": [{
+        "type": 13, "pageIndex": 0, "productId": "milk", "name": "Kakaomælk",
+        "alttext": "Kakaomælk", "price": 9.95,
+        "x": 0.1, "y": 0.2, "width": 0.1, "height": 0.1,
+    }]}])
+
+    assert mobile_offers._health_problems(publication, today=date(2026, 8, 11)) == []
+    assert "avisen er udløbet" in mobile_offers._health_problems(publication, today=date(2026, 8, 17))
+
+
+def test_health_rejects_material_hotspot_loss_but_not_empty_editorial_pages():
+    publication = parse_meny_flyer_html(
+        '<script>window.staticSettings = {"pages":[1,2],"aws":{"url":"https://cdn.test"}};</script>'
+        '<p>MENY uge 3326</p><p>Avisen gælder fra mandag 10.08.2026 til og med søndag 16.08.2026.</p>'
+    )
+    publication.structured_offers = parse_enrichment_chunks(publication, [{"enrichments": [{
+        "type": 13, "pageIndex": 0, "productId": "milk", "name": "Kakaomælk",
+        "alttext": "Kakaomælk", "price": 9.95,
+    }]}])
+
+    problems = mobile_offers._health_problems(publication, today=date(2026, 8, 11))
+    assert problems == ["kun 0/1 tilbud har markør"]

@@ -115,7 +115,15 @@ private struct NativeFlyerReader: View {
     }
 
     private func add(_ name: String) {
-        Task { if await model.addItem(name, retailer: publication.retailer) { addedName = name } }
+        let offer = pendingOffer ?? offers.first { $0.variants.contains(where: { $0.name == name }) }
+        Task {
+            if await model.addItem(
+                name,
+                retailer: publication.retailer,
+                offerPrice: offer?.price,
+                offerValidUntil: offer?.validUntil
+            ) { addedName = name }
+        }
     }
 
     @MainActor private func loadOffers() async {
@@ -181,7 +189,14 @@ private struct OfferPicker: View {
 
     var body: some View {
         NavigationStack {
-            List(offer.variants) { variant in
+            List {
+                if offer.imageURL != nil {
+                    OfferCropView(offer: offer)
+                        .frame(height: 190)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .listRowInsets(EdgeInsets())
+                }
+                ForEach(offer.variants) { variant in
                 Button { select(variant.name) } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(variant.name).font(.headline)
@@ -190,6 +205,7 @@ private struct OfferPicker: View {
                                 .font(.subheadline).foregroundStyle(.secondary)
                         }
                     }
+                }
                 }
             }
             .navigationTitle("Vælg vare")
