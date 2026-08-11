@@ -282,6 +282,45 @@ def _friendly_product_name(name: str) -> str:
     return _normalize_space(name)
 
 
+def _finite_number(value: object) -> float | None:
+    """Return an iPaper numeric value, including numbers encoded as strings."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        try:
+            number = float(value.strip().replace(",", "."))
+        except ValueError:
+            return None
+    else:
+        return None
+    return number if number == number and abs(number) != float("inf") else None
+
+
+def _hotspot_geometry(item: dict) -> tuple[float, float, float, float] | None:
+    """Read geometry from both known iPaper enrichment representations."""
+    candidates: list[object] = [item]
+    for key in ("bounds", "rect", "rectangle", "position"):
+        if isinstance(item.get(key), dict):
+            candidates.append(item[key])
+
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        x = _finite_number(candidate.get("x", candidate.get("left")))
+        y = _finite_number(candidate.get("y", candidate.get("top")))
+        width = _finite_number(candidate.get("width", candidate.get("w")))
+        height = _finite_number(candidate.get("height", candidate.get("h")))
+        if None in (x, y, width, height) or width <= 0 or height <= 0:
+            continue
+        if max(x, y, width, height) > 1:
+            x, y, width, height = x / 100, y / 100, width / 100, height / 100
+        if 0 <= x < 1 and 0 <= y < 1 and x + width <= 1.01 and y + height <= 1.01:
+            return x, y, width, height
+    return None
+
+
 PET_PRODUCT_RE = re.compile(
     r"\b(whiskas|frolic|pedigree|kattemad|hundefoder|hunde(?:mad)?|katte(?:mad)?|petfood)\b",
     re.IGNORECASE,
@@ -348,10 +387,11 @@ def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> lis
                 continue
             name = _normalize_space(str(item.get("name") or ""))
             label = _normalize_space(str(item.get("alttext") or name))
-            price = item.get("price")
-            if not name or not label or not isinstance(price, (int, float)):
+            price = _finite_number(item.get("price"))
+            if not name or not label or price is None:
                 continue
-            key = (int(item.get("pageIndex", 0)) + 1, label.casefold(), float(price))
+            page_index = _finite_number(item.get("pageIndex")) or 0
+            key = (int(page_index) + 1, label.casefold(), price)
             groups.setdefault(key, []).append(item)
 
     offers: list[Offer] = []
@@ -378,10 +418,11 @@ def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> lis
             continue
         stable = hashlib.sha256(f"{publication.id}|{page_number}|{label}|{price}".encode()).hexdigest()[:20]
         quantity, unit = (variants[0].quantity, variants[0].unit) if len(variants) == 1 else (None, None)
-        xs = [float(item["x"]) for item in items if isinstance(item.get("x"), (int, float))]
-        ys = [float(item["y"]) for item in items if isinstance(item.get("y"), (int, float))]
-        rights = [float(item["x"]) + float(item["width"]) for item in items if isinstance(item.get("x"), (int, float)) and isinstance(item.get("width"), (int, float))]
-        bottoms = [float(item["y"]) + float(item["height"]) for item in items if isinstance(item.get("y"), (int, float)) and isinstance(item.get("height"), (int, float))]
+        geometries = [geometry for item in items if (geometry := _hotspot_geometry(item)) is not None]
+        xs = [geometry[0] for geometry in geometries]
+        ys = [geometry[1] for geometry in geometries]
+        rights = [geometry[0] + geometry[2] for geometry in geometries]
+        bottoms = [geometry[1] + geometry[3] for geometry in geometries]
         hotspot_x = min(xs) if xs else None
         hotspot_y = min(ys) if ys else None
         hotspot_width = max(rights) - hotspot_x if rights and hotspot_x is not None else None
