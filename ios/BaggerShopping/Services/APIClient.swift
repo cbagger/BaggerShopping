@@ -34,29 +34,59 @@ struct APIClient {
         return request
     }
 
-    func fetchList() async throws -> ShoppingListResponse {
-        let (data, response) = try await URLSession.shared.data(for: request(path: "/api/mobile/v1/list"))
+    private func perform(_ request: URLRequest) async throws -> Data {
+        let (data, response) = try await URLSession.shared.data(for: request)
         try validate(response: response, data: data)
+        return data
+    }
+
+    func fetchList() async throws -> ShoppingListResponse {
+        let data = try await perform(request(path: "/api/mobile/v1/list"))
         return try JSONDecoder().decode(ShoppingListResponse.self, from: data)
     }
 
     func addItem(name: String) async throws {
         let body = try JSONEncoder().encode(["name": name])
-        let (data, response) = try await URLSession.shared.data(for: request(path: "/api/mobile/v1/items", method: "POST", body: body))
-        try validate(response: response, data: data)
+        _ = try await perform(request(path: "/api/mobile/v1/items", method: "POST", body: body))
     }
 
     func setChecked(item: ShoppingItem, checked: Bool) async throws {
         guard let id = item.id else { throw APIError.missingItemID }
         let body = try JSONEncoder().encode(["checked": checked])
-        let (data, response) = try await URLSession.shared.data(for: request(path: "/api/mobile/v1/items/\(id)/checked", method: "PATCH", body: body))
-        try validate(response: response, data: data)
+        _ = try await perform(request(path: "/api/mobile/v1/items/\(id)/checked", method: "PATCH", body: body))
+    }
+
+    func setQuantity(item: ShoppingItem, quantity: Double, unit: String = "stk") async throws {
+        guard let id = item.id else { throw APIError.missingItemID }
+        let body = try JSONSerialization.data(withJSONObject: ["quantity": quantity, "unit": unit])
+        _ = try await perform(request(path: "/api/mobile/v1/items/\(id)/quantity", method: "PATCH", body: body))
     }
 
     func deleteItem(_ item: ShoppingItem) async throws {
         guard let id = item.id else { throw APIError.missingItemID }
-        let (data, response) = try await URLSession.shared.data(for: request(path: "/api/mobile/v1/items/\(id)", method: "DELETE"))
-        try validate(response: response, data: data)
+        _ = try await perform(request(path: "/api/mobile/v1/items/\(id)", method: "DELETE"))
+    }
+
+    func fetchCategoryOverrides() async throws -> CategoryOverridesResponse {
+        let data = try await perform(request(path: "/api/mobile/v1/category-overrides"))
+        return try JSONDecoder().decode(CategoryOverridesResponse.self, from: data)
+    }
+
+    func setCategoryOverride(itemName: String, category: ShoppingCategory) async throws {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "item_name": itemName,
+            "category": category.rawValue
+        ])
+        _ = try await perform(request(path: "/api/mobile/v1/category-overrides", method: "PUT", body: body))
+    }
+
+    func removeCategoryOverride(itemName: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["item_name": itemName])
+        _ = try await perform(request(path: "/api/mobile/v1/category-overrides/remove", method: "POST", body: body))
+    }
+
+    func clearCategoryOverrides() async throws {
+        _ = try await perform(request(path: "/api/mobile/v1/category-overrides", method: "DELETE"))
     }
 
     private func validate(response: URLResponse, data: Data) throws {
