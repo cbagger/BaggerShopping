@@ -202,6 +202,27 @@ def test_structured_offer_exposes_native_hotspot_geometry():
     assert offer.hotspot_height == pytest.approx(0.08)
 
 
+def test_structured_offer_accepts_string_percentage_and_nested_geometry():
+    publication = parse_meny_flyer_html(IPAPER_HTML)
+    offers = parse_enrichment_chunks(publication, [{"enrichments": [
+        {
+            "type": 13, "pageIndex": "1", "productId": "milk", "name": "Kakaomælk",
+            "alttext": "Kakaomælk", "desc": "1 l", "price": "9,95",
+            "x": "40", "y": "70", "width": "10", "height": "8",
+        },
+        {
+            "type": 13, "pageIndex": 2, "productId": "rye", "name": "Rugbrød",
+            "alttext": "Rugbrød", "desc": "500 g", "price": 18,
+            "bounds": {"left": 0.2, "top": 0.3, "w": 0.25, "h": 0.15},
+        },
+    ]}])
+
+    assert offers[0].page_number == 2
+    assert offers[0].price == pytest.approx(9.95)
+    assert (offers[0].hotspot_x, offers[0].hotspot_y) == pytest.approx((0.4, 0.7))
+    assert (offers[1].hotspot_width, offers[1].hotspot_height) == pytest.approx((0.25, 0.15))
+
+
 def test_per_piece_product_does_not_inherit_stray_weight():
     assert parse_enrichment_chunks(parse_meny_flyer_html(IPAPER_HTML), [{"enrichments": [{
         "type": 13, "pageIndex": 0, "productId": "melon", "name": "Vandmelon",
