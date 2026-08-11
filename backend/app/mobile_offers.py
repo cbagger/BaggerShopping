@@ -8,6 +8,31 @@ from .meny_flyer import Publication, fetch_meny_flyer, search_publication
 router = APIRouter(prefix="/api/mobile/v1/offers", tags=["offers"])
 
 
+def _coverage_payload(publication: Publication) -> dict:
+    offers_by_page: dict[int, int] = {}
+    hotspots_by_page: dict[int, int] = {}
+    for offer in publication.structured_offers:
+        if offer.page_number is None:
+            continue
+        offers_by_page[offer.page_number] = offers_by_page.get(offer.page_number, 0) + 1
+        if None not in (offer.hotspot_x, offer.hotspot_y, offer.hotspot_width, offer.hotspot_height):
+            hotspots_by_page[offer.page_number] = hotspots_by_page.get(offer.page_number, 0) + 1
+    pages = [
+        {
+            "page_number": page_number,
+            "offer_count": offers_by_page.get(page_number, 0),
+            "hotspot_count": hotspots_by_page.get(page_number, 0),
+        }
+        for page_number in range(1, publication.page_count + 1)
+    ]
+    return {
+        "offer_count": sum(offers_by_page.values()),
+        "hotspot_count": sum(hotspots_by_page.values()),
+        "pages_without_hotspots": [page["page_number"] for page in pages if page["hotspot_count"] == 0],
+        "pages": pages,
+    }
+
+
 def _publication_payload(publication: Publication) -> dict:
     return publication.model_dump(exclude={"text", "page_texts"})
 
@@ -74,6 +99,7 @@ async def current_publication_offers():
         "ok": True,
         "publication": _publication_payload(publication),
         "offer_count": len(publication.structured_offers),
+        "coverage": _coverage_payload(publication),
         "offers": [offer.model_dump() for offer in publication.structured_offers],
     }
 
