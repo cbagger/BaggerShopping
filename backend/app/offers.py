@@ -166,6 +166,16 @@ def _offer_from_mapping(mapping: dict[str, Any], retailer_filter: str) -> Offer 
     if not isinstance(product_url, str):
         product_url = None
 
+    # /tilbud pages may also contain non-discounted comparison products.
+    # For this endpoint we only emit genuine offers when the source gives us
+    # enough information to prove that the current price is below normal.
+    if normal_price is not None and normal_price <= price:
+        normal_price = None
+    if discount is None and normal_price is not None:
+        discount = round((1 - price / normal_price) * 100)
+    if not discount or discount <= 0:
+        return None
+
     stable = f"{retailer}|{name.strip()}|{price}|{quantity}|{unit}"
     return Offer(
         id=hashlib.sha256(stable.encode("utf-8")).hexdigest()[:20],
@@ -211,6 +221,9 @@ def _parse_structured_scripts(scripts: list[_Script], retailer: str) -> list[Off
 
 
 def _price_token(value: str) -> float | None:
+    # Unit prices such as "19,90 kr/kg" are not shelf/normal prices.
+    if "kr/" in value.casefold():
+        return None
     match = PRICE_RE.search(value)
     return _number(match.group("value")) if match else None
 
@@ -218,9 +231,9 @@ def _price_token(value: str) -> float | None:
 def _parse_text_fallback(parts: list[str], retailer: str) -> list[Offer]:
     """Best-effort parser for Goma's server-rendered offer cards.
 
-    This intentionally only emits rows when a retailer token, a price and a
-    plausible product name occur in a small local window. It prefers missing
-    an offer to returning an incorrect one.
+    The fallback deliberately requires evidence of a real discount. Goma's
+    /tilbud pages can also render ordinary comparison products, and a unit
+    price must never be mistaken for a normal price.
     """
     results: dict[str, Offer] = {}
     ignored = {
@@ -235,14 +248,32 @@ def _parse_text_fallback(parts: list[str], retailer: str) -> list[Offer]:
     for index, token in enumerate(parts):
         if token.casefold() != retailer.casefold():
             continue
-        window = parts[index : index + 12]
+
+        # Live Goma cards can spread product, quantity and pricing over more
+        # tokens than our synthetic test fixture, so retain a bounded but
+        # slightly wider card window.
+        window = parts[index : index + 20]
         prices = [(i, _price_token(value)) for i, value in enumerate(window)]
         prices = [(i, price) for i, price in prices if price is not None]
         if not prices:
             continue
 
         price_index, price = prices[0]
-        normal_price = prices[1][1] if len(prices) > 1 else None
+        normal_price = None
+        for _, candidate_price in prices[1:]:
+            if candidate_price > price:
+                normal_price = candidate_price
+                break
+
+        explicit_discount = None
+        for value in window:
+            if DISCOUNT_RE.fullmatch(value.strip()):
+                explicit_discount = int(value.strip().replace("%", "").replace("-", ""))
+                break
+
+        if normal_price is None and not explicit_discount:
+            # This is probably one of Goma's non-offer comparison products.
+            continue
 
         candidates: list[tuple[int, str]] = []
         for offset, value in enumerate(window[1:], start=1):
@@ -261,8 +292,6 @@ def _parse_text_fallback(parts: list[str], retailer: str) -> list[Offer]:
                 continue
             candidates.append((offset, compact))
 
-        # Product labels are normally between retailer and pricing or directly
-        # after the pricing fields. Prefer the closest descriptive token.
         candidates.sort(key=lambda entry: (abs(entry[0] - price_index), -len(entry[1])))
         if not candidates:
             continue
@@ -272,16 +301,18 @@ def _parse_text_fallback(parts: list[str], retailer: str) -> list[Offer]:
         unit = None
         unit_price = None
         for value in window:
-            quantity_match = QUANTITY_RE.search(value)
-            if quantity_match and quantity is None:
+            quantity_match = QUANTITY_RE.fullmatch(value.strip()) or QUANTITY_RE.search(value)
+            if quantity_match and quantity is None and "kr/" not in value.casefold():
                 quantity = _number(quantity_match.group("value"))
                 unit = quantity_match.group("unit").rstrip(".").casefold()
             if "kr/" in value.casefold() and unit_price is None:
                 unit_price = value
 
-        discount = None
-        if normal_price and normal_price > price:
+        discount = explicit_discount
+        if discount is None and normal_price and normal_price > price:
             discount = round((1 - price / normal_price) * 100)
+        if not discount or discount <= 0:
+            continue
 
         stable = f"{retailer}|{product_name}|{price}|{quantity}|{unit}"
         offer = Offer(
