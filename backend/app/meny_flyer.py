@@ -1,21 +1,20 @@
 from __future__ import annotations
 
+import html as html_lib
+import json
 import re
-from datetime import datetime
-from html import unescape
 from html.parser import HTMLParser
 from typing import Iterable
 
 import httpx
 from pydantic import BaseModel
 
+
 MENY_FLYER_URL = "https://ugensavis.meny.dk/"
 WEEK_RE = re.compile(r"MENY\s+uge\s+(?P<week>\d{2})(?P<year>\d{2})", re.IGNORECASE)
 VALIDITY_RE = re.compile(
-    r"Avisen\s+g[æa]lder\s+fra\s+(?:mandag|tirsdag|onsdag|torsdag|fredag|l[øo]rdag|s[øo]ndag)\s+"
-    r"(?P<from>\d{2}\.\d{2}\.\d{4})\s+til\s+og\s+med\s+"
-    r"(?:mandag|tirsdag|onsdag|torsdag|fredag|l[øo]rdag|s[øo]ndag)\s+"
-    r"(?P<until>\d{2}\.\d{2}\.\d{4})",
+    r"Avisen\s+g[æa]lder\s+fra\s+(?:[a-zæøå]+\s+)?(?P<from>\d{2}\.\d{2}\.\d{4})"
+    r"\s+til\s+og\s+med\s+(?:[a-zæøå]+\s+)?(?P<until>\d{2}\.\d{2}\.\d{4})",
     re.IGNORECASE,
 )
 
@@ -30,6 +29,8 @@ class MenyFlyerPublication(BaseModel):
     valid_until: str | None = None
     source_url: str
     text: str
+    page_count: int = 0
+    content_source: str = "visible-html"
 
 
 class MenyFlyerSearchResult(BaseModel):
@@ -40,72 +41,141 @@ class MenyFlyerSearchResult(BaseModel):
     matches: list[str]
 
 
-class _TextAndPayloadParser(HTMLParser):
+class _FlyerHTMLParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.visible: list[str] = []
-        self.payloads: list[str] = []
+        self.visible_parts: list[str] = []
+        self.script_parts: list[str] = []
+        self._in_script = False
         self._skip_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.casefold() in {"style", "noscript"}:
+        lowered = tag.casefold()
+        if lowered == "script":
+            self._in_script = True
+            return
+        if lowered in {"style", "noscript"}:
             self._skip_depth += 1
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.casefold() in {"style", "noscript"} and self._skip_depth:
+        lowered = tag.casefold()
+        if lowered == "script":
+            self._in_script = False
+            return
+        if lowered in {"style", "noscript"} and self._skip_depth:
             self._skip_depth -= 1
 
     def handle_data(self, data: str) -> None:
-        compact = " ".join(data.split())
-        if not compact:
+        if self._in_script:
+            if data.strip():
+                self.script_parts.append(data)
             return
-        # Modern flyer viewers often serialize searchable/OCR text in script
-        # payloads. Keep both visible and serialized text; later we choose the
-        # richest candidate instead of assuming JS means non-content.
-        self.payloads.append(compact)
-        if not self._skip_depth:
-            self.visible.append(compact)
+        if self._skip_depth:
+            return
+        compact = " ".join(data.split())
+        if compact:
+            self.visible_parts.append(compact)
 
 
 def _normalize_space(value: str) -> str:
-    value = unescape(value)
-    value = value.replace("\\u00ad", "").replace("\\u200b", "")
-    value = value.replace("\u00ad", "").replace("\u200b", "")
-    value = value.replace('\\n', ' ').replace('\\r', ' ').replace('\\t', ' ')
-    value = value.replace('\\"', '"')
-    return " ".join(value.split())
-
-
-def _best_document_text(html: str) -> str:
-    parser = _TextAndPayloadParser()
-    parser.feed(html)
-    candidates = [
-        _normalize_space(" ".join(parser.visible)),
-        _normalize_space(" ".join(parser.payloads)),
-        _normalize_space(html),
-    ]
-    # Prefer a candidate that contains known flyer semantics, then length.
-    candidates.sort(
-        key=lambda value: (
-            int("avisen gælder" in value.casefold()),
-            int("pr. stk" in value.casefold() or "pr. flaske" in value.casefold()),
-            len(value),
-        ),
-        reverse=True,
+    return " ".join(
+        value.replace("\u00ad", "")
+        .replace("\u200b", "")
+        .replace("\\u0027", "'")
+        .replace("\\u0026", "&")
+        .split()
     )
-    return candidates[0]
+
+
+def _json_array_from_marker(source: str, marker: str) -> list[str]:
+    """Extract a JSON string array following marker using balanced brackets.
+
+    iPaper currently serializes viewer state either as ordinary JSON-ish
+    JavaScript or one escaped JSON layer. This helper deliberately understands
+    both forms without depending on the rest of the viewer implementation.
+    """
+    start = source.find(marker)
+    if start < 0:
+        return []
+    start = source.find("[", start + len(marker))
+    if start < 0:
+        return []
+
+    escaped = marker.startswith('\\"')
+    depth = 0
+    in_string = False
+    slash_count = 0
+    end = None
+    for index in range(start, len(source)):
+        char = source[index]
+        if char == "\\":
+            slash_count += 1
+            continue
+        is_escaped = slash_count % 2 == 1
+        slash_count = 0
+        if char == '"' and not is_escaped:
+            in_string = not in_string
+        if in_string:
+            continue
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+    if end is None:
+        return []
+
+    payload = source[start:end]
+    attempts = [payload]
+    if escaped or '\\"' in payload:
+        attempts.append(payload.replace('\\"', '"'))
+    for candidate in attempts:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, list):
+            return [_normalize_space(str(item)) for item in parsed if str(item).strip()]
+    return []
+
+
+def _extract_ipaper_page_texts(raw_html: str, scripts: list[str]) -> list[str]:
+    sources = [raw_html, html_lib.unescape(raw_html), *scripts]
+    markers = ('"pageTexts":', '\\"pageTexts\\":')
+    for source in sources:
+        for marker in markers:
+            pages = _json_array_from_marker(source, marker)
+            if pages:
+                return pages
+    return []
 
 
 def parse_meny_flyer_html(html: str, source_url: str = MENY_FLYER_URL) -> MenyFlyerPublication:
-    text = _best_document_text(html)
-    title_match = WEEK_RE.search(text)
+    parser = _FlyerHTMLParser()
+    parser.feed(html)
+
+    visible_text = _normalize_space(" ".join(parser.visible_parts))
+    script_text = _normalize_space(" ".join(parser.script_parts))
+    metadata_text = _normalize_space(f"{visible_text} {script_text}")
+
+    title_match = WEEK_RE.search(metadata_text)
     title = title_match.group(0) if title_match else "MENY ugens avis"
     week = int(title_match.group("week")) if title_match else None
     year = 2000 + int(title_match.group("year")) if title_match else None
 
-    validity = VALIDITY_RE.search(text)
+    validity = VALIDITY_RE.search(metadata_text)
     valid_from = validity.group("from") if validity else None
     valid_until = validity.group("until") if validity else None
+
+    page_texts = _extract_ipaper_page_texts(html, parser.script_parts)
+    if page_texts:
+        content_text = _normalize_space(" ".join(page_texts))
+        content_source = "ipaper-pageTexts"
+    else:
+        content_text = visible_text
+        content_source = "visible-html"
 
     return MenyFlyerPublication(
         title=title,
@@ -114,11 +184,13 @@ def parse_meny_flyer_html(html: str, source_url: str = MENY_FLYER_URL) -> MenyFl
         valid_from=valid_from,
         valid_until=valid_until,
         source_url=source_url,
-        text=text,
+        text=content_text,
+        page_count=len(page_texts),
+        content_source=content_source,
     )
 
 
-def _windows(tokens: list[str], query: str, radius: int = 22) -> Iterable[str]:
+def _windows(tokens: list[str], query: str, radius: int = 16) -> Iterable[str]:
     needle = query.casefold()
     for index, token in enumerate(tokens):
         if needle not in token.casefold():
@@ -132,6 +204,7 @@ def search_publication(publication: MenyFlyerPublication, query: str) -> MenyFly
     query = query.strip()
     if not query:
         raise ValueError("Query cannot be empty")
+
     tokens = publication.text.split(" ")
     matches: list[str] = []
     seen: set[str] = set()
@@ -141,6 +214,7 @@ def search_publication(publication: MenyFlyerPublication, query: str) -> MenyFly
             continue
         seen.add(key)
         matches.append(match)
+
     return MenyFlyerSearchResult(query=query, publication=publication, matches=matches)
 
 
@@ -151,8 +225,7 @@ async def fetch_meny_flyer(*, client: httpx.AsyncClient | None = None) -> MenyFl
             timeout=20.0,
             follow_redirects=True,
             headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/151 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "User-Agent": "Mozilla/5.0 BaggerShopping/0.4 MENY-flyer-PoC",
                 "Accept-Language": "da-DK,da;q=0.9,en;q=0.7",
             },
         )
