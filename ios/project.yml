@@ -8,6 +8,8 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: BaggerShopping
+    resources:
+      - path: Assets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dk.chewbagger.BaggerShopping
@@ -15,7 +17,21 @@ targets:
         SWIFT_VERSION: 5.0
         INFOPLIST_FILE: BaggerShopping/Info.plist
         CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     capabilities:
       location:
         modes:
           - location
+
+  BaggerShoppingTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: BaggerShoppingTests
+    dependencies:
+      - target: BaggerShopping
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dk.chewbagger.BaggerShoppingTests
+        SWIFT_VERSION: 5.0

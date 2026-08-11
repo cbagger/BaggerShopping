@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass
 
 
@@ -67,6 +68,16 @@ def fixed32_field(field_number: int, value: int) -> bytes:
     return concat(tag(field_number, 5), value.to_bytes(4, "little"))
 
 
+def float_field(field_number: int, value: float) -> bytes:
+    """Encode a protobuf fixed32 float.
+
+    Samsung Food shopping-item captures from 2026-08-11 show item payload
+    field 4 as IEEE-754 little-endian float quantity (e.g. 3.0 = 00 00 40 40,
+    4.0 = 00 00 80 40) and field 5 as the unit string.
+    """
+    return concat(tag(field_number, 5), struct.pack("<f", float(value)))
+
+
 def normalize_item_id(item_id: str) -> str:
     """Samsung's SyncItems protobuf uses the UUID hex without hyphens."""
     compact = item_id.replace("-", "").strip()
@@ -86,32 +97,39 @@ def _sync_items_envelope(list_id: str, timestamp_ms: int, change: bytes) -> byte
     return grpc_web_frame(message)
 
 
-def build_sync_items_checked_request(
+def _item_payload(
+    name: str,
+    quantity: float | None = None,
+    unit: str | None = None,
+) -> bytes:
+    parts = [
+        string_field(1, name),
+        bytes_field(2, b""),
+        bytes_field(3, b""),
+    ]
+
+    # Samsung uses 0/empty for items without an explicit quantity. Preserve an
+    # existing quantity/unit on any update so check/uncheck cannot erase it.
+    if quantity is None:
+        parts.append(fixed32_field(4, 0))
+    else:
+        parts.append(float_field(4, quantity))
+    parts.append(string_field(5, unit or ""))
+    return concat(*parts)
+
+
+def _build_sync_items_update_request(
     list_id: str,
     item_id: str,
     name: str,
     checked: bool,
     timestamp_ms: int,
+    quantity: float | None = None,
+    unit: str | None = None,
 ) -> bytes:
-    """Build the observed Samsung Food SyncItems update operation.
-
-    Captured from the web app on 2026-08-10:
-      - change field 2 = item update
-      - update field 1 = compact item UUID
-      - update field 2 = item payload
-      - update field 3 = checked (0/1)
-    """
-    item_payload = concat(
-        string_field(1, name),
-        bytes_field(2, b""),
-        bytes_field(3, b""),
-        fixed32_field(4, 0),
-        bytes_field(5, b""),
-    )
-
     update = concat(
         string_field(1, normalize_item_id(item_id)),
-        bytes_field(2, item_payload),
+        bytes_field(2, _item_payload(name, quantity, unit)),
         uint_field(3, 1 if checked else 0),
         uint_field(5, 0),
         uint_field(6, 0),
@@ -124,17 +142,55 @@ def build_sync_items_checked_request(
     )
 
 
+def build_sync_items_checked_request(
+    list_id: str,
+    item_id: str,
+    name: str,
+    checked: bool,
+    timestamp_ms: int,
+    quantity: float | None = None,
+    unit: str | None = None,
+) -> bytes:
+    """Build the observed Samsung Food SyncItems item-update operation."""
+    return _build_sync_items_update_request(
+        list_id,
+        item_id,
+        name,
+        checked,
+        timestamp_ms,
+        quantity,
+        unit,
+    )
+
+
+def build_sync_items_quantity_request(
+    list_id: str,
+    item_id: str,
+    name: str,
+    checked: bool,
+    quantity: float,
+    unit: str,
+    timestamp_ms: int,
+) -> bytes:
+    if quantity <= 0:
+        raise ValueError("quantity must be greater than zero")
+    return _build_sync_items_update_request(
+        list_id,
+        item_id,
+        name,
+        checked,
+        timestamp_ms,
+        quantity,
+        unit,
+    )
+
+
 def build_sync_items_delete_request(
     list_id: str,
     item_id: str,
     timestamp_ms: int,
 ) -> bytes:
-    """Build the observed Samsung Food 'Clear' deletion operation.
-
-    The captured web request identifies exactly one item. This lets the mobile
-    client expose an individual delete action while still using Samsung's own
-    observed mutation shape.
-    """
+    """Build the observed Samsung Food 'Clear' deletion operation."""
     delete_op = concat(
         string_field(1, normalize_item_id(item_id)),
         uint_field(5, 0),

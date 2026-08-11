@@ -7,16 +7,36 @@ final class StoreRepository: ObservableObject {
 
     init() { load() }
 
-    func add(_ store: StoreLocation) { stores.append(store); save() }
+    func add(_ store: StoreLocation) {
+        stores.append(store)
+        save()
+    }
+
     func update(_ store: StoreLocation) {
         guard let index = stores.firstIndex(where: { $0.id == store.id }) else { return }
         stores[index] = store
         save()
     }
-    func delete(at offsets: IndexSet) { stores.remove(atOffsets: offsets); save() }
+
+    func delete(at offsets: IndexSet) {
+        stores.remove(atOffsets: offsets)
+        save()
+    }
+
+    func delete(id: UUID) {
+        stores.removeAll { $0.id == id }
+        save()
+    }
+
     func setEnabled(_ enabled: Bool, for id: UUID) {
         guard let index = stores.firstIndex(where: { $0.id == id }) else { return }
         stores[index].enabled = enabled
+        save()
+    }
+
+    func setRadius(_ radius: Double, for id: UUID) {
+        guard let index = stores.firstIndex(where: { $0.id == id }) else { return }
+        stores[index].radius = min(max(radius, 100), 500)
         save()
     }
 
@@ -31,6 +51,7 @@ final class StoreRepository: ObservableObject {
             stores = decoded
             return
         }
+
         // v0.1 migration: old stores had no address field.
         struct LegacyStore: Codable {
             let id: UUID
@@ -40,9 +61,17 @@ final class StoreRepository: ObservableObject {
             var radius: Double
             var enabled: Bool
         }
+
         if let legacy = try? JSONDecoder().decode([LegacyStore].self, from: data) {
             stores = legacy.map {
-                StoreLocation(id: $0.id, name: $0.name, latitude: $0.latitude, longitude: $0.longitude, radius: $0.radius, enabled: $0.enabled)
+                StoreLocation(
+                    id: $0.id,
+                    name: $0.name,
+                    latitude: $0.latitude,
+                    longitude: $0.longitude,
+                    radius: $0.radius,
+                    enabled: $0.enabled
+                )
             }
             save()
         }

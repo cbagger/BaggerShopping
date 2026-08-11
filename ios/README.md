@@ -1,85 +1,76 @@
-# Bagger Shopping iOS v0.2
+# Bagger Shopping iOS
 
-Adds the two major MVP interactions requested after v0.1:
+SwiftUI companion app for the family's Samsung Food shopping list.
 
-- Search real shops/places by natural language, e.g. `Rema 1000 Skørping`, using Apple MapKit (`MKLocalSearch`).
-- Check/uncheck Samsung Food shopping items.
-- Swipe an item to delete it.
-- Separate bought items and clear bought items.
-- Geofence notifications only include unchecked items.
-- Store search result saves the actual MapKit coordinates/address; no manual latitude/longitude entry.
-- Up to 20 enabled geofences are registered at once (iOS region-monitoring limit).
+## v0.3.0 – Shopping v2
 
-## Upgrade from v0.1
+Shopping v2 introduces automatic local categorization without changing the Samsung Food list format. Items created on the Family Hub, Samsung Food or in the iPhone app are classified when displayed in Bagger Shopping.
 
-The API token remains in Keychain and existing v0.1 stores are migrated automatically.
+Categories:
 
-After replacing the source folder, regenerate the Xcode project:
+- Frugt & Grønt
+- Kød
+- Pålæg
+- Mejeri
+- Brød & Bager
+- Frost
+- Kolonial
+- Drikkevarer
+- Husholdning
+- Personlig pleje
+- Andet
+
+The Danish classifier handles common products and plural forms. Manual category corrections are synchronized through the Bagger Shopping backend, so corrections can be shared across family iPhones. A local cache keeps the learned mappings available if the backend is temporarily unavailable.
+
+The shopping list is grouped by category, while bought items remain collected separately at the bottom. Existing Samsung Food add/check/uncheck/delete behavior is retained.
+
+### Quantity
+
+Samsung Food quantity support is mapped end-to-end. The observed Samsung representation is:
+
+- REST read: `item.quantity` and `item.unit`
+- SyncItems write: item payload field 4 = protobuf fixed32 IEEE-754 float quantity
+- SyncItems write: item payload field 5 = unit string
+
+The iPhone list only shows a compact quantity badge when quantity is greater than one, e.g. `×3`. Quantity can be changed from the item menu and is written back to Samsung Food. Check/uncheck mutations preserve existing quantity and unit.
+
+### Responsive mutations
+
+Add/check/delete/quantity use optimistic local presentation so the list reacts immediately instead of waiting for Samsung's eventually-consistent read-back. Failed server mutations roll the affected UI state back and surface an error.
+
+Store management is also improved:
+
+- clearer enabled/disabled geofence state
+- editable 100–500 m radius on saved stores
+- 100 m as the default radius for newly added stores
+- store deletion from the edit screen
+- existing MapKit search and persisted store addresses remain unchanged
+
+## Verified v0.2.3 baseline retained
+
+- Samsung Food read/add/check/uncheck/delete
+- MapKit store search
+- persistent stores
+- Core Location geofence entry
+- background live shopping-list fetch
+- local arrival notification
+- cached-list fallback
+- geofence diagnostics
+
+A 100 m geofence has been verified in normal physical use at MENY Skørping: the arrival notification was delivered on the parking area as intended.
+
+## Build
+
+Regenerate the Xcode project after pulling source changes:
 
 ```bash
+cd ios
 xcodegen generate
 open BaggerShopping.xcodeproj
 ```
 
-Choose your Apple Developer Team again if Xcode asks, select the physical iPhone, then Product -> Clean Build Folder and Run.
+Choose the Apple Developer Team if Xcode asks, select the physical iPhone, then Product -> Clean Build Folder and Run.
 
 ## Backend requirement
 
-Requires Bagger Shopping backend v0.5.0 or later, which adds:
-
-- `PATCH /api/mobile/v1/items/{id}/checked`
-- `DELETE /api/mobile/v1/items/{id}`
-
-
-## v0.2.1 fix
-
-- Fixes the Stores tab so newly added stores appear immediately and remain visible after tapping Tilføj.
-- The issue was observation of the nested StoreRepository, not MapKit search or persistence.
-
-
-## v0.2.2 – Geofence diagnostics
-
-Adds a diagnostic screen under `Indstillinger -> Geofence-diagnose`:
-
-- live location authorization status
-- notification authorization status
-- active monitored region count
-- list of every monitored store/geofence
-- `requestState(for:)` state checks: INSIDE / OUTSIDE / UNKNOWN
-- current/simulated coordinates and distance to each store center
-- last didEnterRegion event
-- last didExitRegion event
-- last Core Location monitoring error
-- immediate local test notification
-- immediate shopping-list test notification
-- foreground notification presentation so test notifications remain visible while the app is open
-
-For an Xcode GPX test:
-1. Start with an outside-GPX location.
-2. Switch to the inside-GPX location.
-3. Open `Indstillinger -> Geofence-diagnose`.
-4. Tap `Kontrollér geofence nu`.
-5. Verify the REMA region reports INSIDE and inspect whether an Enter event was delivered.
-
-
-## v0.2.3 – Reliable geofence notification pipeline
-
-This build hardens the work performed after a real region-entry event:
-
-- obtains iOS background execution time with `beginBackgroundTask`
-- records the complete geofence notification pipeline in diagnostics
-- caches every successfully fetched Samsung shopping list
-- uses the fresh live list whenever possible
-- falls back to a cached list (maximum age 6 hours) if a background live fetch fails
-- exposes:
-  - last automatic notification attempt
-  - last live list-fetch result
-  - last notification result
-- adds `Nulstil geofence-cooldown` for repeatable simulated tests
-
-Recommended test:
-1. Launch v0.2.3 once and refresh the shopping list, so a cache exists.
-2. `Indstillinger -> Geofence-diagnose -> Nulstil geofence-cooldown`.
-3. Simulate Outside GPX.
-4. Simulate Inside GPX.
-5. Inspect `Notifikations-pipeline`.
+v0.3.0 now requires the matching Bagger Shopping backend v0.6.0 because shared category learning and Samsung quantity mutations add new mobile/core API endpoints. Deploy backend before final device testing of those features.
