@@ -6,6 +6,8 @@ final class ShoppingCategoryService: ObservableObject {
 
     private let key = "bagger-shopping-category-overrides-v1"
 
+    var learnedCount: Int { overrides.count }
+
     init() {
         load()
     }
@@ -25,6 +27,11 @@ final class ShoppingCategoryService: ObservableObject {
 
     func removeOverride(for itemName: String) {
         overrides.removeValue(forKey: Self.normalize(itemName))
+        save()
+    }
+
+    func removeAllOverrides() {
+        overrides.removeAll()
         save()
     }
 
@@ -111,9 +118,6 @@ final class ShoppingCategoryService: ObservableObject {
                 return true
             }
 
-            // Danish shopping entries often use plurals (bananer, æbler) and
-            // compounds (letmælk, minimælk). Avoid fuzzy matching for very
-            // short terms such as "is", "te" and "æg" to prevent false hits.
             guard term.count >= 4 else {
                 return false
             }
