@@ -20,11 +20,23 @@ Categories:
 - Personlig pleje
 - Andet
 
-The first classifier is deterministic and Danish-language focused. The user can change any item's category from the item menu. That correction is persisted locally and wins over the automatic classifier for future items with the same normalized name. The manual override can also be reset to return to automatic categorization.
+The Danish classifier handles common products and plural forms. Manual category corrections are synchronized through the Bagger Shopping backend, so corrections can be shared across family iPhones. A local cache keeps the learned mappings available if the backend is temporarily unavailable.
 
-The shopping list is grouped by category, while bought items remain collected separately at the bottom. Existing Samsung Food add/check/uncheck/delete behavior is unchanged.
+The shopping list is grouped by category, while bought items remain collected separately at the bottom. Existing Samsung Food add/check/uncheck/delete behavior is retained.
 
-Arrival notifications now summarize the active shopping list by category instead of showing an arbitrary flat preview. Example: `7 varer · 2 Frugt & Grønt, 2 Mejeri, 1 Kød + 2 øvrige`.
+### Quantity
+
+Samsung Food quantity support is mapped end-to-end. The observed Samsung representation is:
+
+- REST read: `item.quantity` and `item.unit`
+- SyncItems write: item payload field 4 = protobuf fixed32 IEEE-754 float quantity
+- SyncItems write: item payload field 5 = unit string
+
+The iPhone list only shows a compact quantity badge when quantity is greater than one, e.g. `×3`. Quantity can be changed from the item menu and is written back to Samsung Food. Check/uncheck mutations preserve existing quantity and unit.
+
+### Responsive mutations
+
+Add/check/delete/quantity use optimistic local presentation so the list reacts immediately instead of waiting for Samsung's eventually-consistent read-back. Failed server mutations roll the affected UI state back and surface an error.
 
 Store management is also improved:
 
@@ -45,7 +57,7 @@ Store management is also improved:
 - cached-list fallback
 - geofence diagnostics
 
-A 100 m geofence has also been verified in normal physical use at MENY Skørping: the arrival notification was delivered on the parking area as intended. v0.3.0 deliberately keeps the proven geofence pipeline unchanged apart from notification presentation and store-management UI.
+A 100 m geofence has been verified in normal physical use at MENY Skørping: the arrival notification was delivered on the parking area as intended.
 
 ## Build
 
@@ -61,4 +73,4 @@ Choose the Apple Developer Team if Xcode asks, select the physical iPhone, then 
 
 ## Backend requirement
 
-v0.3.0 requires the existing Bagger Shopping backend v0.5.1 or later. This release does not require a backend deployment.
+v0.3.0 now requires the matching Bagger Shopping backend v0.6.0 because shared category learning and Samsung quantity mutations add new mobile/core API endpoints. Deploy backend before final device testing of those features.
