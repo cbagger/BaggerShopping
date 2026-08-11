@@ -359,10 +359,9 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         if remaining.isEmpty {
             content.body = "Din indkøbsliste er tom."
         } else {
-            let preview = remaining.prefix(5).map(\.name).joined(separator: ", ")
-            let suffix = remaining.count > 5 ? " …" : ""
-            let cacheSuffix = cached ? " (senest synkroniserede liste)" : ""
-            content.body = "Du har \(remaining.count) varer: \(preview)\(suffix)\(cacheSuffix)"
+            let categorySummary = Self.categorySummary(for: remaining)
+            let cacheSuffix = cached ? " · senest synkroniserede liste" : ""
+            content.body = "\(remaining.count) varer · \(categorySummary)\(cacheSuffix)"
         }
 
         content.sound = .default
@@ -374,6 +373,33 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
                 trigger: nil
             )
         )
+    }
+
+    nonisolated private static func categorySummary(for items: [ShoppingItem]) -> String {
+        let grouped = Dictionary(grouping: items) { item in
+            ShoppingCategoryService.classify(
+                ShoppingCategoryService.normalize(item.name)
+            )
+        }
+
+        let parts = grouped
+            .map { category, items in (category, items.count) }
+            .sorted {
+                if $0.1 != $1.1 { return $0.1 > $1.1 }
+                return $0.0.sortOrder < $1.0.sortOrder
+            }
+            .prefix(4)
+            .map { category, count in "\(count) \(category.rawValue)" }
+
+        let covered = grouped
+            .map { $0.value.count }
+            .sorted(by: >)
+            .prefix(4)
+            .reduce(0, +)
+        let remainder = max(items.count - covered, 0)
+        let suffix = remainder > 0 ? " + \(remainder) øvrige" : ""
+
+        return parts.joined(separator: ", ") + suffix
     }
 
     private func refreshRegionDiagnostics() {
