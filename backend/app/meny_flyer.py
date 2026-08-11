@@ -298,10 +298,14 @@ DOMAIN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("seafood", re.compile(r"\b(fisk(?:e(?:filet|fars)?)?|laks|torsk|sej|rødspætte|rejer?|skaldyr|tun)\b", re.IGNORECASE)),
     ("meat", re.compile(r"\b(oksekød|kødkvæg|hakket\s+kød|kylling|svinekød|gris|kalv|lam|culotte|bøf|kotelet)\b", re.IGNORECASE)),
     ("dairy", re.compile(r"(?:^|\b|[a-zæøå])(?:mælk|fløde|yoghurt|skyr|smør)(?:\b|$)", re.IGNORECASE)),
-    ("beverage", re.compile(r"\b(juice|smoothie|saft|sodavand|vand|øl|vin)\b", re.IGNORECASE)),
+    ("beverage", re.compile(r"\b(juice|smoothie|saft|sodavand|cola|coca-cola|fanta|sprite|pepsi|schweppes|squash|ramlösa|vand|øl|vin)\b", re.IGNORECASE)),
     ("bakery", re.compile(r"\b(rugbrød|hvedebrød|franskbrød|toastbrød|boller|brød)\b", re.IGNORECASE)),
     ("produce", re.compile(r"\b(frugt|grønt|grøntsag|melon|æble|pære|banan|tomat|kartoffel|gulerod)\b", re.IGNORECASE)),
 )
+
+QUERY_ALIASES: dict[str, tuple[str, ...]] = {
+    "sodavand": ("cola", "coca-cola", "fanta", "sprite", "pepsi", "schweppes", "squash"),
+}
 
 
 def _product_domain(value: str) -> str | None:
@@ -312,6 +316,18 @@ def _product_domain(value: str) -> str | None:
 def _is_pet_offer(offer: Offer) -> bool:
     searchable = " ".join([offer.product_name, *(variant.name for variant in offer.variants)])
     return bool(PET_PRODUCT_RE.search(searchable))
+
+
+def _query_terms(query: str) -> tuple[str, ...]:
+    needle = _normalize_space(query).casefold()
+    return (needle, *QUERY_ALIASES.get(needle, ()))
+
+
+def _contains_query_term(value: str, terms: tuple[str, ...]) -> bool:
+    normalized = _normalize_space(value).casefold()
+    if terms[0] in normalized:
+        return True
+    return any(re.search(rf"(?<!\w){re.escape(term)}(?!\w)", normalized) for term in terms[1:])
 
 
 def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> list[Offer]:
@@ -417,6 +433,7 @@ def search_publication(publication: Publication, query: str) -> OfferSearchResul
         raise ValueError("Query cannot be empty")
     if publication.structured_offers:
         needle = _normalize_space(query).casefold()
+        query_terms = _query_terms(query)
         query_domain = _product_domain(needle)
         matches: list[Offer] = []
         for source in publication.structured_offers:
@@ -426,26 +443,30 @@ def search_publication(publication: Publication, query: str) -> OfferSearchResul
             # Explicit pet-food searches remain supported.
             if _is_pet_offer(offer) and not PET_PRODUCT_RE.search(needle):
                 continue
-            label_matches = needle in offer.product_name.casefold()
-            matching_ids = {
-                variant.id for variant in offer.variants
-                if needle in variant.name.casefold()
+            label_matches = _contains_query_term(offer.product_name, query_terms)
+            matching_variants = [
+                variant for variant in offer.variants
+                if _contains_query_term(variant.name, query_terms)
                 and (query_domain is None or _product_domain(variant.name) in {None, query_domain})
-            }
+            ]
             if label_matches and query_domain is not None:
                 label_matches = _product_domain(offer.product_name) in {None, query_domain}
             # Descriptions and raw advert text are deliberately excluded. They
             # contain recipes, legal copy and hidden group data that produced
             # unrelated results such as pet food for an "oksekød" search.
-            if not label_matches and not matching_ids:
+            if not label_matches and not matching_variants:
                 continue
-            for variant in offer.variants:
-                variant.matches_query = variant.id in matching_ids or (label_matches and not matching_ids)
-            offer.variants.sort(key=lambda variant: (not variant.matches_query, variant.name.casefold()))
-            # API invariant: a returned structured offer always contains at
-            # least one matching variant. This prevents stale/irrelevant cards
-            # such as "0 matchende af 13 varianter" in every client.
-            if any(variant.matches_query for variant in offer.variants):
+            if not matching_variants and label_matches:
+                matching_variants = [
+                    variant for variant in offer.variants
+                    if query_domain is None or _product_domain(variant.name) in {None, query_domain}
+                ]
+            for variant in matching_variants:
+                variant.matches_query = True
+            # A search response exposes only variants relevant to the query,
+            # never the entire campaign family.
+            offer.variants = sorted(matching_variants, key=lambda variant: variant.name.casefold())
+            if offer.variants:
                 matches.append(offer)
         return OfferSearchResult(query=query, publication=publication, offers=matches)
 

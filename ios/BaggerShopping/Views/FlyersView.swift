@@ -115,7 +115,7 @@ private struct NativeFlyerReader: View {
     }
 
     private func add(_ name: String) {
-        Task { if await model.addItem(name) { addedName = name } }
+        Task { if await model.addItem(name, retailer: publication.retailer) { addedName = name } }
     }
 
     @MainActor private func loadOffers() async {

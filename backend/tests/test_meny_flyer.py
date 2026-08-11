@@ -141,10 +141,9 @@ def test_structured_enrichments_group_variants_and_use_package_price():
     offer = result.offers[0]
     assert offer.price == 69.95
     assert offer.page_number == 9
-    assert [variant.name for variant in offer.variants] == ["Hakket oksekød 14-18%", "Kyllingeunderlår"]
+    assert [variant.name for variant in offer.variants] == ["Hakket oksekød 14-18%"]
     assert offer.variants[0].quantity == 600
     assert offer.variants[0].matches_query is True
-    assert offer.variants[1].matches_query is False
     assert offer.safe_to_add is True
 
 
@@ -222,3 +221,31 @@ def test_grocery_domains_resolve_semantic_name_collisions():
 
     assert [offer.product_name for offer in search_publication(publication, "fisk").offers] == ["Fiskefileter"]
     assert [offer.product_name for offer in search_publication(publication, "mælk").offers] == ["Mælk"]
+
+
+def test_search_returns_only_matching_variants_from_campaign_family():
+    publication = parse_meny_flyer_html(IPAPER_HTML)
+    publication.structured_offers = parse_enrichment_chunks(publication, [{"enrichments": [
+        {"type": 13, "pageIndex": 0, "productId": "rye", "name": "Levebrød Sandwichrugbrød", "alttext": "Schulstad-brød", "desc": "500 g", "price": 18},
+        {"type": 13, "pageIndex": 0, "productId": "wheat", "name": "Levebrød Hvedebrød", "alttext": "Schulstad-brød", "desc": "500 g", "price": 18},
+    ]}])
+
+    offers = search_publication(publication, "rugbrød").offers
+
+    assert len(offers) == 1
+    assert [variant.name for variant in offers[0].variants] == ["Levebrød Sandwichrugbrød"]
+    assert all(variant.matches_query for variant in offers[0].variants)
+
+
+def test_category_alias_finds_soda_brands_without_unrelated_variants():
+    publication = parse_meny_flyer_html(IPAPER_HTML)
+    publication.structured_offers = parse_enrichment_chunks(publication, [{"enrichments": [
+        {"type": 13, "pageIndex": 0, "productId": "cola", "name": "Coca-Cola Zero", "alttext": "Drikkevarer", "desc": "1,5 l", "price": 9.95},
+        {"type": 13, "pageIndex": 0, "productId": "juice", "name": "Appelsinjuice", "alttext": "Drikkevarer", "desc": "1 l", "price": 9.95},
+        {"type": 13, "pageIndex": 1, "productId": "cookie", "name": "Colakage", "alttext": "Småkager", "desc": "200 g", "price": 14},
+    ]}])
+
+    offers = search_publication(publication, "sodavand").offers
+
+    assert len(offers) == 1
+    assert [variant.name for variant in offers[0].variants] == ["Coca-Cola Zero"]

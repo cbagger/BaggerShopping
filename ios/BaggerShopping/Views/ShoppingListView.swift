@@ -177,6 +177,16 @@ struct ShoppingListView: View {
 
             Spacer(minLength: 6)
 
+            if let retailer = model.offerRetailer(for: item) {
+                Text(retailer)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color.secondary.opacity(0.72), in: Capsule())
+                    .accessibilityLabel("Tilbud fra \(retailer)")
+            }
+
             if let quantity = item.quantity, quantity > 1, let displayQuantity = item.displayQuantity {
                 Text(displayQuantity)
                     .font(.caption.weight(.bold))

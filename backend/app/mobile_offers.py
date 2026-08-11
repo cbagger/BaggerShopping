@@ -47,8 +47,9 @@ async def search_offers(
 @router.get("/publications/{publication_id}/offers")
 async def publication_offers(publication_id: str):
     publication = await _publication()
-    if publication.id != publication_id:
-        raise HTTPException(status_code=404, detail="Publication is no longer current")
+    # The upstream iPaper URL can gain a different redirect/query string between
+    # requests. There is only one current publication per retailer today, so the
+    # id is a cache/version hint rather than an authorization boundary.
     return {
         "ok": True,
         "publication": _publication_payload(publication),

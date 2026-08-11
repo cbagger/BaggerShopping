@@ -12,6 +12,12 @@ final class AppModel: ObservableObject {
     let geofence = GeofenceManager()
     let categories = ShoppingCategoryService()
     private let api = APIClient()
+    private let offerRetailerKey = "bagger-shopping-offer-retailers"
+    private var offerRetailers: [String: String]
+
+    init() {
+        offerRetailers = UserDefaults.standard.dictionary(forKey: offerRetailerKey) as? [String: String] ?? [:]
+    }
 
     func bootstrap() async {
         geofence.sync(stores: stores.stores)
@@ -47,7 +53,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func addItem(_ name: String) async -> Bool {
+    func addItem(_ name: String, retailer: String? = nil) async -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
 
@@ -65,6 +71,11 @@ final class AppModel: ObservableObject {
 
         do {
             try await api.addItem(name: trimmed)
+            if let retailer, !retailer.isEmpty {
+                offerRetailers[offerRetailerNameKey(trimmed)] = retailer
+                UserDefaults.standard.set(offerRetailers, forKey: offerRetailerKey)
+                objectWillChange.send()
+            }
             errorMessage = nil
             // Samsung can be eventually consistent after SyncItems. Keep the
             // optimistic row instead of immediately replacing it with stale data.
@@ -134,6 +145,8 @@ final class AppModel: ObservableObject {
         defer { mutatingItemIDs.remove(key) }
         do {
             try await api.deleteItem(item)
+            offerRetailers.removeValue(forKey: offerRetailerNameKey(item.name))
+            UserDefaults.standard.set(offerRetailers, forKey: offerRetailerKey)
             errorMessage = nil
         } catch {
             shoppingList = previous
@@ -148,6 +161,10 @@ final class AppModel: ObservableObject {
 
     func category(for item: ShoppingItem) -> ShoppingCategory {
         categories.category(for: item.name)
+    }
+
+    func offerRetailer(for item: ShoppingItem) -> String? {
+        offerRetailers[offerRetailerNameKey(item.name)]
     }
 
     func setCategory(_ category: ShoppingCategory, for item: ShoppingItem) {
@@ -213,5 +230,9 @@ final class AppModel: ObservableObject {
             hasItems: !items.isEmpty,
             items: items
         )
+    }
+
+    private func offerRetailerNameKey(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }

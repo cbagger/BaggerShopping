@@ -84,7 +84,7 @@ struct OffersView: View {
 
     private func add(_ itemName: String, from offer: GroceryOffer) {
         Task {
-            if await model.addItem(itemName) {
+            if await model.addItem(itemName, retailer: offer.retailer) {
                 withAnimation { addedOfferID = offer.id }
             }
         }
@@ -101,6 +101,7 @@ struct OffersView: View {
         defer { isLoading = false }
         do {
             offers = try await api.searchOffers(query: term, retailer: selectedRetailer).offers
+                .filter { $0.variants.contains(where: \.matchesQuery) }
         } catch {
             offers = []
             errorMessage = error.localizedDescription
@@ -174,9 +175,8 @@ private struct OfferVariantSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     private var variants: [OfferVariant] {
-        offer.variants.sorted { lhs, rhs in
-            if lhs.matchesQuery != rhs.matchesQuery { return lhs.matchesQuery }
-            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        offer.variants.filter(\.matchesQuery).sorted { lhs, rhs in
+            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
     }
 
