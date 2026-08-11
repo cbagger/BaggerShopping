@@ -8,6 +8,20 @@ struct ShoppingItem: Codable, Identifiable, Hashable {
     var quantity: Double?
     var unit: String?
 
+    init(
+        id: String?,
+        name: String,
+        checked: Bool,
+        quantity: Double? = nil,
+        unit: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.checked = checked
+        self.quantity = quantity
+        self.unit = unit
+    }
+
     var stableID: String { id ?? name }
 
     var displayQuantity: String? {
