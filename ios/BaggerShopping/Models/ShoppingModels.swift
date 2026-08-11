@@ -4,9 +4,19 @@ import CoreLocation
 struct ShoppingItem: Codable, Identifiable, Hashable {
     let id: String?
     let name: String
-    let checked: Bool
+    var checked: Bool
+    var quantity: Double?
+    var unit: String?
 
     var stableID: String { id ?? name }
+
+    var displayQuantity: String? {
+        guard let quantity, quantity > 1 else { return nil }
+        if quantity.rounded() == quantity {
+            return "×\(Int(quantity))"
+        }
+        return "×\(quantity.formatted(.number.precision(.fractionLength(0...1))))"
+    }
 }
 
 struct ShoppingListResponse: Codable {
@@ -14,7 +24,7 @@ struct ShoppingListResponse: Codable {
     let name: String
     let count: Int
     let hasItems: Bool
-    let items: [ShoppingItem]
+    var items: [ShoppingItem]
 
     enum CodingKeys: String, CodingKey {
         case ok, name, count, items
@@ -25,6 +35,21 @@ struct ShoppingListResponse: Codable {
 struct AddItemResponse: Codable {
     let ok: Bool
     let name: String
+}
+
+struct CategoryOverrideDTO: Codable {
+    let itemName: String
+    let category: String
+
+    enum CodingKeys: String, CodingKey {
+        case category
+        case itemName = "item_name"
+    }
+}
+
+struct CategoryOverridesResponse: Codable {
+    let ok: Bool
+    let overrides: [CategoryOverrideDTO]
 }
 
 struct StoreLocation: Codable, Identifiable, Hashable {
