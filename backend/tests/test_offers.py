@@ -49,24 +49,44 @@ def test_parses_structured_json_for_meny_offer():
     assert offer.discount_percent == 40
 
 
-def test_text_fallback_is_retailer_scoped():
+def test_anchor_parser_is_retailer_scoped_and_stops_before_non_offers():
     html = """
     <html><body>
-      <article><span>MENY</span><span>12,00 kr</span><span>19,95 kr</span>
-      <strong>Ama Stege &amp; Bage Margarine</strong><span>500 g</span><span>24,00 kr/kg</span></article>
-      <article><span>Netto</span><span>10,00 kr</span><strong>Netto vare</strong></article>
+      <a href="/p/meny-offer"><span>-40%</span><span>MENY</span><span>12,00 kr</span><span>19,95 kr</span>
+      <strong>Ama Stege &amp; Bage Margarine</strong><span>500 g</span><span>24,00 kr/kg</span></a>
+      <a href="/p/netto-offer"><span>-20%</span><span>Netto</span><span>10,00 kr</span><span>12,50 kr</span><strong>Netto vare</strong></a>
+      <h2>40 andre varer ikke på tilbud</h2>
+      <a href="/p/meny-normal"><span>MENY</span><span>9,95 kr</span><strong>Normal MENY-vare</strong><span>500 g</span><span>19,90 kr/kg</span></a>
     </body></html>
     """
 
     offers, parser = parse_goma_html(html, "MENY")
 
-    assert parser == "html-text"
+    assert parser == "offer-anchors"
     assert len(offers) == 1
     assert offers[0].retailer == "MENY"
+    assert offers[0].product_name == "Ama Stege & Bage Margarine"
     assert offers[0].price == 12
     assert offers[0].normal_price == 19.95
     assert offers[0].quantity == 500
     assert offers[0].unit == "g"
+    assert offers[0].discount_percent == 40
+    assert offers[0].product_url == "https://goma.gg/p/meny-offer"
+
+
+def test_anchor_parser_returns_empty_when_retailer_has_only_normal_price_rows():
+    html = """
+    <html><body>
+      <a href="/p/loevbjerg"><span>Tilbud</span><span>Løvbjerg</span><span>16,99 kr</span><strong>Oma Margarine</strong></a>
+      <h2>40 andre varer ikke på tilbud</h2>
+      <a href="/p/meny"><span>MENY</span><span>9,95 kr</span><strong>Fp Flyd.margarine</strong><span>500 ml</span><span>19,90 kr/liter</span></a>
+    </body></html>
+    """
+
+    offers, parser = parse_goma_html(html, "MENY")
+
+    assert parser == "offer-anchors"
+    assert offers == []
 
 
 def test_fetch_uses_normalized_result():
@@ -75,8 +95,11 @@ def test_fetch_uses_normalized_result():
         return httpx.Response(
             200,
             text="""
-            <html><body><article><span>MENY</span><span>12,00 kr</span><span>19,95 kr</span>
-            <strong>Ama Margarine</strong><span>500 g</span></article></body></html>
+            <html><body>
+            <a href="/p/meny-offer"><span>-40%</span><span>MENY</span><span>12,00 kr</span><span>19,95 kr</span>
+            <strong>Ama Margarine</strong><span>500 g</span><span>24,00 kr/kg</span></a>
+            <h2>Andre varer ikke på tilbud</h2>
+            </body></html>
             """,
             request=request,
         )
@@ -89,4 +112,5 @@ def test_fetch_uses_normalized_result():
     result = asyncio.run(run())
     assert result.ok is True
     assert result.retailer == "MENY"
-    assert result.offers[0].product_name
+    assert len(result.offers) == 1
+    assert result.offers[0].product_name == "Ama Margarine"
