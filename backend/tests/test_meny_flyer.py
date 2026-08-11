@@ -41,6 +41,9 @@ def test_search_finds_product_text_from_current_flyer():
     assert "VALSØLILLE" in result.matches[0]
     assert "850 ml" in result.matches[0]
     assert "28.-" in result.matches[0]
+    assert result.offers[0].product_name
+    assert result.offers[0].price == 28
+    assert result.offers[0].retailer == "MENY"
 
 
 def test_search_returns_empty_for_missing_term():
@@ -60,6 +63,24 @@ def test_ipaper_page_texts_are_preferred_over_serialized_script_noise():
     result = search_publication(publication, "vandmelon")
     assert len(result.matches) == 1
     assert "PR. STK. 25.-" in result.matches[0]
+    assert result.offers[0].page_number == 1
+    assert result.offers[0].publication_id == publication.id
+    assert result.offers[0].safe_to_add is True
+
+
+def test_publication_exposes_generic_reader_metadata():
+    publication = parse_meny_flyer_html(IPAPER_HTML)
+    assert publication.reader_url == "https://ugensavis.meny.dk/"
+    assert publication.reader_kind == "embedded-viewer"
+    assert publication.status in {"current", "upcoming", "expired"}
+
+
+def test_search_uses_package_price_instead_of_unit_price():
+    publication = parse_meny_flyer_html(
+        "<p>MENY uge 3326</p><p>HAKKET OKSEKØD 600 G. Max. kg pris 116,58. PR. PAKKE 69 95</p>"
+    )
+    offer = search_publication(publication, "oksekød").offers[0]
+    assert offer.price == 69.95
 
 
 def test_validity_is_not_tied_to_specific_weekdays():
