@@ -11,6 +11,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .mobile_offers import router as offers_router
+
 
 class MobileSettings(BaseSettings):
     mobile_api_token: str
@@ -30,7 +32,7 @@ category_store_lock = asyncio.Lock()
 
 app = FastAPI(
     title="Bagger Shopping Mobile API",
-    version="0.6.0",
+    version="0.7.0",
     description="Internet-facing authenticated API for the Bagger Shopping iPhone app.",
     docs_url=None,
     redoc_url=None,
@@ -324,3 +326,6 @@ async def delete_mobile_item(
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Core delete-item request failed: {response.text[:500]}")
     return response.json()
+
+
+app.include_router(offers_router, dependencies=[Depends(require_mobile_token)])
