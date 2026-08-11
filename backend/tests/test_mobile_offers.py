@@ -54,7 +54,7 @@ def test_current_offers_static_route_returns_live_offer_count(monkeypatch):
 
 def test_current_offers_reports_hotspot_coverage_per_page(monkeypatch):
     publication = parse_meny_flyer_html(
-        '<script>window.staticSettings = {"pages":[1,2],"aws":{}};</script><p>MENY uge 3326</p>'
+        '<script>window.staticSettings = {"pages":[1,2,3],"aws":{}};</script><p>MENY uge 3326</p>'
     )
     publication.structured_offers = parse_enrichment_chunks(publication, [{"enrichments": [
         {
@@ -78,3 +78,4 @@ def test_current_offers_reports_hotspot_coverage_per_page(monkeypatch):
     assert response["coverage"]["hotspot_count"] == 1
     assert response["coverage"]["pages_without_hotspots"] == [2]
     assert response["coverage"]["pages"][1] == {"page_number": 2, "offer_count": 1, "hotspot_count": 0}
+    assert response["coverage"]["pages"][2] == {"page_number": 3, "offer_count": 0, "hotspot_count": 0}

@@ -28,7 +28,11 @@ def _coverage_payload(publication: Publication) -> dict:
     return {
         "offer_count": sum(offers_by_page.values()),
         "hotspot_count": sum(hotspots_by_page.values()),
-        "pages_without_hotspots": [page["page_number"] for page in pages if page["hotspot_count"] == 0],
+        "pages_without_hotspots": [
+            page["page_number"]
+            for page in pages
+            if page["offer_count"] > 0 and page["hotspot_count"] == 0
+        ],
         "pages": pages,
     }
 

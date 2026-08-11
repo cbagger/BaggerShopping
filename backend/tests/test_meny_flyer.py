@@ -202,6 +202,50 @@ def test_structured_offer_exposes_native_hotspot_geometry():
     assert offer.hotspot_height == pytest.approx(0.08)
 
 
+def test_type_6_marker_supplies_geometry_to_type_13_variants_by_parent_id():
+    publication = parse_meny_flyer_html(IPAPER_HTML)
+    offers = parse_enrichment_chunks(publication, [{"enrichments": [
+        {
+            "type": 6, "id": 9001, "pageIndex": 8,
+            "alttext": "Kyllingeunderlår eller Hakket Oksekød",
+            "x": 0.42, "y": 0.61, "width": 0.106, "height": 0.073,
+        },
+        {
+            "type": 13, "id": 1001, "parentid": 9001, "pageIndex": 8,
+            "productId": "beef", "name": "Hakket Kødkvæg",
+            "alttext": "Kyllingeunderlår eller Hakket Oksekød",
+            "desc": "600 g", "price": 69.95,
+        },
+        {
+            "type": 13, "id": 1002, "parentid": 9001, "pageIndex": 8,
+            "productId": "chicken", "name": "Kylling Underlår",
+            "alttext": "Kyllingeunderlår eller Hakket Oksekød",
+            "desc": "2000 g", "price": 69.95,
+        },
+    ]}])
+
+    assert len(offers) == 1
+    assert len(offers[0].variants) == 2
+    assert (offers[0].hotspot_x, offers[0].hotspot_y) == pytest.approx((0.42, 0.61))
+    assert (offers[0].hotspot_width, offers[0].hotspot_height) == pytest.approx((0.106, 0.073))
+
+
+def test_type_6_marker_falls_back_to_page_and_label_when_parent_id_is_missing():
+    publication = parse_meny_flyer_html(IPAPER_HTML)
+    offer = parse_enrichment_chunks(publication, [{"enrichments": [
+        {
+            "type": 6, "id": 9001, "pageIndex": 1, "alttext": "Kakaomælk",
+            "x": 0.2, "y": 0.3, "width": 0.1, "height": 0.08,
+        },
+        {
+            "type": 13, "id": 1001, "pageIndex": 1, "productId": "milk",
+            "name": "Kakaomælk", "alttext": "Kakaomælk", "price": 9.95,
+        },
+    ]}])[0]
+
+    assert (offer.hotspot_x, offer.hotspot_y) == pytest.approx((0.2, 0.3))
+
+
 def test_structured_offer_accepts_string_percentage_and_nested_geometry():
     publication = parse_meny_flyer_html(IPAPER_HTML)
     offers = parse_enrichment_chunks(publication, [{"enrichments": [

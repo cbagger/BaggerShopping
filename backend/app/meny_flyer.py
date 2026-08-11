@@ -379,20 +379,40 @@ def _contains_query_term(value: str, terms: tuple[str, ...]) -> bool:
 
 
 def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> list[Offer]:
-    groups: dict[tuple[int, str, float], list[dict]] = {}
+    all_items: list[dict] = []
     for chunk in chunks:
         enrichments = chunk.get("enrichments", []) if isinstance(chunk, dict) else []
-        for item in enrichments:
-            if not isinstance(item, dict) or item.get("type") != 13:
-                continue
-            name = _normalize_space(str(item.get("name") or ""))
-            label = _normalize_space(str(item.get("alttext") or name))
-            price = _finite_number(item.get("price"))
-            if not name or not label or price is None:
-                continue
-            page_index = _finite_number(item.get("pageIndex")) or 0
-            key = (int(page_index) + 1, label.casefold(), price)
-            groups.setdefault(key, []).append(item)
+        all_items.extend(item for item in enrichments if isinstance(item, dict))
+
+    # iPaper represents a campaign as one positioned type-6 marker and many
+    # unpositioned type-13 shop variants.  A variant normally points at the
+    # marker through parentid.  pageIndex + alttext is retained as a fallback
+    # for publications where that reference is omitted.
+    markers_by_id: dict[str, dict] = {}
+    markers_by_label: dict[tuple[int, str], list[dict]] = {}
+    for item in all_items:
+        if item.get("type") != 6 or _hotspot_geometry(item) is None:
+            continue
+        marker_id = str(item.get("id") or "")
+        if marker_id:
+            markers_by_id[marker_id] = item
+        page_index = int(_finite_number(item.get("pageIndex")) or 0)
+        label = _normalize_space(str(item.get("alttext") or "")).casefold()
+        if label:
+            markers_by_label.setdefault((page_index, label), []).append(item)
+
+    groups: dict[tuple[int, str, float], list[dict]] = {}
+    for item in all_items:
+        if item.get("type") != 13:
+            continue
+        name = _normalize_space(str(item.get("name") or ""))
+        label = _normalize_space(str(item.get("alttext") or name))
+        price = _finite_number(item.get("price"))
+        if not name or not label or price is None:
+            continue
+        page_index = int(_finite_number(item.get("pageIndex")) or 0)
+        key = (page_index + 1, label.casefold(), price)
+        groups.setdefault(key, []).append(item)
 
     offers: list[Offer] = []
     for (page_number, _, price), items in groups.items():
@@ -418,7 +438,23 @@ def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> lis
             continue
         stable = hashlib.sha256(f"{publication.id}|{page_number}|{label}|{price}".encode()).hexdigest()[:20]
         quantity, unit = (variants[0].quantity, variants[0].unit) if len(variants) == 1 else (None, None)
-        geometries = [geometry for item in items if (geometry := _hotspot_geometry(item)) is not None]
+        marker_items: list[dict] = []
+        seen_marker_ids: set[str] = set()
+        for item in items:
+            parent_id = str(item.get("parentid") or "")
+            marker = markers_by_id.get(parent_id)
+            if marker is not None and str(marker.get("id")) not in seen_marker_ids:
+                marker_items.append(marker)
+                seen_marker_ids.add(str(marker.get("id")))
+        if not marker_items:
+            page_index = page_number - 1
+            marker_items = markers_by_label.get((page_index, label.casefold()), [])
+
+        geometries = [
+            geometry
+            for item in (*items, *marker_items)
+            if (geometry := _hotspot_geometry(item)) is not None
+        ]
         xs = [geometry[0] for geometry in geometries]
         ys = [geometry[1] for geometry in geometries]
         rights = [geometry[0] + geometry[2] for geometry in geometries]
