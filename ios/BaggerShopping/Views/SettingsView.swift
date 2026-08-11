@@ -7,7 +7,8 @@ struct SettingsView: View {
     var body: some View {
         SettingsContent(
             model: model,
-            geofence: model.geofence
+            geofence: model.geofence,
+            categories: model.categories
         )
     }
 }
@@ -15,10 +16,12 @@ struct SettingsView: View {
 private struct SettingsContent: View {
     @ObservedObject var model: AppModel
     @ObservedObject var geofence: GeofenceManager
+    @ObservedObject var categories: ShoppingCategoryService
 
     @State private var token = ""
     @State private var saved = false
     @State private var showingTechnical = false
+    @State private var showingCategoryReset = false
 
     private var authorizationText: String {
         switch geofence.authorizationStatus {
@@ -55,6 +58,20 @@ private struct SettingsContent: View {
                     }
 
                     Text("Bagger Shopping bruger kun geofencing til at registrere ankomst til de butikker, du selv har aktiveret.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Kategorier") {
+                    LabeledContent("Lærte rettelser", value: "\(categories.learnedCount)")
+
+                    if categories.learnedCount > 0 {
+                        Button("Nulstil lærte kategorier", role: .destructive) {
+                            showingCategoryReset = true
+                        }
+                    }
+
+                    Text("Når du flytter en vare til en anden kategori, husker appen rettelsen næste gang den samme vare dukker op.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -108,6 +125,19 @@ private struct SettingsContent: View {
             .navigationTitle("Indstillinger")
             .task {
                 await geofence.refreshNotificationAuthorization()
+            }
+            .confirmationDialog(
+                "Nulstil alle lærte kategorier?",
+                isPresented: $showingCategoryReset,
+                titleVisibility: .visible
+            ) {
+                Button("Nulstil", role: .destructive) {
+                    categories.removeAllOverrides()
+                    model.objectWillChange.send()
+                }
+                Button("Annuller", role: .cancel) {}
+            } message: {
+                Text("Varerne vil igen bruge den automatiske kategorisering.")
             }
         }
     }
