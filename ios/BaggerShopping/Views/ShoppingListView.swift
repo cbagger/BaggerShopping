@@ -97,7 +97,10 @@ struct ShoppingListView: View {
                         }
                     }
                     .listStyle(.insetGrouped)
-                    .refreshable { await model.refresh() }
+                    .refreshable {
+                        await model.refresh()
+                        await model.syncSharedCategories()
+                    }
                 } else {
                     ContentUnavailableView(
                         "Ingen liste",
@@ -110,7 +113,10 @@ struct ShoppingListView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        Task { await model.refresh() }
+                        Task {
+                            await model.refresh()
+                            await model.syncSharedCategories()
+                        }
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
@@ -134,9 +140,10 @@ struct ShoppingListView: View {
     private func addNewItem() {
         let value = newItem
         guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        newItem = ""
         Task {
-            if await model.addItem(value) {
-                newItem = ""
+            if !(await model.addItem(value)) {
+                newItem = value
             }
         }
     }
@@ -152,6 +159,7 @@ struct ShoppingListView: View {
                     .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(.plain)
+            .disabled(item.id == nil)
             .accessibilityLabel(item.checked ? "Markér som ikke købt" : "Markér som købt")
 
             VStack(alignment: .leading, spacing: 3) {
@@ -167,48 +175,76 @@ struct ShoppingListView: View {
                 }
             }
 
-            Spacer()
+            Spacer(minLength: 6)
 
-            Menu {
-                if model.hasCategoryOverride(for: item) {
-                    Button {
-                        model.resetCategory(for: item)
-                    } label: {
-                        Label("Brug automatisk kategori", systemImage: "wand.and.stars")
-                    }
+            if let displayQuantity = item.displayQuantity {
+                Text(displayQuantity)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(.quaternary, in: Capsule())
+            }
 
-                    Divider()
-                }
-
-                Section("Flyt til kategori") {
-                    ForEach(ShoppingCategory.allCases) { category in
-                        Button {
-                            model.setCategory(category, for: item)
-                        } label: {
-                            if model.category(for: item) == category {
-                                Label(category.rawValue, systemImage: "checkmark")
-                            } else {
-                                Text(category.rawValue)
+            if item.id == nil {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Menu {
+                    Section("Antal") {
+                        ForEach(1...10, id: \.self) { quantity in
+                            Button {
+                                Task { await model.setQuantity(item, quantity: Double(quantity)) }
+                            } label: {
+                                if Int(item.quantity ?? 1) == quantity {
+                                    Label("\(quantity) stk", systemImage: "checkmark")
+                                } else {
+                                    Text("\(quantity) stk")
+                                }
                             }
                         }
                     }
+
+                    if model.hasCategoryOverride(for: item) {
+                        Button {
+                            model.resetCategory(for: item)
+                        } label: {
+                            Label("Brug automatisk kategori", systemImage: "wand.and.stars")
+                        }
+                    }
+
+                    Section("Flyt til kategori") {
+                        ForEach(ShoppingCategory.allCases) { category in
+                            Button {
+                                model.setCategory(category, for: item)
+                            } label: {
+                                if model.category(for: item) == category {
+                                    Label(category.rawValue, systemImage: "checkmark")
+                                } else {
+                                    Text(category.rawValue)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .foregroundStyle(.secondary)
                 }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .foregroundStyle(.secondary)
+                .buttonStyle(.plain)
+                .accessibilityLabel("Indstillinger for \(item.name)")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Kategori for \(item.name)")
 
             if model.mutatingItemIDs.contains(item.stableID) {
                 ProgressView().controlSize(.small)
             }
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-            Button(role: .destructive) {
-                Task { await model.deleteItem(item) }
-            } label: {
-                Label("Slet", systemImage: "trash")
+            if item.id != nil {
+                Button(role: .destructive) {
+                    Task { await model.deleteItem(item) }
+                } label: {
+                    Label("Slet", systemImage: "trash")
+                }
             }
         }
     }
