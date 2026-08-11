@@ -43,6 +43,7 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
     let pageNumber: Int?
     let rawText: String
     let safeToAdd: Bool
+    let variants: [OfferVariant]
 
     enum CodingKeys: String, CodingKey {
         case id, retailer, brand, price, quantity, unit
@@ -59,7 +60,16 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         case pageNumber = "page_number"
         case rawText = "raw_text"
         case safeToAdd = "safe_to_add"
+        case variants
     }
+}
+
+struct OfferVariant: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let description: String?
+    let quantity: Double?
+    let unit: String?
 }
 
 struct PublicationsResponse: Codable {

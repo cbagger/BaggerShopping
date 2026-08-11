@@ -9,6 +9,7 @@ struct OffersView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var addedOfferID: String?
+    @State private var pendingOffer: GroceryOffer?
 
     private let api = APIClient()
     private let retailers = ["MENY"]
@@ -55,10 +56,10 @@ struct OffersView: View {
                     } else {
                         ForEach(offers) { offer in
                             OfferCard(offer: offer, wasAdded: addedOfferID == offer.id) {
-                                Task {
-                                    if await model.addItem(offer.productName) {
-                                        withAnimation { addedOfferID = offer.id }
-                                    }
+                                if offer.variants.count == 1, let variant = offer.variants.first {
+                                    add(variant.name, from: offer)
+                                } else {
+                                    pendingOffer = offer
                                 }
                             }
                         }
@@ -67,6 +68,32 @@ struct OffersView: View {
                 .padding()
             }
             .navigationTitle("Tilbud")
+            .confirmationDialog(
+                "Vælg vare",
+                isPresented: Binding(
+                    get: { pendingOffer != nil },
+                    set: { if !$0 { pendingOffer = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                ForEach(pendingOffer?.variants ?? []) { variant in
+                    Button(variant.name) {
+                        if let offer = pendingOffer { add(variant.name, from: offer) }
+                        pendingOffer = nil
+                    }
+                }
+                Button("Annuller", role: .cancel) { pendingOffer = nil }
+            } message: {
+                Text(pendingOffer?.productName ?? "")
+            }
+        }
+    }
+
+    private func add(_ itemName: String, from offer: GroceryOffer) {
+        Task {
+            if await model.addItem(itemName) {
+                withAnimation { addedOfferID = offer.id }
+            }
         }
     }
 
@@ -123,9 +150,15 @@ private struct OfferCard: View {
                     .foregroundStyle(.secondary)
             }
 
+            if offer.variants.count > 1 {
+                Text("\(offer.variants.count) varianter – vælg den rigtige, når du tilføjer")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             if offer.safeToAdd {
                 Button(action: add) {
-                    Label(wasAdded ? "Tilføjet" : "Tilføj til liste", systemImage: wasAdded ? "checkmark.circle.fill" : "plus.circle.fill")
+                    Label(wasAdded ? "Tilføjet" : (offer.variants.count > 1 ? "Vælg vare" : "Tilføj til liste"), systemImage: wasAdded ? "checkmark.circle.fill" : "plus.circle.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)

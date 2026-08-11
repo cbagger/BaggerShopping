@@ -5,6 +5,7 @@ struct FlyersView: View {
     @State private var publications: [OfferPublication] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var selectedPublication: OfferPublication?
     private let api = APIClient()
 
     var body: some View {
@@ -16,7 +17,7 @@ struct FlyersView: View {
                     ContentUnavailableView("Kunne ikke hente aviser", systemImage: "wifi.exclamationmark", description: Text(errorMessage))
                 } else {
                     List(publications) { publication in
-                        NavigationLink(value: publication) {
+                        Button { selectedPublication = publication } label: {
                             VStack(alignment: .leading, spacing: 7) {
                                 HStack {
                                     Text(publication.retailer).font(.title3.bold())
@@ -36,15 +37,16 @@ struct FlyersView: View {
                             }
                             .padding(.vertical, 6)
                         }
+                        .buttonStyle(.plain)
                     }
                     .refreshable { await load() }
                 }
             }
             .navigationTitle("Aviser")
-            .navigationDestination(for: OfferPublication.self) { publication in
+            .task { await load() }
+            .fullScreenCover(item: $selectedPublication) { publication in
                 FlyerReaderView(publication: publication)
             }
-            .task { await load() }
         }
     }
 
@@ -60,18 +62,27 @@ struct FlyersView: View {
 
 private struct FlyerReaderView: View {
     let publication: OfferPublication
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        Group {
-            if let url = publication.readerURL {
-                OfficialFlyerWebView(url: url)
-                    .ignoresSafeArea(edges: .bottom)
-            } else {
-                ContentUnavailableView("Avisen kan ikke åbnes", systemImage: "doc.text.magnifyingglass")
+        NavigationStack {
+            Group {
+                if let url = publication.readerURL {
+                    OfficialFlyerWebView(url: url)
+                        .ignoresSafeArea(edges: .bottom)
+                } else {
+                    ContentUnavailableView("Avisen kan ikke åbnes", systemImage: "doc.text.magnifyingglass")
+                }
+            }
+            .navigationTitle(publication.retailer)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Luk", systemImage: "xmark") { dismiss() }
+                }
             }
         }
-        .navigationTitle(publication.retailer)
-        .navigationBarTitleDisplayMode(.inline)
+        .preferredColorScheme(.light)
     }
 }
 
@@ -82,6 +93,7 @@ private struct OfficialFlyerWebView: UIViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         let view = WKWebView(frame: .zero, configuration: configuration)
+        view.overrideUserInterfaceStyle = .light
         view.scrollView.contentInsetAdjustmentBehavior = .never
         view.allowsBackForwardNavigationGestures = false
         return view

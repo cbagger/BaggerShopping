@@ -2,7 +2,7 @@ import asyncio
 
 import httpx
 
-from app.meny_flyer import fetch_meny_flyer, parse_meny_flyer_html, search_publication
+from app.meny_flyer import fetch_meny_flyer, parse_enrichment_chunks, parse_meny_flyer_html, search_publication
 
 
 HTML = """
@@ -107,3 +107,49 @@ def test_fetch_meny_flyer_uses_official_source():
     publication = asyncio.run(run())
     assert publication.week == 33
     assert "VALSØLILLE" in publication.text
+
+
+def test_structured_enrichments_group_variants_and_use_package_price():
+    publication = parse_meny_flyer_html(IPAPER_HTML)
+    chunks = [{"enrichments": [
+        {
+            "type": 13,
+            "pageIndex": 8,
+            "productId": "beef",
+            "name": "Hakket Kødkvæg 14-18% (Kyllingeunderlår eller Hakket Oksekød)",
+            "alttext": "Kyllingeunderlår eller Hakket Oksekød",
+            "desc": "Hakket Kødkvæg 14-18%. 600 g (Max. kg pris 116,58)",
+            "price": 69.95,
+        },
+        {
+            "type": 13,
+            "pageIndex": 8,
+            "productId": "chicken",
+            "name": "Kylling Underlår (Kyllingeunderlår eller Hakket Oksekød)",
+            "alttext": "Kyllingeunderlår eller Hakket Oksekød",
+            "desc": "Kylling Underlår. 2000 g (Max. kg pris 34,98)",
+            "price": 69.95,
+        },
+        {"type": 6, "pageIndex": 8, "alttext": "decorative hotspot"},
+    ]}]
+    publication.structured_offers = parse_enrichment_chunks(publication, chunks)
+
+    result = search_publication(publication, "oksekød")
+
+    assert len(result.offers) == 1
+    offer = result.offers[0]
+    assert offer.price == 69.95
+    assert offer.page_number == 9
+    assert [variant.name for variant in offer.variants] == ["Hakket Kødkvæg 14-18%", "Kylling Underlår"]
+    assert offer.variants[0].quantity == 600
+    assert offer.safe_to_add is True
+
+
+def test_publication_page_count_uses_ipaper_pages_not_text_layer_count():
+    html = IPAPER_HTML.replace(
+        "window.viewerState =",
+        'window.staticSettings = {"pages":[1,2,3,4],"enrichments":{"chunkUrls":{"1-4":"https://example.test/chunk.json"}}}; window.viewerState =',
+    )
+    publication = parse_meny_flyer_html(html)
+    assert publication.page_count == 4
+    assert publication.enrichment_urls == ["https://example.test/chunk.json"]

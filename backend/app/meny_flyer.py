@@ -38,6 +38,16 @@ class Publication(BaseModel):
     content_source: str = "visible-html"
     text: str = ""
     page_texts: list[str] = Field(default_factory=list)
+    enrichment_urls: list[str] = Field(default_factory=list, exclude=True)
+    structured_offers: list["Offer"] = Field(default_factory=list, exclude=True)
+
+
+class OfferVariant(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    quantity: float | None = None
+    unit: str | None = None
 
 
 class Offer(BaseModel):
@@ -60,6 +70,7 @@ class Offer(BaseModel):
     page_number: int | None = None
     raw_text: str
     safe_to_add: bool = False
+    variants: list[OfferVariant] = Field(default_factory=list)
 
 
 class OfferSearchResult(BaseModel):
@@ -146,6 +157,33 @@ def _json_array_from_marker(source: str, marker: str) -> list[str]:
     return []
 
 
+def _json_object_from_marker(source: str, marker: str) -> dict:
+    marker_start = source.find(marker)
+    if marker_start < 0 or (start := source.find("{", marker_start + len(marker))) < 0:
+        return {}
+    depth = slash_count = 0
+    in_string = False
+    for index in range(start, len(source)):
+        char = source[index]
+        if char == "\\":
+            slash_count += 1
+            continue
+        escaped = slash_count % 2 == 1
+        slash_count = 0
+        if char == '"' and not escaped:
+            in_string = not in_string
+        if not in_string:
+            depth += char == "{"
+            depth -= char == "}"
+            if depth == 0:
+                try:
+                    value = json.loads(source[start:index + 1])
+                except json.JSONDecodeError:
+                    return {}
+                return value if isinstance(value, dict) else {}
+    return {}
+
+
 def _extract_page_texts(raw_html: str, scripts: list[str]) -> list[str]:
     for source in (raw_html, html_lib.unescape(raw_html), *scripts):
         for marker in ('"pageTexts":', '\\"pageTexts\\":'):
@@ -175,6 +213,10 @@ def parse_meny_flyer_html(html: str, source_url: str = MENY_FLYER_URL) -> Public
     valid_from = validity.group("from") if validity else None
     valid_until = validity.group("until") if validity else None
     page_texts = _extract_page_texts(html, parser.script_parts)
+    settings = _json_object_from_marker(html, "window.staticSettings =")
+    pages = settings.get("pages") if isinstance(settings.get("pages"), list) else []
+    chunk_urls = settings.get("enrichments", {}).get("chunkUrls", {})
+    enrichment_urls = list(chunk_urls.values()) if isinstance(chunk_urls, dict) else []
     identity = hashlib.sha256(f"MENY|{title}|{valid_from}|{valid_until}|{source_url}".encode()).hexdigest()[:20]
     return Publication(
         id=identity,
@@ -189,9 +231,75 @@ def parse_meny_flyer_html(html: str, source_url: str = MENY_FLYER_URL) -> Public
         reader_kind="embedded-viewer",
         text=_normalize_space(" ".join(page_texts)) if page_texts else visible_text,
         page_texts=page_texts,
-        page_count=len(page_texts),
+        page_count=len(pages) or len(page_texts),
         content_source="ipaper-pageTexts" if page_texts else "visible-html",
+        enrichment_urls=enrichment_urls,
     )
+
+
+def _quantity(description: str | None) -> tuple[float | None, str | None]:
+    match = QUANTITY_RE.search(description or "")
+    if not match:
+        return None, None
+    return float(match.group("amount").replace(",", ".")), match.group("unit").rstrip(".").lower()
+
+
+def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> list[Offer]:
+    groups: dict[tuple[int, str, float], list[dict]] = {}
+    for chunk in chunks:
+        enrichments = chunk.get("enrichments", []) if isinstance(chunk, dict) else []
+        for item in enrichments:
+            if not isinstance(item, dict) or item.get("type") != 13:
+                continue
+            name = _normalize_space(str(item.get("name") or ""))
+            label = _normalize_space(str(item.get("alttext") or name))
+            price = item.get("price")
+            if not name or not label or not isinstance(price, (int, float)):
+                continue
+            key = (int(item.get("pageIndex", 0)) + 1, label.casefold(), float(price))
+            groups.setdefault(key, []).append(item)
+
+    offers: list[Offer] = []
+    for (page_number, _, price), items in groups.items():
+        label = _normalize_space(str(items[0].get("alttext") or items[0]["name"]))
+        variants: list[OfferVariant] = []
+        seen_products: set[str] = set()
+        for item in items:
+            product_id = str(item.get("productId") or item.get("id") or "")
+            name = _normalize_space(str(item["name"]))
+            # iPaper appends the shared advert heading in parentheses to variant names.
+            suffix = f" ({label})"
+            if name.casefold().endswith(suffix.casefold()):
+                name = name[:-len(suffix)].strip()
+            identity = product_id or hashlib.sha256(f"{page_number}|{name}".encode()).hexdigest()[:20]
+            if identity in seen_products:
+                continue
+            seen_products.add(identity)
+            description = _normalize_space(str(item.get("desc") or "")) or None
+            quantity, unit = _quantity(description)
+            variants.append(OfferVariant(id=identity, name=name, description=description, quantity=quantity, unit=unit))
+        if not variants:
+            continue
+        stable = hashlib.sha256(f"{publication.id}|{page_number}|{label}|{price}".encode()).hexdigest()[:20]
+        quantity, unit = (variants[0].quantity, variants[0].unit) if len(variants) == 1 else (None, None)
+        offers.append(Offer(
+            id=stable,
+            retailer="MENY",
+            publication_id=publication.id,
+            publication_title=publication.title,
+            valid_from=publication.valid_from,
+            valid_until=publication.valid_until,
+            product_name=label,
+            price=price,
+            quantity=quantity,
+            unit=unit,
+            source_url=publication.source_url,
+            page_number=page_number,
+            raw_text=" | ".join(filter(None, (variant.description for variant in variants))),
+            safe_to_add=True,
+            variants=variants,
+        ))
+    return sorted(offers, key=lambda offer: (offer.page_number or 0, offer.product_name.casefold()))
 
 
 def _price(match: re.Match[str]) -> float:
@@ -224,6 +332,19 @@ def search_publication(publication: Publication, query: str) -> OfferSearchResul
     query = query.strip()
     if not query:
         raise ValueError("Query cannot be empty")
+    if publication.structured_offers:
+        needle = query.casefold()
+        matches = [
+            offer for offer in publication.structured_offers
+            if needle in " ".join([
+                offer.product_name,
+                offer.raw_text,
+                *(variant.name for variant in offer.variants),
+                *(variant.description or "" for variant in offer.variants),
+            ]).casefold()
+        ]
+        return OfferSearchResult(query=query, publication=publication, offers=matches)
+
     pages = publication.page_texts or [publication.text]
     offers: list[Offer] = []
     seen: set[str] = set()
@@ -259,11 +380,20 @@ def search_publication(publication: Publication, query: str) -> OfferSearchResul
 async def fetch_meny_flyer(*, client: httpx.AsyncClient | None = None) -> Publication:
     owns_client = client is None
     if client is None:
-        client = httpx.AsyncClient(timeout=20, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 BaggerShopping/0.8", "Accept-Language": "da-DK,da;q=0.9"})
+        client = httpx.AsyncClient(timeout=20, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 BaggerShopping/0.9", "Accept-Language": "da-DK,da;q=0.9"})
     try:
         response = await client.get(MENY_FLYER_URL)
         response.raise_for_status()
-        return parse_meny_flyer_html(response.text, str(response.url))
+        publication = parse_meny_flyer_html(response.text, str(response.url))
+        chunks: list[dict] = []
+        for url in publication.enrichment_urls:
+            chunk_response = await client.get(url)
+            chunk_response.raise_for_status()
+            payload = chunk_response.json()
+            if isinstance(payload, dict):
+                chunks.append(payload)
+        publication.structured_offers = parse_enrichment_chunks(publication, chunks)
+        return publication
     finally:
         if owns_client:
             await client.aclose()
