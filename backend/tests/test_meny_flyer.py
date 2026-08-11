@@ -140,9 +140,32 @@ def test_structured_enrichments_group_variants_and_use_package_price():
     offer = result.offers[0]
     assert offer.price == 69.95
     assert offer.page_number == 9
-    assert [variant.name for variant in offer.variants] == ["Hakket Kødkvæg 14-18%", "Kylling Underlår"]
+    assert [variant.name for variant in offer.variants] == ["Hakket oksekød 14-18%", "Kyllingeunderlår"]
     assert offer.variants[0].quantity == 600
+    assert offer.variants[0].matches_query is True
+    assert offer.variants[1].matches_query is False
     assert offer.safe_to_add is True
+
+
+def test_structured_search_ignores_descriptions_and_raw_advert_copy():
+    publication = parse_meny_flyer_html(IPAPER_HTML)
+    publication.structured_offers = parse_enrichment_chunks(publication, [{"enrichments": [{
+        "type": 13, "pageIndex": 1, "productId": "dog-food", "name": "Whiskas Fjerkræ",
+        "alttext": "Whiskas eller Frolic", "desc": "Serveres ikke sammen med oksekød", "price": 25,
+    }]}])
+
+    assert search_publication(publication, "oksekød").offers == []
+
+
+def test_implausible_quantity_is_omitted_instead_of_guessed():
+    publication = parse_meny_flyer_html(IPAPER_HTML)
+    offers = parse_enrichment_chunks(publication, [{"enrichments": [{
+        "type": 13, "pageIndex": 0, "productId": "melon", "name": "Vandmelon",
+        "alttext": "Vandmelon", "desc": "Vandmelon. 17 kg. Pr. stk.", "price": 25,
+    }]}])
+
+    assert offers[0].quantity is None
+    assert offers[0].unit is None
 
 
 def test_publication_page_count_uses_ipaper_pages_not_text_layer_count():

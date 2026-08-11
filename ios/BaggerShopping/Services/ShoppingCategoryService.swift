@@ -67,7 +67,7 @@ final class ShoppingCategoryService: ObservableObject {
                 "champignon", "svamp", "porre", "selleri", "squash", "majs", "kål", "frugt", "grønt"
             ]),
             (.meat, [
-                "kylling", "oksekød", "hakket okse", "svinekød", "flæsk", "bøf", "kotelet", "mørbrad", "medister", "fars", "kød",
+                "kylling", "oksekød", "kødkvæg", "hakket okse", "svinekød", "flæsk", "bøf", "kotelet", "mørbrad", "medister", "fars", "kød",
                 "laks", "torsk", "fisk", "rejer", "tun"
             ]),
             (.deli, [
@@ -78,7 +78,7 @@ final class ShoppingCategoryService: ObservableObject {
                 "parmesan", "æg", "ricotta"
             ]),
             (.bakery, [
-                "brød", "rugbrød", "toast", "boller", "bolle", "baguette", "pitabrød", "tortilla", "croissant", "knækbrød"
+                "brød", "rugbrød", "sandwich", "toast", "boller", "bolle", "baguette", "pitabrød", "tortilla", "croissant", "knækbrød"
             ]),
             (.frozen, [
                 "frost", "frossen", "is", "ispind", "pizza", "pommes", "frosne", "isterninger"

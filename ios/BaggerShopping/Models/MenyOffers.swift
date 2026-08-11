@@ -70,6 +70,12 @@ struct OfferVariant: Codable, Identifiable, Hashable {
     let description: String?
     let quantity: Double?
     let unit: String?
+    let matchesQuery: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, description, quantity, unit
+        case matchesQuery = "matches_query"
+    }
 }
 
 struct PublicationsResponse: Codable {

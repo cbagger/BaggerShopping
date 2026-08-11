@@ -48,6 +48,7 @@ class OfferVariant(BaseModel):
     description: str | None = None
     quantity: float | None = None
     unit: str | None = None
+    matches_query: bool = False
 
 
 class Offer(BaseModel):
@@ -241,7 +242,25 @@ def _quantity(description: str | None) -> tuple[float | None, str | None]:
     match = QUANTITY_RE.search(description or "")
     if not match:
         return None, None
-    return float(match.group("amount").replace(",", ".")), match.group("unit").rstrip(".").lower()
+    amount = float(match.group("amount").replace(",", "."))
+    unit = match.group("unit").rstrip(".").lower()
+    # iPaper descriptions also contain nutrition, product IDs and campaign copy.
+    # Only expose credible retail pack sizes; omitting a value is safer than a
+    # confidently wrong quantity such as the observed "17 kg" watermelon.
+    limits = {"kg": 10, "l": 10, "liter": 10, "g": 10_000, "ml": 10_000, "cl": 1_000, "stk": 100, "pk": 100}
+    if amount <= 0 or amount > limits.get(unit, 10_000):
+        return None, None
+    return amount, unit
+
+
+def _friendly_product_name(name: str) -> str:
+    replacements = (
+        (re.compile(r"\bhakket\s+kødkvæg\b", re.IGNORECASE), "Hakket oksekød"),
+        (re.compile(r"\bkylling\s+underlår\b", re.IGNORECASE), "Kyllingeunderlår"),
+    )
+    for pattern, replacement in replacements:
+        name = pattern.sub(replacement, name)
+    return _normalize_space(name)
 
 
 def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> list[Offer]:
@@ -271,6 +290,7 @@ def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> lis
             suffix = f" ({label})"
             if name.casefold().endswith(suffix.casefold()):
                 name = name[:-len(suffix)].strip()
+            name = _friendly_product_name(name)
             identity = product_id or hashlib.sha256(f"{page_number}|{name}".encode()).hexdigest()[:20]
             if identity in seen_products:
                 continue
@@ -333,16 +353,24 @@ def search_publication(publication: Publication, query: str) -> OfferSearchResul
     if not query:
         raise ValueError("Query cannot be empty")
     if publication.structured_offers:
-        needle = query.casefold()
-        matches = [
-            offer for offer in publication.structured_offers
-            if needle in " ".join([
-                offer.product_name,
-                offer.raw_text,
-                *(variant.name for variant in offer.variants),
-                *(variant.description or "" for variant in offer.variants),
-            ]).casefold()
-        ]
+        needle = _normalize_space(query).casefold()
+        matches: list[Offer] = []
+        for source in publication.structured_offers:
+            offer = source.model_copy(deep=True)
+            label_matches = needle in offer.product_name.casefold()
+            matching_ids = {
+                variant.id for variant in offer.variants
+                if needle in variant.name.casefold()
+            }
+            # Descriptions and raw advert text are deliberately excluded. They
+            # contain recipes, legal copy and hidden group data that produced
+            # unrelated results such as pet food for an "oksekød" search.
+            if not label_matches and not matching_ids:
+                continue
+            for variant in offer.variants:
+                variant.matches_query = variant.id in matching_ids or (label_matches and not matching_ids)
+            offer.variants.sort(key=lambda variant: (not variant.matches_query, variant.name.casefold()))
+            matches.append(offer)
         return OfferSearchResult(query=query, publication=publication, offers=matches)
 
     pages = publication.page_texts or [publication.text]
@@ -380,7 +408,7 @@ def search_publication(publication: Publication, query: str) -> OfferSearchResul
 async def fetch_meny_flyer(*, client: httpx.AsyncClient | None = None) -> Publication:
     owns_client = client is None
     if client is None:
-        client = httpx.AsyncClient(timeout=20, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 BaggerShopping/0.9", "Accept-Language": "da-DK,da;q=0.9"})
+        client = httpx.AsyncClient(timeout=20, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0 BaggerShopping/0.10", "Accept-Language": "da-DK,da;q=0.9"})
     try:
         response = await client.get(MENY_FLYER_URL)
         response.raise_for_status()

@@ -32,7 +32,7 @@ category_store_lock = asyncio.Lock()
 
 app = FastAPI(
     title="Bagger Shopping Mobile API",
-    version="0.9.0",
+    version="0.10.0",
     description="Internet-facing authenticated API for the Bagger Shopping iPhone app.",
     docs_url=None,
     redoc_url=None,

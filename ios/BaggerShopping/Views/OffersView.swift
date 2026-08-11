@@ -56,7 +56,8 @@ struct OffersView: View {
                     } else {
                         ForEach(offers) { offer in
                             OfferCard(offer: offer, wasAdded: addedOfferID == offer.id) {
-                                if offer.variants.count == 1, let variant = offer.variants.first {
+                                let matching = offer.variants.filter(\.matchesQuery)
+                                if matching.count == 1, let variant = matching.first {
                                     add(variant.name, from: offer)
                                 } else {
                                     pendingOffer = offer
@@ -68,23 +69,13 @@ struct OffersView: View {
                 .padding()
             }
             .navigationTitle("Tilbud")
-            .confirmationDialog(
-                "Vælg vare",
-                isPresented: Binding(
-                    get: { pendingOffer != nil },
-                    set: { if !$0 { pendingOffer = nil } }
-                ),
-                titleVisibility: .visible
-            ) {
-                ForEach(pendingOffer?.variants ?? []) { variant in
-                    Button(variant.name) {
-                        if let offer = pendingOffer { add(variant.name, from: offer) }
-                        pendingOffer = nil
-                    }
+            .sheet(item: $pendingOffer) { offer in
+                OfferVariantSheet(offer: offer) { variant in
+                    add(variant.name, from: offer)
+                    pendingOffer = nil
                 }
-                Button("Annuller", role: .cancel) { pendingOffer = nil }
-            } message: {
-                Text(pendingOffer?.productName ?? "")
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
             }
         }
     }
@@ -121,6 +112,7 @@ private struct OfferCard: View {
     let add: () -> Void
 
     var body: some View {
+        let matchingCount = offer.variants.filter(\.matchesQuery).count
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(offer.productName)
@@ -151,14 +143,16 @@ private struct OfferCard: View {
             }
 
             if offer.variants.count > 1 {
-                Text("\(offer.variants.count) varianter – vælg den rigtige, når du tilføjer")
+                Text(matchingCount < offer.variants.count
+                     ? "\(matchingCount) matchende af \(offer.variants.count) varianter"
+                     : "\(offer.variants.count) varianter – vælg den rigtige")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             if offer.safeToAdd {
                 Button(action: add) {
-                    Label(wasAdded ? "Tilføjet" : (offer.variants.count > 1 ? "Vælg vare" : "Tilføj til liste"), systemImage: wasAdded ? "checkmark.circle.fill" : "plus.circle.fill")
+                    Label(wasAdded ? "Tilføjet" : (matchingCount == 1 ? "Tilføj til liste" : "Vælg vare"), systemImage: wasAdded ? "checkmark.circle.fill" : "plus.circle.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -169,5 +163,49 @@ private struct OfferCard: View {
         .padding(14)
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color(uiColor: .separator).opacity(0.35)))
+    }
+}
+
+private struct OfferVariantSheet: View {
+    let offer: GroceryOffer
+    let select: (OfferVariant) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private var variants: [OfferVariant] {
+        offer.variants.sorted { lhs, rhs in
+            if lhs.matchesQuery != rhs.matchesQuery { return lhs.matchesQuery }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List(variants) { variant in
+                Button { select(variant) } label: {
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text(variant.name).font(.headline).foregroundStyle(.primary)
+                            Spacer()
+                            if variant.matchesQuery {
+                                Text("MATCH").font(.caption2.bold()).foregroundStyle(.green)
+                            }
+                        }
+                        HStack(spacing: 8) {
+                            if let quantity = variant.quantity, let unit = variant.unit {
+                                Text("\(quantity.formatted(.number.precision(.fractionLength(0...2)))) \(unit)")
+                            }
+                            if let price = offer.price {
+                                Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                            }
+                        }
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+            .navigationTitle("Vælg vare")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuller") { dismiss() } } }
+        }
     }
 }
