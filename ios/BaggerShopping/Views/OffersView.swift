@@ -1,104 +1,72 @@
 import SwiftUI
 
 struct OffersView: View {
-    @State private var publication: MenyPublication?
+    @EnvironmentObject private var model: AppModel
     @State private var query = ""
-    @State private var matches: [String] = []
+    @State private var selectedRetailer = "MENY"
+    @State private var offers: [GroceryOffer] = []
+    @State private var hasSearched = false
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var addedOfferID: String?
 
     private let api = APIClient()
+    private let retailers = ["MENY"]
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
-                    if let publication {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("MENY")
-                                    .font(.title2.bold())
-                                Spacer()
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.green)
-                            }
-                            Text(publication.title)
-                                .font(.headline)
-                            if let from = publication.validFrom, let until = publication.validUntil {
-                                Text("Gyldig \(from) – \(until)")
-                                    .foregroundStyle(.secondary)
-                            }
-                            if let pages = publication.pageCount {
-                                Text("\(pages) sider · automatisk hentet fra aktuel avis")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    } else if isLoading {
-                        ProgressView("Henter aktuel MENY-avis …")
-                    }
-                } header: {
-                    Text("Aktuel tilbudsavis")
-                }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Find tilbud i aktuelle aviser")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
 
-                Section {
-                    HStack {
-                        TextField("Søg fx juice, vandmelon …", text: $query)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .onSubmit { Task { await search() } }
-
-                        Button {
-                            Task { await search() }
-                        } label: {
+                        HStack(spacing: 10) {
                             Image(systemName: "magnifyingglass")
+                                .foregroundStyle(.secondary)
+                            TextField("Søg fx juice eller oksekød", text: $query)
+                                .textInputAutocapitalization(.never)
+                                .submitLabel(.search)
+                                .onSubmit { Task { await search() } }
+                            if !query.isEmpty {
+                                Button { query = ""; offers = []; hasSearched = false } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
                         }
-                        .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoading)
-                    }
-                }
+                        .padding(12)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
 
-                if !matches.isEmpty {
-                    Section("Fund i MENY-avisen") {
-                        ForEach(Array(matches.enumerated()), id: \.offset) { _, match in
-                            Text(match)
-                                .font(.body)
-                                .textSelection(.enabled)
-                                .padding(.vertical, 4)
+                        Picker("Butik", selection: $selectedRetailer) {
+                            ForEach(retailers, id: \.self) { Text($0).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
+                    if isLoading {
+                        HStack { Spacer(); ProgressView("Søger …"); Spacer() }
+                            .padding(.top, 32)
+                    } else if let errorMessage {
+                        ContentUnavailableView("Kunne ikke hente tilbud", systemImage: "wifi.exclamationmark", description: Text(errorMessage))
+                    } else if hasSearched && offers.isEmpty {
+                        ContentUnavailableView("Ingen tilbud fundet", systemImage: "magnifyingglass", description: Text("\"\(query)\" findes ikke i den aktuelle \(selectedRetailer)-avis."))
+                    } else {
+                        ForEach(offers) { offer in
+                            OfferCard(offer: offer, wasAdded: addedOfferID == offer.id) {
+                                Task {
+                                    if await model.addItem(offer.productName) {
+                                        withAnimation { addedOfferID = offer.id }
+                                    }
+                                }
+                            }
                         }
                     }
-                } else if !query.isEmpty && !isLoading && errorMessage == nil {
-                    Section {
-                        ContentUnavailableView(
-                            "Ingen tilbud fundet",
-                            systemImage: "magnifyingglass",
-                            description: Text("\"\(query)\" findes ikke i den aktuelle MENY-avis.")
-                        )
-                    }
                 }
-
-                if let errorMessage {
-                    Section {
-                        Text(errorMessage)
-                            .foregroundStyle(.red)
-                    }
-                }
+                .padding()
             }
             .navigationTitle("Tilbud")
-            .refreshable { await loadStatus() }
-            .task { await loadStatus() }
-        }
-    }
-
-    @MainActor
-    private func loadStatus() async {
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
-        do {
-            publication = try await api.fetchMenyOfferStatus().publication
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
@@ -107,15 +75,66 @@ struct OffersView: View {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !term.isEmpty else { return }
         isLoading = true
+        hasSearched = true
         errorMessage = nil
+        addedOfferID = nil
         defer { isLoading = false }
         do {
-            let response = try await api.searchMenyOffers(query: term)
-            publication = response.publication
-            matches = response.matches
+            offers = try await api.searchOffers(query: term, retailer: selectedRetailer).offers
         } catch {
-            matches = []
+            offers = []
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+private struct OfferCard: View {
+    let offer: GroceryOffer
+    let wasAdded: Bool
+    let add: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(offer.productName)
+                    .font(.headline)
+                    .lineLimit(3)
+                Spacer(minLength: 12)
+                if let price = offer.price {
+                    Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                        .font(.title3.bold())
+                        .foregroundStyle(.red)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Text(offer.retailer).fontWeight(.semibold)
+                if let quantity = offer.quantity, let unit = offer.unit {
+                    Text("· \(quantity.formatted(.number.precision(.fractionLength(0...2)))) \(unit)")
+                }
+                if let page = offer.pageNumber { Text("· Side \(page)") }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            if let from = offer.validFrom, let until = offer.validUntil {
+                Text("Gyldig \(from)–\(until)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if offer.safeToAdd {
+                Button(action: add) {
+                    Label(wasAdded ? "Tilføjet" : "Tilføj til liste", systemImage: wasAdded ? "checkmark.circle.fill" : "plus.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(wasAdded ? .green : .accentColor)
+                .disabled(wasAdded)
+            }
+        }
+        .padding(14)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color(uiColor: .separator).opacity(0.35)))
     }
 }
