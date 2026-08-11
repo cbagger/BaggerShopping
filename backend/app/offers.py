@@ -7,7 +7,7 @@ import unicodedata
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Iterable
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 import httpx
 from pydantic import BaseModel
@@ -19,7 +19,8 @@ QUANTITY_RE = re.compile(
     r"(?P<value>\d+(?:[.,]\d+)?)\s*(?P<unit>kg|g|l|liter|ml|cl|stk\.?|pk\.?|pakke(?:r)?)\b",
     re.IGNORECASE,
 )
-DISCOUNT_RE = re.compile(r"^-?\d{1,3}\s*%$")
+DISCOUNT_RE = re.compile(r"^-?(?P<value>\d{1,3})\s*%$")
+NON_OFFER_MARKER_RE = re.compile(r"andre\s+varer\s+ikke\s+p[åa]\s+tilbud", re.IGNORECASE)
 
 
 class Offer(BaseModel):
@@ -52,32 +53,68 @@ class _Script:
     text: str
 
 
+@dataclass
+class _Anchor:
+    attrs: dict[str, str]
+    text_parts: list[str]
+    in_offer_section: bool
+
+
 class _GomaHTMLParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.text_parts: list[str] = []
         self.scripts: list[_Script] = []
+        self.anchors: list[_Anchor] = []
         self._script_attrs: dict[str, str] | None = None
         self._script_parts: list[str] = []
+        self._anchor_attrs: dict[str, str] | None = None
+        self._anchor_parts: list[str] = []
+        self._anchor_offer_state = True
+        self._in_offer_section = True
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() == "script":
+        lowered = tag.lower()
+        if lowered == "script":
             self._script_attrs = {key: value or "" for key, value in attrs}
             self._script_parts = []
+        elif lowered == "a":
+            self._anchor_attrs = {key: value or "" for key, value in attrs}
+            self._anchor_parts = []
+            self._anchor_offer_state = self._in_offer_section
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "script" and self._script_attrs is not None:
+        lowered = tag.lower()
+        if lowered == "script" and self._script_attrs is not None:
             self.scripts.append(_Script(self._script_attrs, "".join(self._script_parts)))
             self._script_attrs = None
             self._script_parts = []
+        elif lowered == "a" and self._anchor_attrs is not None:
+            self.anchors.append(
+                _Anchor(
+                    attrs=self._anchor_attrs,
+                    text_parts=list(self._anchor_parts),
+                    in_offer_section=self._anchor_offer_state,
+                )
+            )
+            self._anchor_attrs = None
+            self._anchor_parts = []
 
     def handle_data(self, data: str) -> None:
         if self._script_attrs is not None:
             self._script_parts.append(data)
             return
+
         value = " ".join(data.split())
-        if value:
-            self.text_parts.append(value)
+        if not value:
+            return
+
+        if NON_OFFER_MARKER_RE.search(value):
+            self._in_offer_section = False
+
+        self.text_parts.append(value)
+        if self._anchor_attrs is not None:
+            self._anchor_parts.append(value)
 
 
 def slugify_query(value: str) -> str:
@@ -166,14 +203,9 @@ def _offer_from_mapping(mapping: dict[str, Any], retailer_filter: str) -> Offer 
     if not isinstance(product_url, str):
         product_url = None
 
-    # /tilbud pages may also contain non-discounted comparison products.
-    # For this endpoint we only emit genuine offers when the source gives us
-    # enough information to prove that the current price is below normal.
-    if normal_price is not None and normal_price <= price:
-        normal_price = None
-    if discount is None and normal_price is not None:
-        discount = round((1 - price / normal_price) * 100)
-    if not discount or discount <= 0:
+    # Structured data must explicitly describe an offer. A lower current price
+    # than normal price is accepted, but ordinary catalogue rows are rejected.
+    if not discount and not (normal_price is not None and normal_price > price):
         return None
 
     stable = f"{retailer}|{name.strip()}|{price}|{quantity}|{unit}"
@@ -221,113 +253,92 @@ def _parse_structured_scripts(scripts: list[_Script], retailer: str) -> list[Off
 
 
 def _price_token(value: str) -> float | None:
-    # Unit prices such as "19,90 kr/kg" are not shelf/normal prices.
     if "kr/" in value.casefold():
         return None
     match = PRICE_RE.search(value)
     return _number(match.group("value")) if match else None
 
 
-def _parse_text_fallback(parts: list[str], retailer: str) -> list[Offer]:
-    """Best-effort parser for Goma's server-rendered offer cards.
+def _parse_offer_anchor(anchor: _Anchor, retailer: str) -> Offer | None:
+    if not anchor.in_offer_section:
+        return None
 
-    The fallback deliberately requires evidence of a real discount. Goma's
-    /tilbud pages can also render ordinary comparison products, and a unit
-    price must never be mistaken for a normal price.
-    """
+    parts = [part.strip() for part in anchor.text_parts if part.strip()]
+    if not parts or not any(part.casefold() == retailer.casefold() for part in parts):
+        return None
+
+    prices: list[float] = []
+    quantity = None
+    unit = None
+    unit_price = None
+    discount = None
+    ignored = {"tilbud", "intet billede", retailer.casefold()}
+
+    for part in parts:
+        lowered = part.casefold()
+        if "kr/" in lowered and unit_price is None:
+            unit_price = part
+            continue
+        price = _price_token(part)
+        if price is not None:
+            prices.append(price)
+            continue
+        quantity_match = QUANTITY_RE.search(part)
+        if quantity_match and quantity is None:
+            quantity = _number(quantity_match.group("value"))
+            unit = quantity_match.group("unit").rstrip(".").casefold()
+        discount_match = DISCOUNT_RE.fullmatch(part)
+        if discount_match:
+            discount = int(discount_match.group("value"))
+
+    if not prices:
+        return None
+    price = prices[0]
+    normal_price = prices[1] if len(prices) > 1 and prices[1] > price else None
+
+    product_candidates: list[str] = []
+    for part in parts:
+        lowered = part.casefold()
+        if lowered in ignored:
+            continue
+        if _price_token(part) is not None or "kr/" in lowered:
+            continue
+        if DISCOUNT_RE.fullmatch(part) or QUANTITY_RE.fullmatch(part):
+            continue
+        if len(part) < 3:
+            continue
+        product_candidates.append(part)
+
+    if not product_candidates:
+        return None
+    product_name = max(product_candidates, key=len)
+
+    if discount is None and normal_price is not None and normal_price > price:
+        discount = round((1 - price / normal_price) * 100)
+
+    href = anchor.attrs.get("href")
+    product_url = urljoin(GOMA_BASE_URL, href) if href else None
+    stable = f"{retailer}|{product_name}|{price}|{quantity}|{unit}"
+    return Offer(
+        id=hashlib.sha256(stable.encode("utf-8")).hexdigest()[:20],
+        retailer=retailer,
+        product_name=product_name,
+        price=price,
+        normal_price=normal_price,
+        quantity=quantity,
+        unit=unit,
+        unit_price=unit_price,
+        discount_percent=discount,
+        product_url=product_url,
+    )
+
+
+def _parse_offer_anchors(anchors: list[_Anchor], retailer: str) -> list[Offer]:
     results: dict[str, Offer] = {}
-    ignored = {
-        "tilføj",
-        "aktuel pris",
-        "normalpris",
-        "pris",
-        "tilbud",
-        "opdateres løbende",
-    }
-
-    for index, token in enumerate(parts):
-        if token.casefold() != retailer.casefold():
-            continue
-
-        # Live Goma cards can spread product, quantity and pricing over more
-        # tokens than our synthetic test fixture, so retain a bounded but
-        # slightly wider card window.
-        window = parts[index : index + 20]
-        prices = [(i, _price_token(value)) for i, value in enumerate(window)]
-        prices = [(i, price) for i, price in prices if price is not None]
-        if not prices:
-            continue
-
-        price_index, price = prices[0]
-        normal_price = None
-        for _, candidate_price in prices[1:]:
-            if candidate_price > price:
-                normal_price = candidate_price
-                break
-
-        explicit_discount = None
-        for value in window:
-            if DISCOUNT_RE.fullmatch(value.strip()):
-                explicit_discount = int(value.strip().replace("%", "").replace("-", ""))
-                break
-
-        if normal_price is None and not explicit_discount:
-            # This is probably one of Goma's non-offer comparison products.
-            continue
-
-        candidates: list[tuple[int, str]] = []
-        for offset, value in enumerate(window[1:], start=1):
-            compact = value.strip()
-            lowered = compact.casefold()
-            if (
-                lowered in ignored
-                or compact.casefold() == retailer.casefold()
-                or PRICE_RE.fullmatch(compact)
-                or DISCOUNT_RE.fullmatch(compact)
-                or QUANTITY_RE.fullmatch(compact)
-                or len(compact) < 3
-            ):
-                continue
-            if "kr/" in lowered or lowered.endswith(" kr"):
-                continue
-            candidates.append((offset, compact))
-
-        candidates.sort(key=lambda entry: (abs(entry[0] - price_index), -len(entry[1])))
-        if not candidates:
-            continue
-        _, product_name = candidates[0]
-
-        quantity = None
-        unit = None
-        unit_price = None
-        for value in window:
-            quantity_match = QUANTITY_RE.fullmatch(value.strip()) or QUANTITY_RE.search(value)
-            if quantity_match and quantity is None and "kr/" not in value.casefold():
-                quantity = _number(quantity_match.group("value"))
-                unit = quantity_match.group("unit").rstrip(".").casefold()
-            if "kr/" in value.casefold() and unit_price is None:
-                unit_price = value
-
-        discount = explicit_discount
-        if discount is None and normal_price and normal_price > price:
-            discount = round((1 - price / normal_price) * 100)
-        if not discount or discount <= 0:
-            continue
-
-        stable = f"{retailer}|{product_name}|{price}|{quantity}|{unit}"
-        offer = Offer(
-            id=hashlib.sha256(stable.encode("utf-8")).hexdigest()[:20],
-            retailer=retailer,
-            product_name=product_name,
-            price=price,
-            normal_price=normal_price,
-            quantity=quantity,
-            unit=unit,
-            unit_price=unit_price,
-            discount_percent=discount,
-        )
-        results[offer.id] = offer
-
+    for anchor in anchors:
+        offer = _parse_offer_anchor(anchor, retailer)
+        if offer:
+            results[offer.id] = offer
     return list(results.values())
 
 
@@ -339,8 +350,8 @@ def parse_goma_html(html: str, retailer: str) -> tuple[list[Offer], str]:
     if structured:
         return sorted(structured, key=lambda offer: offer.price), "structured-json"
 
-    fallback = _parse_text_fallback(parser.text_parts, retailer)
-    return sorted(fallback, key=lambda offer: offer.price), "html-text"
+    anchored = _parse_offer_anchors(parser.anchors, retailer)
+    return sorted(anchored, key=lambda offer: offer.price), "offer-anchors"
 
 
 async def fetch_goma_offers(
