@@ -63,7 +63,7 @@ private struct SettingsContent: View {
                 }
 
                 Section("Kategorier") {
-                    LabeledContent("Lærte rettelser", value: "\(categories.learnedCount)")
+                    LabeledContent("Fælles lærte rettelser", value: "\(categories.learnedCount)")
 
                     if categories.learnedCount > 0 {
                         Button("Nulstil lærte kategorier", role: .destructive) {
@@ -71,7 +71,7 @@ private struct SettingsContent: View {
                         }
                     }
 
-                    Text("Når du flytter en vare til en anden kategori, husker appen rettelsen næste gang den samme vare dukker op.")
+                    Text("Når en vare flyttes til en anden kategori, deles rettelsen via Bagger Shopping-serveren og bruges på familiens iPhones.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -92,7 +92,10 @@ private struct SettingsContent: View {
                                 try model.saveToken(token)
                                 token = ""
                                 saved = true
-                                Task { await model.refresh() }
+                                Task {
+                                    await model.refresh()
+                                    await model.syncSharedCategories()
+                                }
                             } catch {
                                 model.errorMessage = error.localizedDescription
                             }
@@ -132,12 +135,11 @@ private struct SettingsContent: View {
                 titleVisibility: .visible
             ) {
                 Button("Nulstil", role: .destructive) {
-                    categories.removeAllOverrides()
-                    model.objectWillChange.send()
+                    model.clearLearnedCategories()
                 }
                 Button("Annuller", role: .cancel) {}
             } message: {
-                Text("Varerne vil igen bruge den automatiske kategorisering.")
+                Text("Varerne vil igen bruge den automatiske kategorisering på familiens enheder.")
             }
         }
     }
