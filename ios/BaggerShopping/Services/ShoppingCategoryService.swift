@@ -35,6 +35,16 @@ final class ShoppingCategoryService: ObservableObject {
         save()
     }
 
+    func replaceWithSharedOverrides(_ shared: [CategoryOverrideDTO]) {
+        var imported: [String: ShoppingCategory] = [:]
+        for entry in shared {
+            guard let category = ShoppingCategory(rawValue: entry.category) else { continue }
+            imported[Self.normalize(entry.itemName)] = category
+        }
+        overrides = imported
+        save()
+    }
+
     func hasOverride(for itemName: String) -> Bool {
         overrides[Self.normalize(itemName)] != nil
     }
@@ -51,77 +61,63 @@ final class ShoppingCategoryService: ObservableObject {
     nonisolated static func classify(_ normalized: String) -> ShoppingCategory {
         let rules: [(ShoppingCategory, [String])] = [
             (.fruitAndVegetables, [
-                "æble", "aeble", "banan", "appelsin", "citron", "lime", "pære", "paere", "vindrue", "melon", "ananas",
-                "jordbær", "jordbaer", "hindbær", "hindbaer", "blåbær", "blaabaer", "avocado", "tomat", "agurk", "peberfrugt",
-                "gulerod", "kartoffel", "løg", "loeg", "hvidløg", "hvidloeg", "salat", "spinat", "broccoli", "blomkål", "blomkaal",
-                "champignon", "svamp", "porre", "selleri", "squash", "majs", "kål", "kaal", "frugt", "grønt", "groent"
+                "æble", "æbler", "aeble", "banan", "appelsin", "citron", "lime", "pære", "paere", "vindrue", "melon", "ananas",
+                "jordbær", "hindbær", "blåbær", "avocado", "tomat", "agurk", "peberfrugt",
+                "gulerod", "gulerødder", "kartoffel", "kartofler", "løg", "hvidløg", "salat", "spinat", "broccoli", "blomkål",
+                "champignon", "svamp", "porre", "selleri", "squash", "majs", "kål", "frugt", "grønt"
             ]),
             (.meat, [
-                "kylling", "oksekød", "oksekoed", "hakket okse", "svinekød", "svinekoed", "flæsk", "flaesk", "bøf", "boef",
-                "kotelet", "mørbrad", "moerbrad", "medister", "fars", "kød", "koed", "laks", "torsk", "fisk", "rejer", "tun"
+                "kylling", "oksekød", "hakket okse", "svinekød", "flæsk", "bøf", "kotelet", "mørbrad", "medister", "fars", "kød",
+                "laks", "torsk", "fisk", "rejer", "tun"
             ]),
             (.deli, [
-                "pålæg", "paalaeg", "skinke", "hamburgerryg", "spegepølse", "spegepoelse", "leverpostej", "salami", "rullepølse",
-                "rullepoelse", "bacon", "kalkunpålæg", "kalkunpaalaeg"
+                "pålæg", "skinke", "hamburgerryg", "spegepølse", "leverpostej", "salami", "rullepølse", "bacon", "kalkunpålæg"
             ]),
             (.dairy, [
-                "mælk", "maelk", "yoghurt", "skyr", "ost", "smør", "smoer", "fløde", "floede", "creme fraiche", "kærnemælk",
-                "kaernemaelk", "hytteost", "mozzarella", "parmesan", "æg", "aeg"
+                "mælk", "yoghurt", "skyr", "ost", "smør", "fløde", "creme fraiche", "kærnemælk", "hytteost", "mozzarella",
+                "parmesan", "æg", "ricotta"
             ]),
             (.bakery, [
-                "brød", "broed", "rugbrød", "rugbroed", "toast", "boller", "bolle", "baguette", "pitabrød", "pitabroed", "tortilla",
-                "croissant", "knækbrød", "knaekbroed"
+                "brød", "rugbrød", "toast", "boller", "bolle", "baguette", "pitabrød", "tortilla", "croissant", "knækbrød"
             ]),
             (.frozen, [
                 "frost", "frossen", "is", "ispind", "pizza", "pommes", "frosne", "isterninger"
             ]),
             (.beverages, [
-                "cola", "sodavand", "danskvand", "juice", "saft", "kaffe", "te", "øl", "oel", "vin", "energidrik", "vand"
+                "cola", "sodavand", "danskvand", "juice", "saft", "kaffe", "te", "øl", "vin", "energidrik", "vand"
             ]),
             (.household, [
-                "toiletpapir", "køkkenrulle", "koekkenrulle", "opvasketabs", "opvask", "vaskemiddel", "skyllemiddel", "affaldsposer",
-                "skraldeposer", "stanniol", "sølvpapir", "soelvpapir", "bagepapir", "madpapir", "rengøring", "rengoering",
-                "rengøringssvamp", "rengoeringssvamp", "opvaskesvamp", "klude", "servietter", "lys", "batterier"
+                "toiletpapir", "køkkenrulle", "opvasketabs", "opvask", "vaskemiddel", "skyllemiddel", "affaldsposer", "skraldeposer",
+                "stanniol", "sølvpapir", "bagepapir", "madpapir", "rengøring", "rengøringssvamp", "opvaskesvamp", "klude",
+                "servietter", "lys", "batterier"
             ]),
             (.personalCare, [
-                "shampoo", "balsam", "sæbe", "saebe", "tandpasta", "tandbørste", "tandboerste", "deodorant", "bleer", "vådservietter",
-                "vaadservietter", "barber", "creme", "håndsæbe", "haandsaebe"
+                "shampoo", "balsam", "sæbe", "tandpasta", "tandbørste", "deodorant", "bleer", "vådservietter", "barber", "creme",
+                "håndsæbe"
             ]),
             (.pantry, [
                 "pasta", "ris", "mel", "sukker", "salt", "peber", "olie", "eddike", "ketchup", "sennep", "mayonnaise", "remoulade",
-                "pesto", "tomatsauce", "hakkede tomater", "bouillon", "havregryn", "morgenmad", "cornflakes", "mysli", "müsli", "nutella",
-                "syltetøj", "syltetoej", "honning", "kiks", "chips", "slik", "chokolade", "nødder", "noedder", "dåse", "daase"
+                "pesto", "tomatsauce", "hakkede tomater", "bouillon", "havregryn", "morgenmad", "cornflakes", "mysli", "müsli",
+                "nutella", "syltetøj", "honning", "kiks", "chips", "slik", "chokolade", "nødder", "dåse"
             ])
         ]
 
         for (category, terms) in rules {
-            if terms.contains(where: { matches(normalized, term: $0) }) {
+            if terms.contains(where: { matches(normalized, term: Self.normalize($0)) }) {
                 return category
             }
         }
-
         return .other
     }
 
     nonisolated private static func matches(_ normalized: String, term: String) -> Bool {
-        if normalized == term {
-            return true
-        }
-
-        if term.contains(" ") {
-            return normalized.contains(term)
-        }
+        if normalized == term { return true }
+        if term.contains(" ") { return normalized.contains(term) }
 
         let tokens = normalized.split(separator: " ").map(String.init)
         return tokens.contains { token in
-            if token == term {
-                return true
-            }
-
-            guard term.count >= 4 else {
-                return false
-            }
-
+            if token == term { return true }
+            guard term.count >= 4 else { return false }
             return token.hasPrefix(term) || token.hasSuffix(term)
         }
     }
