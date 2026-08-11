@@ -9,6 +9,7 @@ struct OfferPublication: Codable, Identifiable, Hashable {
     let status: String
     let sourceURL: URL
     let pageCount: Int
+    let pageImageURLs: [URL]
     let readerURL: URL?
     let readerKind: String?
 
@@ -18,8 +19,24 @@ struct OfferPublication: Codable, Identifiable, Hashable {
         case validUntil = "valid_until"
         case sourceURL = "source_url"
         case pageCount = "page_count"
+        case pageImageURLs = "page_image_urls"
         case readerURL = "reader_url"
         case readerKind = "reader_kind"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        retailer = try values.decode(String.self, forKey: .retailer)
+        title = try values.decode(String.self, forKey: .title)
+        validFrom = try values.decodeIfPresent(String.self, forKey: .validFrom)
+        validUntil = try values.decodeIfPresent(String.self, forKey: .validUntil)
+        status = try values.decode(String.self, forKey: .status)
+        sourceURL = try values.decode(URL.self, forKey: .sourceURL)
+        pageCount = try values.decode(Int.self, forKey: .pageCount)
+        pageImageURLs = try values.decodeIfPresent([URL].self, forKey: .pageImageURLs) ?? []
+        readerURL = try values.decodeIfPresent(URL.self, forKey: .readerURL)
+        readerKind = try values.decodeIfPresent(String.self, forKey: .readerKind)
     }
 }
 
@@ -41,6 +58,10 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
     let imageURL: URL?
     let sourceURL: URL
     let pageNumber: Int?
+    let hotspotX: Double?
+    let hotspotY: Double?
+    let hotspotWidth: Double?
+    let hotspotHeight: Double?
     let rawText: String
     let safeToAdd: Bool
     let variants: [OfferVariant]
@@ -58,6 +79,10 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         case imageURL = "image_url"
         case sourceURL = "source_url"
         case pageNumber = "page_number"
+        case hotspotX = "hotspot_x"
+        case hotspotY = "hotspot_y"
+        case hotspotWidth = "hotspot_width"
+        case hotspotHeight = "hotspot_height"
         case rawText = "raw_text"
         case safeToAdd = "safe_to_add"
         case variants
@@ -82,6 +107,10 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         imageURL = try values.decodeIfPresent(URL.self, forKey: .imageURL)
         sourceURL = try values.decode(URL.self, forKey: .sourceURL)
         pageNumber = try values.decodeIfPresent(Int.self, forKey: .pageNumber)
+        hotspotX = try values.decodeIfPresent(Double.self, forKey: .hotspotX)
+        hotspotY = try values.decodeIfPresent(Double.self, forKey: .hotspotY)
+        hotspotWidth = try values.decodeIfPresent(Double.self, forKey: .hotspotWidth)
+        hotspotHeight = try values.decodeIfPresent(Double.self, forKey: .hotspotHeight)
         rawText = try values.decodeIfPresent(String.self, forKey: .rawText) ?? ""
         safeToAdd = try values.decodeIfPresent(Bool.self, forKey: .safeToAdd) ?? false
         variants = try values.decodeIfPresent([OfferVariant].self, forKey: .variants) ?? []
@@ -129,4 +158,10 @@ struct OfferSearchResponse: Codable {
         case ok, query, retailer, publication, offers
         case offerCount = "offer_count"
     }
+}
+
+struct PublicationOffersResponse: Codable {
+    let ok: Bool
+    let publication: OfferPublication
+    let offers: [GroceryOffer]
 }

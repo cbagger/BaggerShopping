@@ -57,7 +57,9 @@ struct OffersView: View {
                         ForEach(offers) { offer in
                             OfferCard(offer: offer, wasAdded: addedOfferID == offer.id) {
                                 let matching = offer.variants.filter(\.matchesQuery)
-                                if matching.count == 1, let variant = matching.first {
+                                if offer.variants.count == 1, let variant = offer.variants.first {
+                                    add(variant.name, from: offer)
+                                } else if matching.count == 1, let variant = matching.first {
                                     add(variant.name, from: offer)
                                 } else {
                                     pendingOffer = offer
@@ -152,7 +154,7 @@ private struct OfferCard: View {
 
             if offer.safeToAdd {
                 Button(action: add) {
-                    Label(wasAdded ? "Tilføjet" : (matchingCount == 1 ? "Tilføj til liste" : "Vælg vare"), systemImage: wasAdded ? "checkmark.circle.fill" : "plus.circle.fill")
+                    Label(wasAdded ? "Tilføjet" : (offer.variants.count == 1 || matchingCount == 1 ? "Tilføj til liste" : "Vælg vare"), systemImage: wasAdded ? "checkmark.circle.fill" : "plus.circle.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)

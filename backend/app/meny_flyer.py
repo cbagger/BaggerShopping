@@ -31,6 +31,7 @@ class Publication(BaseModel):
     status: str = "current"
     source_url: str
     page_count: int = 0
+    page_image_urls: list[str] = Field(default_factory=list)
     reader_url: str | None = None
     reader_kind: str | None = None
     week: int | None = None
@@ -69,6 +70,10 @@ class Offer(BaseModel):
     image_url: str | None = None
     source_url: str
     page_number: int | None = None
+    hotspot_x: float | None = None
+    hotspot_y: float | None = None
+    hotspot_width: float | None = None
+    hotspot_height: float | None = None
     raw_text: str
     safe_to_add: bool = False
     variants: list[OfferVariant] = Field(default_factory=list)
@@ -216,6 +221,14 @@ def parse_meny_flyer_html(html: str, source_url: str = MENY_FLYER_URL) -> Public
     page_texts = _extract_page_texts(html, parser.script_parts)
     settings = _json_object_from_marker(html, "window.staticSettings =")
     pages = settings.get("pages") if isinstance(settings.get("pages"), list) else []
+    aws = settings.get("aws") if isinstance(settings.get("aws"), dict) else {}
+    page_base = str(aws.get("url") or "").rstrip("/")
+    page_policy = str(aws.get("policy") or "")
+    page_image_urls = [
+        f"{page_base}/Pages/{page}/Normal.jpg" + (f"?{page_policy}" if page_policy else "")
+        for page in pages
+        if page_base and isinstance(page, int)
+    ]
     chunk_urls = settings.get("enrichments", {}).get("chunkUrls", {})
     enrichment_urls = list(chunk_urls.values()) if isinstance(chunk_urls, dict) else []
     identity = hashlib.sha256(f"MENY|{title}|{valid_from}|{valid_until}|{source_url}".encode()).hexdigest()[:20]
@@ -233,6 +246,7 @@ def parse_meny_flyer_html(html: str, source_url: str = MENY_FLYER_URL) -> Public
         text=_normalize_space(" ".join(page_texts)) if page_texts else visible_text,
         page_texts=page_texts,
         page_count=len(pages) or len(page_texts),
+        page_image_urls=page_image_urls,
         content_source="ipaper-pageTexts" if page_texts else "visible-html",
         enrichment_urls=enrichment_urls,
     )
@@ -249,6 +263,11 @@ def _quantity(description: str | None) -> tuple[float | None, str | None]:
     # confidently wrong quantity such as the observed "17 kg" watermelon.
     limits = {"kg": 10, "l": 10, "liter": 10, "g": 10_000, "ml": 10_000, "cl": 1_000, "stk": 100, "pk": 100}
     if amount <= 0 or amount > limits.get(unit, 10_000):
+        return None, None
+    # A description ending in a per-unit sales statement is stronger evidence
+    # than a stray weight elsewhere in the supplier text. Do not attach a kg/l
+    # amount to products explicitly sold per piece.
+    if unit in {"kg", "g", "l", "liter", "ml", "cl"} and re.search(r"\bpr\.\s*stk\b", description or "", re.IGNORECASE):
         return None, None
     return amount, unit
 
@@ -267,6 +286,27 @@ PET_PRODUCT_RE = re.compile(
     r"\b(whiskas|frolic|pedigree|kattemad|hundefoder|hunde(?:mad)?|katte(?:mad)?|petfood)\b",
     re.IGNORECASE,
 )
+
+# Broad grocery domains are used only when the query clearly expresses one.
+# They resolve semantic collisions ("salte fisk" sweets vs. fish, or
+# "mælkechokolade" vs. milk) without teaching the search engine individual
+# campaign products. Unknown queries continue through ordinary name matching.
+DOMAIN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("pet", PET_PRODUCT_RE),
+    ("confectionery", re.compile(r"(slik|chokolade|vingummi|lakrids|karamel|müslibar|muslibar|katjes|ritter\s+sport|corny)", re.IGNORECASE)),
+    ("pantry", re.compile(r"(sauce|sovs|dressing|marinade)", re.IGNORECASE)),
+    ("seafood", re.compile(r"\b(fisk(?:e(?:filet|fars)?)?|laks|torsk|sej|rødspætte|rejer?|skaldyr|tun)\b", re.IGNORECASE)),
+    ("meat", re.compile(r"\b(oksekød|kødkvæg|hakket\s+kød|kylling|svinekød|gris|kalv|lam|culotte|bøf|kotelet)\b", re.IGNORECASE)),
+    ("dairy", re.compile(r"(?:^|\b|[a-zæøå])(?:mælk|fløde|yoghurt|skyr|smør)(?:\b|$)", re.IGNORECASE)),
+    ("beverage", re.compile(r"\b(juice|smoothie|saft|sodavand|vand|øl|vin)\b", re.IGNORECASE)),
+    ("bakery", re.compile(r"\b(rugbrød|hvedebrød|franskbrød|toastbrød|boller|brød)\b", re.IGNORECASE)),
+    ("produce", re.compile(r"\b(frugt|grønt|grøntsag|melon|æble|pære|banan|tomat|kartoffel|gulerod)\b", re.IGNORECASE)),
+)
+
+
+def _product_domain(value: str) -> str | None:
+    normalized = _normalize_space(value)
+    return next((domain for domain, pattern in DOMAIN_PATTERNS if pattern.search(normalized)), None)
 
 
 def _is_pet_offer(offer: Offer) -> bool:
@@ -313,6 +353,14 @@ def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> lis
             continue
         stable = hashlib.sha256(f"{publication.id}|{page_number}|{label}|{price}".encode()).hexdigest()[:20]
         quantity, unit = (variants[0].quantity, variants[0].unit) if len(variants) == 1 else (None, None)
+        xs = [float(item["x"]) for item in items if isinstance(item.get("x"), (int, float))]
+        ys = [float(item["y"]) for item in items if isinstance(item.get("y"), (int, float))]
+        rights = [float(item["x"]) + float(item["width"]) for item in items if isinstance(item.get("x"), (int, float)) and isinstance(item.get("width"), (int, float))]
+        bottoms = [float(item["y"]) + float(item["height"]) for item in items if isinstance(item.get("y"), (int, float)) and isinstance(item.get("height"), (int, float))]
+        hotspot_x = min(xs) if xs else None
+        hotspot_y = min(ys) if ys else None
+        hotspot_width = max(rights) - hotspot_x if rights and hotspot_x is not None else None
+        hotspot_height = max(bottoms) - hotspot_y if bottoms and hotspot_y is not None else None
         offers.append(Offer(
             id=stable,
             retailer="MENY",
@@ -326,6 +374,10 @@ def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> lis
             unit=unit,
             source_url=publication.source_url,
             page_number=page_number,
+            hotspot_x=hotspot_x,
+            hotspot_y=hotspot_y,
+            hotspot_width=hotspot_width,
+            hotspot_height=hotspot_height,
             raw_text=" | ".join(filter(None, (variant.description for variant in variants))),
             safe_to_add=True,
             variants=variants,
@@ -365,6 +417,7 @@ def search_publication(publication: Publication, query: str) -> OfferSearchResul
         raise ValueError("Query cannot be empty")
     if publication.structured_offers:
         needle = _normalize_space(query).casefold()
+        query_domain = _product_domain(needle)
         matches: list[Offer] = []
         for source in publication.structured_offers:
             offer = source.model_copy(deep=True)
@@ -377,7 +430,10 @@ def search_publication(publication: Publication, query: str) -> OfferSearchResul
             matching_ids = {
                 variant.id for variant in offer.variants
                 if needle in variant.name.casefold()
+                and (query_domain is None or _product_domain(variant.name) in {None, query_domain})
             }
+            if label_matches and query_domain is not None:
+                label_matches = _product_domain(offer.product_name) in {None, query_domain}
             # Descriptions and raw advert text are deliberately excluded. They
             # contain recipes, legal copy and hidden group data that produced
             # unrelated results such as pet food for an "oksekød" search.
@@ -386,7 +442,11 @@ def search_publication(publication: Publication, query: str) -> OfferSearchResul
             for variant in offer.variants:
                 variant.matches_query = variant.id in matching_ids or (label_matches and not matching_ids)
             offer.variants.sort(key=lambda variant: (not variant.matches_query, variant.name.casefold()))
-            matches.append(offer)
+            # API invariant: a returned structured offer always contains at
+            # least one matching variant. This prevents stale/irrelevant cards
+            # such as "0 matchende af 13 varianter" in every client.
+            if any(variant.matches_query for variant in offer.variants):
+                matches.append(offer)
         return OfferSearchResult(query=query, publication=publication, offers=matches)
 
     pages = publication.page_texts or [publication.text]

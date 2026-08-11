@@ -112,6 +112,11 @@ struct APIClient {
         return try JSONDecoder().decode(OfferSearchResponse.self, from: data)
     }
 
+    func fetchOffers(publicationID: String) async throws -> PublicationOffersResponse {
+        let data = try await perform(request(path: "/api/mobile/v1/offers/publications/\(publicationID)/offers"))
+        return try JSONDecoder().decode(PublicationOffersResponse.self, from: data)
+    }
+
     private func validate(response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard 200..<300 ~= http.statusCode else {

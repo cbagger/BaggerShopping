@@ -1,5 +1,4 @@
 import SwiftUI
-import WebKit
 
 struct FlyersView: View {
     @State private var publications: [OfferPublication] = []
@@ -28,12 +27,10 @@ struct FlyersView: View {
                                 }
                                 Text(publication.title).font(.headline)
                                 if let from = publication.validFrom, let until = publication.validUntil {
-                                    Text("Gyldig \(from)–\(until)")
-                                        .foregroundStyle(.secondary)
+                                    Text("Gyldig \(from)–\(until)").foregroundStyle(.secondary)
                                 }
                                 Text("\(publication.pageCount) sider · Åbn avis")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
                             .padding(.vertical, 6)
                         }
@@ -44,14 +41,11 @@ struct FlyersView: View {
             }
             .navigationTitle("Aviser")
             .task { await load() }
-            .fullScreenCover(item: $selectedPublication) { publication in
-                FlyerReaderView(publication: publication)
-            }
+            .fullScreenCover(item: $selectedPublication) { NativeFlyerReader(publication: $0) }
         }
     }
 
-    @MainActor
-    private func load() async {
+    @MainActor private func load() async {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
@@ -60,170 +54,147 @@ struct FlyersView: View {
     }
 }
 
-private struct FlyerReaderView: View {
+private struct NativeFlyerReader: View {
     let publication: OfferPublication
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var model: AppModel
-    @State private var addedItemName: String?
-    @State private var pendingProduct: FlyerProductSelection?
+    @State private var offers: [GroceryOffer] = []
+    @State private var page = 1
+    @State private var pendingOffer: GroceryOffer?
+    @State private var addedName: String?
+    @State private var errorMessage: String?
+    private let api = APIClient()
 
     var body: some View {
         NavigationStack {
             Group {
-                if let url = publication.readerURL {
-                    OfficialFlyerWebView(url: url) { product in pendingProduct = product }
-                        .ignoresSafeArea(edges: .bottom)
+                if publication.pageImageURLs.isEmpty {
+                    ContentUnavailableView("Avisen mangler sidebilleder", systemImage: "doc.text.magnifyingglass")
                 } else {
-                    ContentUnavailableView("Avisen kan ikke åbnes", systemImage: "doc.text.magnifyingglass")
-                }
-            }
-            .alert("Tilføjet til indkøbslisten", isPresented: Binding(
-                get: { addedItemName != nil },
-                set: { if !$0 { addedItemName = nil } }
-            )) {
-                Button("OK") { addedItemName = nil }
-            } message: {
-                Text(addedItemName ?? "")
-            }
-            .sheet(item: $pendingProduct) { product in
-                NavigationStack {
-                    List(product.variants, id: \.self) { name in
-                        Button {
-                            pendingProduct = nil
-                            Task {
-                                if await model.addItem(name) { addedItemName = name }
+                    TabView(selection: $page) {
+                        ForEach(Array(publication.pageImageURLs.enumerated()), id: \.offset) { index, url in
+                            FlyerPage(url: url, offers: offers.filter { $0.pageNumber == index + 1 }) { offer in
+                                choose(offer)
                             }
-                        } label: {
-                            Label(name, systemImage: "plus.circle.fill")
-                                .foregroundStyle(.primary)
+                            .tag(index + 1)
                         }
                     }
-                    .navigationTitle(product.title)
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Annuller") { pendingProduct = nil }
-                        }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .background(Color.black)
+                    .overlay(alignment: .topTrailing) {
+                        Text("\(page) / \(publication.pageImageURLs.count)")
+                            .font(.caption.bold())
+                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .padding(12)
                     }
                 }
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
             }
             .navigationTitle(publication.retailer)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Luk", systemImage: "xmark") { dismiss() }
-                }
+            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Luk", systemImage: "xmark") { dismiss() } } }
+            .task { await loadOffers() }
+            .sheet(item: $pendingOffer) { offer in
+                OfferPicker(offer: offer) { name in add(name); pendingOffer = nil }
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
             }
+            .alert("Tilføjet til indkøbslisten", isPresented: Binding(
+                get: { addedName != nil }, set: { if !$0 { addedName = nil } }
+            )) { Button("OK") { addedName = nil } } message: { Text(addedName ?? "") }
+            .alert("Kunne ikke hente avisens varer", isPresented: Binding(
+                get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
+            )) { Button("OK") { errorMessage = nil } } message: { Text(errorMessage ?? "") }
         }
         .preferredColorScheme(.light)
     }
+
+    private func choose(_ offer: GroceryOffer) {
+        if offer.variants.count == 1, let variant = offer.variants.first { add(variant.name) }
+        else { pendingOffer = offer }
+    }
+
+    private func add(_ name: String) {
+        Task { if await model.addItem(name) { addedName = name } }
+    }
+
+    @MainActor private func loadOffers() async {
+        do { offers = try await api.fetchOffers(publicationID: publication.id).offers }
+        catch { errorMessage = error.localizedDescription }
+    }
 }
 
-private struct FlyerProductSelection: Codable, Identifiable {
-    let title: String
-    let variants: [String]
-    var id: String { title + variants.joined(separator: "|") }
-}
-
-private struct OfficialFlyerWebView: UIViewRepresentable {
+private struct FlyerPage: View {
     let url: URL
-    let onSelectProduct: (FlyerProductSelection) -> Void
+    let offers: [GroceryOffer]
+    let select: (GroceryOffer) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(onSelectProduct: onSelectProduct) }
-
-    func makeUIView(context: Context) -> WKWebView {
-        let configuration = WKWebViewConfiguration()
-        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        configuration.userContentController.add(context.coordinator, name: "baggerShoppingAdd")
-        configuration.userContentController.addUserScript(WKUserScript(
-            source: Self.bridgeScript,
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: false
-        ))
-        let view = WKWebView(frame: .zero, configuration: configuration)
-        view.overrideUserInterfaceStyle = .light
-        view.scrollView.contentInsetAdjustmentBehavior = .never
-        view.allowsBackForwardNavigationGestures = false
-        view.navigationDelegate = context.coordinator
-        return view
-    }
-
-    func updateUIView(_ webView: WKWebView, context: Context) {
-        guard webView.url != url else { return }
-        webView.load(URLRequest(url: url, cachePolicy: .reloadRevalidatingCacheData))
-    }
-
-    static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
-        uiView.configuration.userContentController.removeScriptMessageHandler(forName: "baggerShoppingAdd")
-        uiView.navigationDelegate = nil
-    }
-
-    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
-        let onSelectProduct: (FlyerProductSelection) -> Void
-
-        init(onSelectProduct: @escaping (FlyerProductSelection) -> Void) { self.onSelectProduct = onSelectProduct }
-
-        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-            guard message.name == "baggerShoppingAdd",
-                  JSONSerialization.isValidJSONObject(message.body),
-                  let data = try? JSONSerialization.data(withJSONObject: message.body),
-                  let product = try? JSONDecoder().decode(FlyerProductSelection.self, from: data),
-                  !product.variants.isEmpty else { return }
-            DispatchQueue.main.async { self.onSelectProduct(product) }
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            webView.evaluateJavaScript(OfficialFlyerWebView.bridgeScript)
+    var body: some View {
+        GeometryReader { proxy in
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFit()
+                        .overlay { hotspots(in: proxy.size) }
+                } else if phase.error != nil {
+                    ContentUnavailableView("Siden kunne ikke hentes", systemImage: "photo.badge.exclamationmark")
+                } else { ProgressView() }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    private static let bridgeScript = #"""
-    (() => {
-      if (window.__baggerShoppingInstalled) return;
-      window.__baggerShoppingInstalled = true;
-
-      const text = el => (el && (el.innerText || el.textContent) || '').replace(/\s+/g, ' ').trim();
-      const basketPattern = /læg\s+i\s+kurv|vis\s+i\s+kurv|gå\s+til\s+kurv/i;
-      const clean = value => value.replace(basketPattern, '').replace(/\s+/g, ' ').trim();
-      const emitOverlay = root => {
-        if (!root || root.dataset.baggerHandled === '1') return false;
-        const actions = Array.from(root.querySelectorAll('button,a,[role="button"]')).filter(el => /læg\s+i\s+kurv/i.test(text(el)));
-        if (!actions.length) return false;
-        root.dataset.baggerHandled = '1';
-        const headings = Array.from(root.querySelectorAll('h1,h2,h3,h4,[class*="title"],[class*="name"]')).map(el => clean(text(el))).filter(Boolean);
-        const variants = actions.map(action => {
-          const row = action.closest('li,[class*="variant"],[class*="product"],[class*="item"]') || action.parentElement;
-          const names = row ? Array.from(row.querySelectorAll('h1,h2,h3,h4,[class*="title"],[class*="name"]')).map(el => clean(text(el))).filter(Boolean) : [];
-          return names[0] || clean(text(row));
-        }).filter(value => value && !/vælg|variant|pris/i.test(value));
-        const unique = Array.from(new Set(variants));
-        const title = headings.find(value => !unique.includes(value) && !/vælg|variant/i.test(value)) || unique[0] || 'Vælg vare';
-        root.style.setProperty('display','none','important');
-        window.webkit.messageHandlers.baggerShoppingAdd.postMessage({title, variants: unique.length ? unique : [title]});
-        return true;
-      };
-      const inspect = () => {
-        document.querySelectorAll('a,button,[role="button"]').forEach(el => {
-          if (/vis\s+i\s+kurv|gå\s+til\s+kurv/i.test(text(el))) el.style.setProperty('display','none','important');
-        });
-        document.querySelectorAll('[role="dialog"],dialog,[class*="modal"],[class*="overlay"]').forEach(emitOverlay);
-      };
-      inspect();
-      new MutationObserver(inspect).observe(document.documentElement, {subtree:true, childList:true});
-
-      document.addEventListener('click', event => {
-        const action = event.target && event.target.closest('button,a,[role="button"]');
-        if (!action || !/læg\s+i\s+kurv/i.test(text(action))) return;
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        const container = action.closest('[role="dialog"],dialog,[class*="modal"],[class*="product"],[class*="enrichment"]') || action.parentElement;
-        if (!emitOverlay(container)) {
-          const product = clean(text(container)) || 'Vælg vare';
-          window.webkit.messageHandlers.baggerShoppingAdd.postMessage({title: product, variants: [product]});
+    @ViewBuilder private func hotspots(in container: CGSize) -> some View {
+        // MENY's native pages are 694 × 1007. scaledToFit may letterbox,
+        // therefore normalized coordinates are placed inside the fitted rect.
+        let ratio = 694.0 / 1007.0
+        let width = min(container.width, container.height * ratio)
+        let height = width / ratio
+        let offsetX = (container.width - width) / 2
+        let offsetY = (container.height - height) / 2
+        ZStack(alignment: .topLeading) {
+            ForEach(offers) { offer in
+                if let x = offer.hotspotX, let y = offer.hotspotY,
+                   let w = offer.hotspotWidth, let h = offer.hotspotHeight {
+                    Button { select(offer) } label: {
+                        Image(systemName: "plus")
+                            .font(.caption.bold())
+                            .foregroundStyle(.white)
+                            .frame(width: 30, height: 30)
+                            .background(.black.opacity(0.82), in: Circle())
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                    }
+                        .frame(width: max(44, width * w), height: max(44, height * h))
+                        .offset(x: offsetX + width * x, y: offsetY + height * y)
+                        .accessibilityLabel("Tilføj \(offer.productName)")
+                }
+            }
         }
-      }, true);
-    })();
-    """#
+        .frame(width: container.width, height: container.height, alignment: .topLeading)
+    }
+}
+
+private struct OfferPicker: View {
+    let offer: GroceryOffer
+    let select: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List(offer.variants) { variant in
+                Button { select(variant.name) } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(variant.name).font(.headline)
+                        if let quantity = variant.quantity, let unit = variant.unit {
+                            Text("\(quantity.formatted(.number.precision(.fractionLength(0...2)))) \(unit)")
+                                .font(.subheadline).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Vælg vare")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuller") { dismiss() } } }
+        }
+    }
 }

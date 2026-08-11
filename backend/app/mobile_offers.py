@@ -44,6 +44,18 @@ async def search_offers(
     }
 
 
+@router.get("/publications/{publication_id}/offers")
+async def publication_offers(publication_id: str):
+    publication = await _publication()
+    if publication.id != publication_id:
+        raise HTTPException(status_code=404, detail="Publication is no longer current")
+    return {
+        "ok": True,
+        "publication": _publication_payload(publication),
+        "offers": [offer.model_dump() for offer in publication.structured_offers],
+    }
+
+
 # Compatibility for the already deployed proof-of-concept iOS build.
 @router.get("/meny")
 async def meny_offer_status():

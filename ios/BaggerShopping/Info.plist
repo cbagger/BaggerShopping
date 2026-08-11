@@ -17,9 +17,9 @@
     <key>CFBundlePackageType</key>
     <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.4.0</string>
+    <string>0.5.0</string>
     <key>CFBundleVersion</key>
-    <string>7</string>
+    <string>8</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Bagger Shopping bruger din placering til at registrere, når du ankommer til en valgt dagligvarebutik.</string>
     <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>

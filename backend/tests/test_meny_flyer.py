@@ -1,6 +1,7 @@
 import asyncio
 
 import httpx
+import pytest
 
 from app.meny_flyer import fetch_meny_flyer, parse_enrichment_chunks, parse_meny_flyer_html, search_publication
 
@@ -182,8 +183,42 @@ def test_implausible_quantity_is_omitted_instead_of_guessed():
 def test_publication_page_count_uses_ipaper_pages_not_text_layer_count():
     html = IPAPER_HTML.replace(
         "window.viewerState =",
-        'window.staticSettings = {"pages":[1,2,3,4],"enrichments":{"chunkUrls":{"1-4":"https://example.test/chunk.json"}}}; window.viewerState =',
+        'window.staticSettings = {"pages":[1,2,3,4],"aws":{"url":"https://cdn.test/paper/","policy":"signed=yes"},"enrichments":{"chunkUrls":{"1-4":"https://example.test/chunk.json"}}}; window.viewerState =',
     )
     publication = parse_meny_flyer_html(html)
     assert publication.page_count == 4
     assert publication.enrichment_urls == ["https://example.test/chunk.json"]
+    assert publication.page_image_urls[0] == "https://cdn.test/paper/Pages/1/Normal.jpg?signed=yes"
+
+
+def test_structured_offer_exposes_native_hotspot_geometry():
+    publication = parse_meny_flyer_html(IPAPER_HTML)
+    offer = parse_enrichment_chunks(publication, [{"enrichments": [{
+        "type": 13, "pageIndex": 0, "productId": "milk", "name": "Kakaomælk",
+        "alttext": "Kakaomælk", "desc": "1 l", "price": 9.95,
+        "x": 0.4, "y": 0.7, "width": 0.1, "height": 0.08,
+    }]}])[0]
+    assert (offer.hotspot_x, offer.hotspot_y) == (0.4, 0.7)
+    assert offer.hotspot_width == pytest.approx(0.1)
+    assert offer.hotspot_height == pytest.approx(0.08)
+
+
+def test_per_piece_product_does_not_inherit_stray_weight():
+    assert parse_enrichment_chunks(parse_meny_flyer_html(IPAPER_HTML), [{"enrichments": [{
+        "type": 13, "pageIndex": 0, "productId": "melon", "name": "Vandmelon",
+        "alttext": "Vandmelon", "desc": "Melon vand 17 kg. 1 stk (Stk. pris 25,00)", "price": 25,
+    }]}])[0].quantity is None
+
+
+def test_grocery_domains_resolve_semantic_name_collisions():
+    publication = parse_meny_flyer_html(IPAPER_HTML)
+    publication.structured_offers = parse_enrichment_chunks(publication, [{"enrichments": [
+        {"type": 13, "pageIndex": 0, "productId": "fish", "name": "Panerede fiskefileter", "alttext": "Fiskefileter", "desc": "400 g", "price": 25},
+        {"type": 13, "pageIndex": 1, "productId": "candy", "name": "Katjes Salte Fisk", "alttext": "Slikposer", "desc": "100 g", "price": 15},
+        {"type": 13, "pageIndex": 2, "productId": "milk", "name": "Skummetmælk", "alttext": "Mælk", "desc": "1 l", "price": 10},
+        {"type": 13, "pageIndex": 3, "productId": "choc", "name": "Ritter Sport Mælk", "alttext": "Chokolade", "desc": "100 g", "price": 20},
+        {"type": 13, "pageIndex": 4, "productId": "sauce", "name": "Hvid mælkesauce", "alttext": "Sauce", "desc": "500 ml", "price": 16},
+    ]}])
+
+    assert [offer.product_name for offer in search_publication(publication, "fisk").offers] == ["Fiskefileter"]
+    assert [offer.product_name for offer in search_publication(publication, "mælk").offers] == ["Mælk"]
