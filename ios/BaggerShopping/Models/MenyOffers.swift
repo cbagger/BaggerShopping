@@ -1,37 +1,82 @@
 import Foundation
 
-struct MenyPublication: Codable {
+struct OfferPublication: Codable, Identifiable, Hashable {
+    let id: String
+    let retailer: String
     let title: String
     let validFrom: String?
     let validUntil: String?
-    let contentSource: String?
-    let pageCount: Int?
+    let status: String
+    let sourceURL: URL
+    let pageCount: Int
+    let readerURL: URL?
+    let readerKind: String?
 
     enum CodingKeys: String, CodingKey {
-        case title
+        case id, retailer, title, status
         case validFrom = "valid_from"
         case validUntil = "valid_until"
-        case contentSource = "content_source"
+        case sourceURL = "source_url"
         case pageCount = "page_count"
+        case readerURL = "reader_url"
+        case readerKind = "reader_kind"
     }
 }
 
-struct MenyOfferStatusResponse: Codable {
-    let ok: Bool
+struct GroceryOffer: Codable, Identifiable, Hashable {
+    let id: String
     let retailer: String
-    let publication: MenyPublication
-}
-
-struct MenyOfferSearchResponse: Codable {
-    let ok: Bool
-    let retailer: String
-    let query: String
-    let publication: MenyPublication
-    let matchCount: Int
-    let matches: [String]
+    let publicationID: String
+    let publicationTitle: String
+    let validFrom: String?
+    let validUntil: String?
+    let productName: String
+    let brand: String?
+    let price: Double?
+    let normalPrice: Double?
+    let quantity: Double?
+    let unit: String?
+    let unitPrice: String?
+    let discountPercent: Int?
+    let imageURL: URL?
+    let sourceURL: URL
+    let pageNumber: Int?
+    let rawText: String
+    let safeToAdd: Bool
 
     enum CodingKeys: String, CodingKey {
-        case ok, retailer, query, publication, matches
-        case matchCount = "match_count"
+        case id, retailer, brand, price, quantity, unit
+        case publicationID = "publication_id"
+        case publicationTitle = "publication_title"
+        case validFrom = "valid_from"
+        case validUntil = "valid_until"
+        case productName = "product_name"
+        case normalPrice = "normal_price"
+        case unitPrice = "unit_price"
+        case discountPercent = "discount_percent"
+        case imageURL = "image_url"
+        case sourceURL = "source_url"
+        case pageNumber = "page_number"
+        case rawText = "raw_text"
+        case safeToAdd = "safe_to_add"
+    }
+}
+
+struct PublicationsResponse: Codable {
+    let ok: Bool
+    let publications: [OfferPublication]
+}
+
+struct OfferSearchResponse: Codable {
+    let ok: Bool
+    let query: String
+    let retailer: String
+    let publication: OfferPublication
+    let offerCount: Int
+    let offers: [GroceryOffer]
+
+    enum CodingKeys: String, CodingKey {
+        case ok, query, retailer, publication, offers
+        case offerCount = "offer_count"
     }
 }
