@@ -11,6 +11,7 @@ from .grpc_web import (
     build_sync_items_add_request,
     build_sync_items_checked_request,
     build_sync_items_delete_request,
+    build_sync_items_quantity_request,
     extract_printable_strings,
     parse_grpc_web_response,
 )
@@ -39,7 +40,7 @@ class SamsungFoodClient:
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
-            "User-Agent": "bagger-shopping/0.2",
+            "User-Agent": "bagger-shopping/0.3",
         }
 
         async with httpx.AsyncClient(
@@ -49,7 +50,6 @@ class SamsungFoodClient:
             response = await client.get(url, headers=headers)
 
         if response.status_code == 401:
-            # Force one automatic auth refresh and retry.
             token = await self.auth.get_token(force_refresh=True)
             headers["Authorization"] = f"Bearer {token}"
             async with httpx.AsyncClient(
@@ -78,8 +78,17 @@ class SamsungFoodClient:
 
             nested_item = raw.get("item")
             name = None
+            quantity = None
+            unit = None
             if isinstance(nested_item, dict):
                 name = nested_item.get("name")
+                raw_quantity = nested_item.get("quantity")
+                if isinstance(raw_quantity, (int, float)) and not isinstance(raw_quantity, bool):
+                    quantity = float(raw_quantity)
+                raw_unit = nested_item.get("unit")
+                if isinstance(raw_unit, str) and raw_unit.strip():
+                    unit = raw_unit.strip()
+
             name = name or raw.get("name")
             if not name:
                 continue
@@ -95,6 +104,8 @@ class SamsungFoodClient:
                     id=raw.get("id"),
                     name=str(name),
                     checked=checked if isinstance(checked, bool) else None,
+                    quantity=quantity,
+                    unit=unit,
                     raw=raw,
                 )
             )
@@ -168,7 +179,6 @@ class SamsungFoodClient:
             "samsung_item_id": samsung_item_id,
         }
 
-
     async def _post_sync_items(self, body: bytes) -> dict[str, Any]:
         token = await self._token()
         endpoint = (
@@ -226,17 +236,38 @@ class SamsungFoodClient:
             item.name,
             checked,
             int(time.time() * 1000),
+            quantity=item.quantity,
+            unit=item.unit,
         )
         result = await self._post_sync_items(body)
 
-        # Verify that the item still exists after the mutation. Samsung's REST
-        # representation of checked state has varied, so state verification is
-        # intentionally tolerant; the next read returned to the app is truth.
+        # Ensure the item still exists. Quantity/unit are explicitly preserved in
+        # the update payload so a checkbox mutation cannot erase them.
         await self._find_item(item_id)
         return result
 
+    async def set_item_quantity(
+        self,
+        item_id: str,
+        quantity: float,
+        unit: str = "stk",
+    ) -> dict[str, Any]:
+        if quantity <= 0:
+            raise SamsungFoodError("Quantity must be greater than zero")
+        item = await self._find_item(item_id)
+        body = build_sync_items_quantity_request(
+            self.list_id,
+            item_id,
+            item.name,
+            bool(item.checked),
+            quantity,
+            unit.strip() or "stk",
+            int(time.time() * 1000),
+        )
+        result = await self._post_sync_items(body)
+        return result
+
     async def delete_item(self, item_id: str) -> dict[str, Any]:
-        # Ensure the id belongs to this list before sending the delete operation.
         await self._find_item(item_id)
         body = build_sync_items_delete_request(
             self.list_id,
