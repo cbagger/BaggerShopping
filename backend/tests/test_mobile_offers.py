@@ -44,3 +44,37 @@ def test_current_offers_static_route_returns_live_offer_count(monkeypatch):
 
     assert response["offer_count"] == 1
     assert response["offers"][0]["product_name"] == "Kakaomælk"
+    assert response["coverage"] == {
+        "offer_count": 1,
+        "hotspot_count": 0,
+        "pages_without_hotspots": [],
+        "pages": [],
+    }
+
+
+def test_current_offers_reports_hotspot_coverage_per_page(monkeypatch):
+    publication = parse_meny_flyer_html(
+        '<script>window.staticSettings = {"pages":[1,2],"aws":{}};</script><p>MENY uge 3326</p>'
+    )
+    publication.structured_offers = parse_enrichment_chunks(publication, [{"enrichments": [
+        {
+            "type": 13, "pageIndex": 0, "productId": "milk", "name": "Kakaomælk",
+            "alttext": "Kakaomælk", "desc": "1 l", "price": 9.95,
+            "x": 0.1, "y": 0.2, "width": 0.3, "height": 0.1,
+        },
+        {
+            "type": 13, "pageIndex": 1, "productId": "rye", "name": "Rugbrød",
+            "alttext": "Rugbrød", "desc": "500 g", "price": 18,
+        },
+    ]}])
+
+    async def current_publication():
+        return publication
+
+    monkeypatch.setattr(mobile_offers, "_publication", current_publication)
+    response = asyncio.run(mobile_offers.current_publication_offers())
+
+    assert response["coverage"]["offer_count"] == 2
+    assert response["coverage"]["hotspot_count"] == 1
+    assert response["coverage"]["pages_without_hotspots"] == [2]
+    assert response["coverage"]["pages"][1] == {"page_number": 2, "offer_count": 1, "hotspot_count": 0}
