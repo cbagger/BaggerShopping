@@ -112,8 +112,8 @@ struct APIClient {
         return try JSONDecoder().decode(OfferSearchResponse.self, from: data)
     }
 
-    func fetchOffers(publicationID: String) async throws -> PublicationOffersResponse {
-        let data = try await perform(request(path: "/api/mobile/v1/offers/publications/\(publicationID)/offers"))
+    func fetchCurrentOffers() async throws -> PublicationOffersResponse {
+        let data = try await perform(request(path: "/api/mobile/v1/offers/current-offers"))
         return try JSONDecoder().decode(PublicationOffersResponse.self, from: data)
     }
 

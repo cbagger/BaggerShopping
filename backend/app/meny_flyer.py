@@ -307,6 +307,11 @@ QUERY_ALIASES: dict[str, tuple[str, ...]] = {
     "sodavand": ("cola", "coca-cola", "fanta", "sprite", "pepsi", "schweppes", "squash"),
 }
 
+# Most Danish grocery words legitimately occur in compounds (skummetmælk,
+# sandwichrugbrød). A few short terms produce unrelated substring hits and
+# therefore require token boundaries.
+STRICT_TOKEN_TERMS = {"cola"}
+
 
 def _product_domain(value: str) -> str | None:
     normalized = _normalize_space(value)
@@ -325,9 +330,13 @@ def _query_terms(query: str) -> tuple[str, ...]:
 
 def _contains_query_term(value: str, terms: tuple[str, ...]) -> bool:
     normalized = _normalize_space(value).casefold()
-    if terms[0] in normalized:
-        return True
-    return any(re.search(rf"(?<!\w){re.escape(term)}(?!\w)", normalized) for term in terms[1:])
+    for index, term in enumerate(terms):
+        if index > 0 or term in STRICT_TOKEN_TERMS:
+            if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", normalized):
+                return True
+        elif term in normalized:
+            return True
+    return False
 
 
 def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> list[Offer]:

@@ -249,3 +249,16 @@ def test_category_alias_finds_soda_brands_without_unrelated_variants():
 
     assert len(offers) == 1
     assert [variant.name for variant in offers[0].variants] == ["Coca-Cola Zero"]
+
+
+def test_literal_query_uses_word_boundaries_not_substrings():
+    publication = parse_meny_flyer_html(IPAPER_HTML)
+    publication.structured_offers = parse_enrichment_chunks(publication, [{"enrichments": [
+        {"type": 13, "pageIndex": 0, "productId": "cola", "name": "Coca-Cola Zero", "alttext": "Sodavand", "desc": "1,5 l", "price": 9.95},
+        {"type": 13, "pageIndex": 1, "productId": "chocolate", "name": "Magnum Chocolate White", "alttext": "Is", "desc": "4 stk", "price": 30},
+    ]}])
+
+    offers = search_publication(publication, "cola").offers
+
+    assert len(offers) == 1
+    assert [variant.name for variant in offers[0].variants] == ["Coca-Cola Zero"]

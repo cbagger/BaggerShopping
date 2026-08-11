@@ -22,7 +22,11 @@ async def _publication() -> Publication:
 @router.get("/publications")
 async def publications():
     publication = await _publication()
-    return {"ok": True, "publications": [_publication_payload(publication)]}
+    return {
+        "ok": True,
+        "publications": [_publication_payload(publication)],
+        "offer_count": len(publication.structured_offers),
+    }
 
 
 @router.get("/search")
@@ -53,6 +57,23 @@ async def publication_offers(publication_id: str):
     return {
         "ok": True,
         "publication": _publication_payload(publication),
+        "offers": [offer.model_dump() for offer in publication.structured_offers],
+    }
+
+
+@router.get("/current-offers")
+async def current_publication_offers():
+    """Return offers for the current flyer without a client-supplied id.
+
+    There is currently one publication per retailer.  Keeping this as a static
+    route also makes it straightforward for deployment smoke tests to prove
+    that the complete offers router is running.
+    """
+    publication = await _publication()
+    return {
+        "ok": True,
+        "publication": _publication_payload(publication),
+        "offer_count": len(publication.structured_offers),
         "offers": [offer.model_dump() for offer in publication.structured_offers],
     }
 
