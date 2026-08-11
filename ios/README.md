@@ -20,14 +20,17 @@ Categories:
 - Personlig pleje
 - Andet
 
-The first classifier is deterministic and Danish-language focused. The user can change any item's category from the item menu. That correction is persisted locally and wins over the automatic classifier for future items with the same normalized name.
+The first classifier is deterministic and Danish-language focused. The user can change any item's category from the item menu. That correction is persisted locally and wins over the automatic classifier for future items with the same normalized name. The manual override can also be reset to return to automatic categorization.
 
 The shopping list is grouped by category, while bought items remain collected separately at the bottom. Existing Samsung Food add/check/uncheck/delete behavior is unchanged.
+
+Arrival notifications now summarize the active shopping list by category instead of showing an arbitrary flat preview. Example: `7 varer · 2 Frugt & Grønt, 2 Mejeri, 1 Kød + 2 øvrige`.
 
 Store management is also improved:
 
 - clearer enabled/disabled geofence state
 - editable 100–500 m radius on saved stores
+- 100 m as the default radius for newly added stores
 - store deletion from the edit screen
 - existing MapKit search and persisted store addresses remain unchanged
 
@@ -41,6 +44,8 @@ Store management is also improved:
 - local arrival notification
 - cached-list fallback
 - geofence diagnostics
+
+A 100 m geofence has also been verified in normal physical use at MENY Skørping: the arrival notification was delivered on the parking area as intended. v0.3.0 deliberately keeps the proven geofence pipeline unchanged apart from notification presentation and store-management UI.
 
 ## Build
 
