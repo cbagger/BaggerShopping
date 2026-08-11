@@ -94,19 +94,22 @@ struct APIClient {
         _ = try await perform(request(path: "/api/mobile/v1/category-overrides", method: "DELETE"))
     }
 
-    func fetchMenyOfferStatus() async throws -> MenyOfferStatusResponse {
-        let data = try await perform(request(path: "/api/mobile/v1/offers/meny"))
-        return try JSONDecoder().decode(MenyOfferStatusResponse.self, from: data)
+    func fetchOfferPublications() async throws -> PublicationsResponse {
+        let data = try await perform(request(path: "/api/mobile/v1/offers/publications"))
+        return try JSONDecoder().decode(PublicationsResponse.self, from: data)
     }
 
-    func searchMenyOffers(query: String) async throws -> MenyOfferSearchResponse {
+    func searchOffers(query: String, retailer: String = "MENY") async throws -> OfferSearchResponse {
         let data = try await perform(
             request(
-                path: "/api/mobile/v1/offers/meny/search",
-                queryItems: [URLQueryItem(name: "q", value: query)]
+                path: "/api/mobile/v1/offers/search",
+                queryItems: [
+                    URLQueryItem(name: "q", value: query),
+                    URLQueryItem(name: "retailer", value: retailer)
+                ]
             )
         )
-        return try JSONDecoder().decode(MenyOfferSearchResponse.self, from: data)
+        return try JSONDecoder().decode(OfferSearchResponse.self, from: data)
     }
 
     private func validate(response: URLResponse, data: Data) throws {
