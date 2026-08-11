@@ -1,6 +1,7 @@
+import asyncio
 import json
 
-import pytest
+import httpx
 
 from app.offers import fetch_goma_offers, goma_offer_url, parse_goma_html, slugify_query
 
@@ -68,18 +69,24 @@ def test_text_fallback_is_retailer_scoped():
     assert offers[0].unit == "g"
 
 
-@pytest.mark.asyncio
-async def test_fetch_uses_normalized_result(httpx_mock):
-    httpx_mock.add_response(
-        url="https://goma.gg/dagligvarer/margarine/tilbud",
-        html="""
-        <html><body><article><span>MENY</span><span>12,00 kr</span><span>19,95 kr</span>
-        <strong>Ama Margarine</strong><span>500 g</span></article></body></html>
-        """,
-    )
+def test_fetch_uses_normalized_result():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == "https://goma.gg/dagligvarer/margarine/tilbud"
+        return httpx.Response(
+            200,
+            text="""
+            <html><body><article><span>MENY</span><span>12,00 kr</span><span>19,95 kr</span>
+            <strong>Ama Margarine</strong><span>500 g</span></article></body></html>
+            """,
+            request=request,
+        )
 
-    # pytest-httpx injects its transport into normal httpx clients.
-    result = await fetch_goma_offers("margarine", "MENY")
+    async def run():
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await fetch_goma_offers("margarine", "MENY", client=client)
+
+    result = asyncio.run(run())
     assert result.ok is True
     assert result.retailer == "MENY"
     assert result.offers[0].product_name
