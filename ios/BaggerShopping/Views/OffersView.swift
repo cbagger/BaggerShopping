@@ -185,13 +185,7 @@ private struct OfferVariantSheet: View {
             List(variants) { variant in
                 Button { select(variant) } label: {
                     VStack(alignment: .leading, spacing: 5) {
-                        HStack {
-                            Text(variant.name).font(.headline).foregroundStyle(.primary)
-                            Spacer()
-                            if variant.matchesQuery {
-                                Text("MATCH").font(.caption2.bold()).foregroundStyle(.green)
-                            }
-                        }
+                        Text(variant.name).font(.headline).foregroundStyle(.primary)
                         HStack(spacing: 8) {
                             if let quantity = variant.quantity, let unit = variant.unit {
                                 Text("\(quantity.formatted(.number.precision(.fractionLength(0...2)))) \(unit)")
