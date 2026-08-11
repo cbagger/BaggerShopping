@@ -177,13 +177,14 @@ struct ShoppingListView: View {
 
             Spacer(minLength: 6)
 
-            if let displayQuantity = item.displayQuantity {
+            if let quantity = item.quantity, quantity > 1, let displayQuantity = item.displayQuantity {
                 Text(displayQuantity)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(.quaternary, in: Capsule())
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.blue, in: Capsule())
+                    .accessibilityLabel("Antal \(displayQuantity)")
             }
 
             if item.id == nil {
