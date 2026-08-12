@@ -167,7 +167,6 @@ private struct NativeFlyerReader: View {
     @State private var offers: [GroceryOffer] = []
     @State private var page = 1
     @State private var pendingOffer: GroceryOffer?
-    @State private var isAddingManualItem = false
     @State private var addedName: String?
     @State private var errorMessage: String?
     private let api = APIClient()
@@ -195,21 +194,6 @@ private struct NativeFlyerReader: View {
                             .background(.ultraThinMaterial, in: Capsule())
                             .padding(12)
                     }
-                    .overlay(alignment: .bottomTrailing) {
-                        if offersForCurrentPage.isEmpty {
-                            Button { isAddingManualItem = true } label: {
-                                Label("Tilføj vare", systemImage: "plus.circle.fill")
-                                    .font(.headline)
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 12)
-                                    .foregroundStyle(.white)
-                                    .background(.black.opacity(0.84), in: Capsule())
-                                    .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
-                            }
-                            .padding(18)
-                            .accessibilityHint("Skriv varen fra den viste side og føj den til indkøbslisten")
-                        }
-                    }
                 }
             }
             .navigationTitle(publication.retailer)
@@ -220,14 +204,6 @@ private struct NativeFlyerReader: View {
                 OfferPicker(offer: offer) { name in add(name); pendingOffer = nil }
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
-            }
-            .sheet(isPresented: $isAddingManualItem) {
-                ManualFlyerItemSheet(retailer: publication.retailer, page: page) { name in
-                    add(name)
-                    isAddingManualItem = false
-                }
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
             }
             .alert("Tilføjet til indkøbslisten", isPresented: Binding(
                 get: { addedName != nil }, set: { if !$0 { addedName = nil } }
@@ -256,67 +232,9 @@ private struct NativeFlyerReader: View {
         }
     }
 
-    private var offersForCurrentPage: [GroceryOffer] {
-        offers.filter { $0.pageNumber == page }
-    }
-
     @MainActor private func loadOffers() async {
         do { offers = try await api.fetchOffers(publicationID: publication.id).offers }
         catch { errorMessage = error.localizedDescription }
-    }
-}
-
-/// Not every publisher exposes structured product markers. The reader still
-/// lets the customer add an item from the page without pretending that a page
-/// image contains reliable product metadata. Retailer and validity metadata
-/// are preserved in exactly the same shopping-list flow as marker-based adds.
-private struct ManualFlyerItemSheet: View {
-    let retailer: String
-    let page: Int
-    let add: (String) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var name = ""
-    @FocusState private var isFocused: Bool
-
-    private var trimmedName: String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Fx mælk, kaffe eller rugbrød", text: $name)
-                        .textInputAutocapitalization(.sentences)
-                        .submitLabel(.done)
-                        .focused($isFocused)
-                        .onSubmit { submit() }
-                } header: {
-                    Text("Vare fra \(retailer) · side \(page)")
-                } footer: {
-                    Text("Varen gemmes med \(retailer) som tilbudsbutik på indkøbslisten.")
-                }
-            }
-            .navigationTitle("Tilføj til listen")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Annuller") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Tilføj") { submit() }
-                        .fontWeight(.semibold)
-                        .disabled(trimmedName.isEmpty)
-                }
-            }
-            .task { isFocused = true }
-        }
-    }
-
-    private func submit() {
-        guard !trimmedName.isEmpty else { return }
-        add(trimmedName)
     }
 }
 
