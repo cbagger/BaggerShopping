@@ -215,7 +215,16 @@ struct APIClient {
                 queryItems: queryItems
             )
         )
-        return try JSONDecoder().decode(OfferSearchResponse.self, from: data)
+        let response = try JSONDecoder().decode(OfferSearchResponse.self, from: data)
+        let rankedOffers = OfferSearchRanker.rank(response.offers, for: query)
+        return OfferSearchResponse(
+            ok: response.ok,
+            query: response.query,
+            retailer: response.retailer,
+            publication: response.publication,
+            offerCount: response.offerCount,
+            offers: rankedOffers
+        )
     }
 
     func fetchOffers(publicationID: String) async throws -> PublicationOffersResponse {
