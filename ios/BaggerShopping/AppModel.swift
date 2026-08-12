@@ -13,6 +13,7 @@ final class AppModel: ObservableObject {
     let categories = ShoppingCategoryService()
     private let api = APIClient()
     private let offerMetadataKey = "bagger-shopping-offer-metadata-v2"
+    private let offerMetadataMigrationKey = "bagger-shopping-offer-metadata-qnap-migrated-v1"
     private var offerMetadata: [String: OfferItemMetadata]
     private var reconciliationTasks: [String: Task<Void, Never>] = [:]
 
@@ -72,36 +73,46 @@ final class AppModel: ObservableObject {
         guard tokenConfigured else { return }
         let activeItems = shoppingList?.items ?? []
         let activeKeys = Set(activeItems.map { offerRetailerNameKey($0.name) })
-
-        // v2 stored offer metadata used to live only in UserDefaults. Seed any
-        // still-active local records into QNAP once, but never overwrite a
-        // record that another family phone has already written there.
-        let localMigration = activeItems.compactMap { item -> OfferMetadataDTO? in
-            let key = offerRetailerNameKey(item.name)
-            guard let metadata = offerMetadata[key] else { return nil }
-            return metadata.dto(itemName: item.name)
-        }
+        let shouldMigrateLocalCache = !UserDefaults.standard.bool(forKey: offerMetadataMigrationKey)
 
         do {
             let response: OfferMetadataResponse
-            if localMigration.isEmpty {
-                response = try await api.fetchOfferMetadata()
-            } else {
+            if shouldMigrateLocalCache {
+                // v2 stored offer metadata used to live only in UserDefaults.
+                // Seed still-active records into QNAP exactly once. The backend
+                // merge never overwrites an existing shared value, so QNAP wins
+                // conflicts with stale device data.
+                let localMigration = activeItems.compactMap { item -> OfferMetadataDTO? in
+                    let key = offerRetailerNameKey(item.name)
+                    guard let metadata = offerMetadata[key] else { return nil }
+                    return metadata.dto(itemName: item.name)
+                }
                 response = try await api.syncOfferMetadata(localMigration)
+                UserDefaults.standard.set(true, forKey: offerMetadataMigrationKey)
+            } else {
+                response = try await api.fetchOfferMetadata()
             }
 
-            var shared: [String: OfferItemMetadata] = [:]
+            // QNAP is authoritative for items that currently exist on the
+            // Samsung list. Keep non-active local entries temporarily so an
+            // eventually-consistent Samsung read cannot erase metadata for a
+            // just-added optimistic row before it appears in Samsung Food.
+            var nextMetadata = offerMetadata
+            for key in activeKeys {
+                nextMetadata.removeValue(forKey: key)
+            }
             for record in response.metadata {
                 let key = offerRetailerNameKey(record.itemName)
                 guard activeKeys.contains(key) else { continue }
-                shared[key] = OfferItemMetadata(dto: record)
+                nextMetadata[key] = OfferItemMetadata(dto: record)
             }
-            offerMetadata = shared
+            offerMetadata = nextMetadata
             saveOfferMetadata()
             objectWillChange.send()
         } catch {
             // Keep the historic local cache usable while QNAP or the mobile API
-            // is temporarily unavailable. A later refresh retries migration.
+            // is temporarily unavailable. Migration is retried until it has
+            // completed successfully and the migration marker has been stored.
         }
     }
 
