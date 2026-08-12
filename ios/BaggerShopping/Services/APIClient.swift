@@ -41,7 +41,8 @@ struct APIClient {
 
     private func perform(_ request: URLRequest) async throws -> Data {
         var lastError: Error?
-        let attempts = request.httpMethod == "GET" ? 3 : 1
+        let retryableMethods = ["GET", "PUT"]
+        let attempts = retryableMethods.contains(request.httpMethod ?? "") ? 3 : 1
         for attempt in 1...attempts {
             do {
                 let (data, response) = try await URLSession.shared.data(for: request)
