@@ -5,6 +5,11 @@ private struct ShoppingItemRenameTarget: Identifiable {
     let item: ShoppingItem
 }
 
+private struct ShoppingItemOfferTarget: Identifiable {
+    let id = UUID()
+    let item: ShoppingItem
+}
+
 struct ShoppingListView: View {
     private struct CategoryGroup: Identifiable {
         let category: ShoppingCategory
@@ -20,9 +25,12 @@ struct ShoppingListView: View {
     }
 
     @EnvironmentObject private var model: AppModel
+    @StateObject private var smartOffers = SmartOfferMatchService()
     @State private var newItem = ""
     @State private var selectedRetailerFilters: Set<String> = []
     @State private var renameTarget: ShoppingItemRenameTarget?
+    @State private var offerTarget: ShoppingItemOfferTarget?
+    @State private var showingOfferOverview = false
     @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
 
     private let retailerFilterOptions = [
@@ -36,6 +44,26 @@ struct ShoppingListView: View {
 
     private var checkedItems: [ShoppingItem] {
         model.shoppingList?.items.filter(\.checked) ?? []
+    }
+
+    private var offerMatchedItems: [ShoppingItem] {
+        activeItems.filter {
+            model.offerRetailer(for: $0) == nil && !smartOffers.matches(for: $0).isEmpty
+        }
+    }
+
+    private var totalOfferMatchCount: Int {
+        offerMatchedItems.reduce(0) { $0 + smartOffers.matches(for: $1).count }
+    }
+
+    private var offerMatchSignature: String {
+        activeItems
+            .map { item in
+                let normalized = ShoppingCategoryService.normalize(item.name)
+                return "\(normalized)|\(model.offerRetailer(for: item) ?? "-")"
+            }
+            .sorted()
+            .joined(separator: "||")
     }
 
     private var upcomingItems: [ShoppingItem] {
@@ -168,6 +196,37 @@ struct ShoppingListView: View {
                             }
                         }
 
+                        if !offerMatchedItems.isEmpty {
+                            Section {
+                                Button {
+                                    showingOfferOverview = true
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Image(systemName: "tag.fill")
+                                            .font(.title3)
+                                            .foregroundStyle(Color.accentColor)
+
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text("Tilbud til din liste")
+                                                .font(.headline)
+                                                .foregroundStyle(.primary)
+                                            Text("\(offerMatchedItems.count) varer · \(totalOfferMatchCount) aktuelle tilbud")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+
+                                        Spacer()
+                                        Image(systemName: "chevron.right")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            } footer: {
+                                Text("Forslag ændrer aldrig en vare automatisk. Du vælger selv, hvis et tilbud skal bruges.")
+                            }
+                        }
+
                         if activeItems.isEmpty {
                             Section {
                                 ContentUnavailableView(
@@ -249,6 +308,7 @@ struct ShoppingListView: View {
                     .refreshable {
                         await model.refresh()
                         await model.syncSharedCategories()
+                        await smartOffers.refresh(items: activeItems, model: model)
                     }
                 } else {
                     ContentUnavailableView(
@@ -265,6 +325,7 @@ struct ShoppingListView: View {
                         Task {
                             await model.refresh()
                             await model.syncSharedCategories()
+                            await smartOffers.refresh(items: activeItems, model: model)
                         }
                     } label: {
                         Image(systemName: "arrow.clockwise")
@@ -275,6 +336,18 @@ struct ShoppingListView: View {
             .sheet(item: $renameTarget) { target in
                 RenameShoppingItemView(item: target.item)
                     .environmentObject(model)
+            }
+            .sheet(item: $offerTarget) { target in
+                SmartOfferMatchesView(service: smartOffers, focusItem: target.item)
+                    .environmentObject(model)
+            }
+            .sheet(isPresented: $showingOfferOverview) {
+                SmartOfferMatchesView(service: smartOffers, focusItem: nil)
+                    .environmentObject(model)
+            }
+            .task(id: offerMatchSignature) {
+                guard model.tokenConfigured else { return }
+                await smartOffers.refresh(items: activeItems, model: model)
             }
             .alert(
                 "Fejl",
@@ -367,6 +440,23 @@ struct ShoppingListView: View {
                     }
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.red)
+                }
+
+                if !item.checked, model.offerRetailer(for: item) == nil {
+                    let matches = smartOffers.matches(for: item)
+                    if !matches.isEmpty {
+                        Button {
+                            offerTarget = ShoppingItemOfferTarget(item: item)
+                        } label: {
+                            Label(
+                                matches.count == 1 ? "1 tilbud fundet" : "\(matches.count) tilbud fundet",
+                                systemImage: "tag"
+                            )
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
 
                 if showCategory {
