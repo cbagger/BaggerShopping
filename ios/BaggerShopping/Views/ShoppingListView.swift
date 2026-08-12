@@ -523,13 +523,15 @@ private struct RenameShoppingItemView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Varenavn") {
+                Section {
                     TextField("Navn", text: $name)
                         .textInputAutocapitalization(.sentences)
                         .submitLabel(.done)
                         .onSubmit {
                             if canSave { Task { await save() } }
                         }
+                } header: {
+                    Text("Varenavn")
                 } footer: {
                     Text("Navnet ændres på den eksisterende Samsung Food-vare. Antal, købt-status, kategori og eventuelle tilbudsoplysninger bevares.")
                 }

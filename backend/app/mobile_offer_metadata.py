@@ -9,9 +9,6 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from .grpc_web import _build_sync_items_update_request
-from .samsung import SamsungFoodClient, SamsungFoodError
-
 
 router = APIRouter(prefix="/api/mobile/v1", tags=["mobile-offer-metadata"])
 offer_metadata_store_lock = asyncio.Lock()
@@ -127,12 +124,7 @@ async def put_offer_metadata(record: OfferMetadataRecord) -> dict[str, object]:
 
 @router.put("/offer-metadata/sync", response_model=OfferMetadataResponse)
 async def sync_offer_metadata(request: OfferMetadataSyncRequest) -> OfferMetadataResponse:
-    """Merge missing device metadata into the shared store without overwriting server values.
-
-    This endpoint exists primarily for the one-time migration from the historic
-    iPhone UserDefaults cache. Once an item already exists in the shared store,
-    the shared QNAP value wins.
-    """
+    """Merge missing device metadata into the shared store without overwriting server values."""
     clean_records = [normalized_record(record) for record in request.metadata]
     async with offer_metadata_store_lock:
         store = load_offer_metadata_store()
@@ -165,13 +157,12 @@ async def rename_shopping_item(
     item_id: str,
     request: RenameShoppingItemRequest,
 ) -> dict[str, object]:
-    """Rename one Samsung shopping item in place and move its shared offer metadata.
+    """Rename one Samsung item in place and move its shared offer metadata."""
+    # Keep Samsung/config imports lazy: metadata-only mobile API routes and their
+    # unit tests must not require SAMSUNG_LIST_ID just to import this router.
+    from .grpc_web import _build_sync_items_update_request
+    from .samsung import SamsungFoodClient, SamsungFoodError
 
-    Samsung's existing item-update SyncItems operation carries the item name as
-    part of the same payload used for checkbox and quantity updates. Reusing it
-    preserves the Samsung item ID, checked state, quantity and unit instead of
-    emulating rename with a delete/add pair.
-    """
     new_name = " ".join(request.name.strip().split())
     if not new_name:
         raise HTTPException(status_code=422, detail="Item name cannot be empty")

@@ -2,11 +2,12 @@ import os
 from types import SimpleNamespace
 
 os.environ.setdefault("MOBILE_API_TOKEN", "test-token")
+os.environ.setdefault("SAMSUNG_LIST_ID", "test-list")
 
 from fastapi.testclient import TestClient
 
 import app.mobile_main as mobile
-import app.mobile_offer_metadata as shared_metadata
+from app.samsung import SamsungFoodClient
 
 
 client = TestClient(mobile.app)
@@ -139,12 +140,12 @@ def test_item_rename_updates_samsung_payload_and_moves_offer_metadata(monkeypatc
 
     async def fake_post_sync_items(self, body):
         payload = body[5:]
-        assert b"Ny mælk" in payload
+        assert "Ny mælk".encode("utf-8") in payload
         assert b"item123" in payload
         return {"grpc_status": 0}
 
-    monkeypatch.setattr(shared_metadata.SamsungFoodClient, "_find_item", fake_find_item)
-    monkeypatch.setattr(shared_metadata.SamsungFoodClient, "_post_sync_items", fake_post_sync_items)
+    monkeypatch.setattr(SamsungFoodClient, "_find_item", fake_find_item)
+    monkeypatch.setattr(SamsungFoodClient, "_post_sync_items", fake_post_sync_items)
 
     response = client.patch(
         "/api/mobile/v1/items/item-123/name",
