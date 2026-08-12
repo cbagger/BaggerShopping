@@ -120,14 +120,6 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
     }
 }
 
-extension GroceryOffer {
-    /// Tjek marks grouped products as "Frit valg" even when its JSON only
-    /// names the campaign. Never silently add that heading as a concrete item.
-    var requiresVariantChoice: Bool {
-        variants.count != 1 || rawText.localizedCaseInsensitiveContains("frit valg")
-    }
-}
-
 struct OfferVariant: Codable, Identifiable, Hashable {
     let id: String
     let name: String

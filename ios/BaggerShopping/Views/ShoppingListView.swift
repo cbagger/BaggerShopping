@@ -18,8 +18,22 @@ struct ShoppingListView: View {
         model.shoppingList?.items.filter(\.checked) ?? []
     }
 
+    private var upcomingItems: [ShoppingItem] {
+        activeItems.filter {
+            if case .upcoming = model.offerState(for: $0) { return true }
+            return false
+        }
+    }
+
+    private var currentItems: [ShoppingItem] {
+        activeItems.filter {
+            if case .upcoming = model.offerState(for: $0) { return false }
+            return true
+        }
+    }
+
     private var groupedActiveItems: [CategoryGroup] {
-        let grouped = Dictionary(grouping: activeItems) { model.category(for: $0) }
+        let grouped = Dictionary(grouping: currentItems) { model.category(for: $0) }
         return grouped
             .map {
                 CategoryGroup(
@@ -69,6 +83,18 @@ struct ShoppingListView: View {
                                 )
                             }
                         } else {
+                            if !upcomingItems.isEmpty {
+                                Section {
+                                    ForEach(upcomingItems, id: \.stableID) { item in
+                                        itemRow(item, showCategory: false)
+                                    }
+                                } header: {
+                                    Label("Kommende tilbud · \(upcomingItems.count)", systemImage: "calendar.badge.clock")
+                                } footer: {
+                                    Text("Disse priser gælder ikke endnu.")
+                                }
+                            }
+
                             ForEach(groupedActiveItems) { group in
                                 Section {
                                     ForEach(group.items, id: \.stableID) { item in
@@ -167,6 +193,36 @@ struct ShoppingListView: View {
                     .strikethrough(item.checked)
                     .foregroundStyle(item.checked ? .secondary : .primary)
 
+                if let retailer = model.offerRetailer(for: item) {
+                    HStack(spacing: 4) {
+                        Text(retailer).lineLimit(1)
+                        if let price = model.offerPrice(for: item) {
+                            Text("·")
+                            Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    if !item.checked, let status = offerStatus(for: item) {
+                        Label(status.label, systemImage: status.icon)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(status.color)
+                    }
+                } else if !item.checked, let expired = model.expiredOfferMetadata(for: item) {
+                    HStack(spacing: 4) {
+                        Text(expired.retailer).lineLimit(1)
+                        if let price = expired.price {
+                            Text("·")
+                            Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                        }
+                        Text("· Udløbet")
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.red)
+                }
+
                 if showCategory {
                     let category = model.category(for: item)
                     Label(category.rawValue, systemImage: category.icon)
@@ -176,37 +232,6 @@ struct ShoppingListView: View {
             }
 
             Spacer(minLength: 6)
-
-            if let retailer = model.offerRetailer(for: item) {
-                HStack(spacing: 4) {
-                    if !item.checked && model.offerExpiresToday(for: item) {
-                        Image(systemName: "clock.badge.exclamationmark")
-                            .foregroundStyle(.orange)
-                            .symbolEffect(.pulse)
-                    }
-                    Text(retailer)
-                    if let price = model.offerPrice(for: item) {
-                        Text("·")
-                        Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
-                    }
-                }
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(model.offerExpiresToday(for: item) ? .orange : .secondary)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Tilbud fra \(retailer)")
-            } else if !item.checked, let expired = model.expiredOfferMetadata(for: item) {
-                HStack(spacing: 4) {
-                    Text(expired.retailer)
-                    if let price = expired.price {
-                        Text("·")
-                        Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
-                    }
-                }
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.red)
-                .strikethrough(true, color: .red)
-                .accessibilityLabel("Udløbet tilbud fra \(expired.retailer)")
-            }
 
             if let quantity = item.quantity, quantity > 1, let displayQuantity = item.displayQuantity {
                 Text(displayQuantity)
@@ -278,6 +303,19 @@ struct ShoppingListView: View {
                     Label("Slet", systemImage: "trash")
                 }
             }
+        }
+    }
+
+    private func offerStatus(for item: ShoppingItem) -> (label: String, icon: String, color: Color)? {
+        switch model.offerState(for: item) {
+        case .upcoming(let date):
+            return ("Tilbud fra \(date.formatted(.dateTime.weekday(.wide).day().month(.abbreviated)))", "calendar.badge.clock", .indigo)
+        case .expiresSoon:
+            return ("Udløber snart", "clock.badge.exclamationmark", .orange)
+        case .expired:
+            return ("Tilbud udløbet", "calendar.badge.exclamationmark", .red)
+        case .active, .none:
+            return nil
         }
     }
 }

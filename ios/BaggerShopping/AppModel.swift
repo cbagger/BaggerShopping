@@ -62,6 +62,7 @@ final class AppModel: ObservableObject {
         _ name: String,
         retailer: String? = nil,
         offerPrice: Double? = nil,
+        offerValidFrom: String? = nil,
         offerValidUntil: String? = nil
     ) async -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -85,6 +86,7 @@ final class AppModel: ObservableObject {
                 offerMetadata[offerRetailerNameKey(trimmed)] = OfferItemMetadata(
                     retailer: retailer,
                     price: offerPrice,
+                    validFrom: offerValidFrom,
                     validUntil: offerValidUntil
                 )
                 saveOfferMetadata()
@@ -191,6 +193,22 @@ final class AppModel: ObservableObject {
         currentOfferMetadata(for: item)?.price
     }
 
+    func offerState(for item: ShoppingItem) -> OfferItemState? {
+        guard let metadata = offerMetadata[offerRetailerNameKey(item.name)] else { return nil }
+        let today = Calendar.current.startOfDay(for: Date())
+        if let start = parseOfferDate(metadata.validFrom), start > today {
+            return .upcoming(start)
+        }
+        if let end = parseOfferDate(metadata.validUntil), end < today {
+            return .expired
+        }
+        if let end = parseOfferDate(metadata.validUntil) {
+            let days = Calendar.current.dateComponents([.day], from: today, to: Calendar.current.startOfDay(for: end)).day ?? 2
+            if days <= 1 { return .expiresSoon }
+        }
+        return .active
+    }
+
     func expiredOfferMetadata(for item: ShoppingItem) -> (retailer: String, price: Double?)? {
         guard let metadata = offerMetadata[offerRetailerNameKey(item.name)],
               let validUntil = metadata.validUntil else { return nil }
@@ -203,12 +221,7 @@ final class AppModel: ObservableObject {
     }
 
     func offerExpiresToday(for item: ShoppingItem) -> Bool {
-        guard let validUntil = offerMetadata[offerRetailerNameKey(item.name)]?.validUntil else { return false }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "da_DK")
-        formatter.dateFormat = "dd.MM.yyyy"
-        guard let expiry = formatter.date(from: validUntil) else { return false }
-        return Calendar.current.isDateInToday(expiry)
+        offerState(for: item) == .expiresSoon
     }
 
     func setCategory(_ category: ShoppingCategory, for item: ShoppingItem) {
@@ -282,12 +295,16 @@ final class AppModel: ObservableObject {
 
     private func currentOfferMetadata(for item: ShoppingItem) -> OfferItemMetadata? {
         guard let metadata = offerMetadata[offerRetailerNameKey(item.name)] else { return nil }
-        guard let validUntil = metadata.validUntil else { return metadata }
+        return offerState(for: item) == .expired ? nil : metadata
+    }
+
+    private func parseOfferDate(_ value: String?) -> Date? {
+        guard let value else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "da_DK")
+        formatter.calendar = Calendar(identifier: .gregorian)
         formatter.dateFormat = "dd.MM.yyyy"
-        guard let expiry = formatter.date(from: validUntil) else { return metadata }
-        return Calendar.current.startOfDay(for: expiry) >= Calendar.current.startOfDay(for: Date()) ? metadata : nil
+        return formatter.date(from: value)
     }
 
     private func saveOfferMetadata() {
@@ -299,5 +316,28 @@ final class AppModel: ObservableObject {
 private struct OfferItemMetadata: Codable {
     let retailer: String
     let price: Double?
+    let validFrom: String?
     let validUntil: String?
+
+    init(retailer: String, price: Double?, validFrom: String?, validUntil: String?) {
+        self.retailer = retailer
+        self.price = price
+        self.validFrom = validFrom
+        self.validUntil = validUntil
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        retailer = try values.decode(String.self, forKey: .retailer)
+        price = try values.decodeIfPresent(Double.self, forKey: .price)
+        validFrom = try values.decodeIfPresent(String.self, forKey: .validFrom)
+        validUntil = try values.decodeIfPresent(String.self, forKey: .validUntil)
+    }
+}
+
+enum OfferItemState: Equatable {
+    case upcoming(Date)
+    case active
+    case expiresSoon
+    case expired
 }

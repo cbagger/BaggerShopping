@@ -86,12 +86,10 @@ struct OffersView: View {
                     } else {
                         ForEach(offers) { offer in
                             OfferCard(offer: offer, wasAdded: addedOfferID == offer.id) {
-                                let matching = offer.variants.filter(\.matchesQuery)
-                                if !offer.requiresVariantChoice, let variant = offer.variants.first {
-                                    add(variant.name, from: offer)
-                                } else if !offer.requiresVariantChoice, matching.count == 1, let variant = matching.first {
-                                    add(variant.name, from: offer)
-                                } else {
+                                switch offer.choiceState {
+                                case .direct(let variant):
+                                    add(offer.shoppingItemName(variant: variant), from: offer)
+                                case .variants, .unspecified:
                                     pendingOffer = offer
                                 }
                             }
@@ -131,6 +129,7 @@ struct OffersView: View {
                 itemName,
                 retailer: offer.retailer,
                 offerPrice: offer.price,
+                offerValidFrom: offer.validFrom,
                 offerValidUntil: offer.validUntil
             ) {
                 withAnimation { addedOfferID = offer.id }
@@ -235,7 +234,7 @@ private struct OfferCard: View {
 
             if offer.safeToAdd {
                 Button(action: add) {
-                    Label(wasAdded ? "Tilføjet" : (!offer.requiresVariantChoice ? "Tilføj til liste" : "Vælg vare"), systemImage: wasAdded ? "checkmark.circle.fill" : "plus.circle.fill")
+                    Label(wasAdded ? "Tilføjet" : buttonLabel, systemImage: wasAdded ? "checkmark.circle.fill" : "plus.circle.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -246,6 +245,11 @@ private struct OfferCard: View {
         .padding(14)
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color(uiColor: .separator).opacity(0.35)))
+    }
+
+    private var buttonLabel: String {
+        if case .direct = offer.choiceState { return "Tilføj til liste" }
+        return "Vælg vare"
     }
 }
 
@@ -310,33 +314,39 @@ private struct OfferVariantSheet: View {
     let offer: GroceryOffer
     let select: (String) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var recognizedNames: [String] = []
     @State private var customName = ""
-    @State private var isRecognizing = false
 
     private var names: [String] {
-        if !recognizedNames.isEmpty { return recognizedNames }
-        let matching = offer.variants.filter(\.matchesQuery)
-        return (matching.isEmpty ? offer.variants : matching)
-            .map(\.name)
+        guard case .variants(let available) = offer.choiceState else { return [] }
+        let matching = offer.variants.filter(\.matchesQuery).map(\.name)
+        return (matching.isEmpty ? available : matching)
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     var body: some View {
         NavigationStack {
             List {
-                if offer.requiresVariantChoice, let imageURL = offer.imageURL {
+                if let imageURL = offer.imageURL {
                     AsyncImage(url: imageURL) { image in image.resizable().scaledToFit() }
                         placeholder: { ProgressView() }
-                        .frame(maxWidth: .infinity, minHeight: 150, maxHeight: 260)
+                        .frame(maxWidth: .infinity, minHeight: 100, maxHeight: 180)
                         .listRowInsets(EdgeInsets())
                 }
-                if isRecognizing {
-                    HStack { ProgressView(); Text("Finder varianter på produktbilledet …") }
-                        .foregroundStyle(.secondary)
+                Section {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(offer.productName).font(.headline)
+                        HStack(spacing: 6) {
+                            Text(offer.retailer)
+                            if let price = offer.price {
+                                Text("·")
+                                Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                            }
+                        }
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    }
                 }
                 ForEach(names, id: \.self) { name in
-                    Button { select(name) } label: {
+                    Button { select(offer.shoppingItemName(variant: name)) } label: {
                         VStack(alignment: .leading, spacing: 5) {
                             Text(name).font(.headline).foregroundStyle(.primary)
                             HStack(spacing: 8) {
@@ -352,10 +362,15 @@ private struct OfferVariantSheet: View {
                         .padding(.vertical, 4)
                     }
                 }
-                if offer.requiresVariantChoice {
-                    Section("Kan du ikke se den rigtige variant?") {
+                Section(names.isEmpty ? "Varianten kan ikke identificeres sikkert" : "Et andet valg") {
+                    Button("Tilføj uden bestemt variant") {
+                        select(offer.shoppingItemName(variant: nil))
+                    }
+                    if !names.isEmpty {
                         TextField("Skriv den konkrete vare", text: $customName)
-                        Button("Tilføj skrevet vare") { select(customName.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                        Button("Tilføj skrevet variant") {
+                            select(offer.shoppingItemName(variant: customName))
+                        }
                             .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
@@ -363,14 +378,6 @@ private struct OfferVariantSheet: View {
             .navigationTitle("Vælg vare")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuller") { dismiss() } } }
-            .task { await recognizeVariants() }
         }
-    }
-
-    @MainActor private func recognizeVariants() async {
-        guard offer.requiresVariantChoice, let imageURL = offer.imageURL else { return }
-        isRecognizing = true
-        defer { isRecognizing = false }
-        recognizedNames = await OfferVariantRecognizer.names(in: imageURL, heading: offer.productName)
     }
 }

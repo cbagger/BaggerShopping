@@ -219,8 +219,10 @@ private struct NativeFlyerReader: View {
     }
 
     private func choose(_ offer: GroceryOffer) {
-        if !offer.requiresVariantChoice, let variant = offer.variants.first { add(variant.name, from: offer) }
-        else { pendingOffer = offer }
+        switch offer.choiceState {
+        case .direct(let variant): add(offer.shoppingItemName(variant: variant), from: offer)
+        case .variants, .unspecified: pendingOffer = offer
+        }
     }
 
     private func add(_ name: String, from selectedOffer: GroceryOffer? = nil) {
@@ -230,6 +232,7 @@ private struct NativeFlyerReader: View {
                 name,
                 retailer: publication.retailer,
                 offerPrice: offer?.price,
+                offerValidFrom: offer?.validFrom ?? publication.validFrom,
                 offerValidUntil: offer?.validUntil ?? publication.validUntil
             ) { addedName = name }
         }
@@ -295,32 +298,40 @@ private struct OfferPicker: View {
     let offer: GroceryOffer
     let select: (String) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var recognizedNames: [String] = []
     @State private var customName = ""
-    @State private var isRecognizing = false
 
     private var names: [String] {
-        recognizedNames.isEmpty ? offer.variants.map(\.name) : recognizedNames
+        if case .variants(let names) = offer.choiceState { return names }
+        return []
     }
 
     var body: some View {
         NavigationStack {
             List {
-                if offer.requiresVariantChoice, let imageURL = offer.imageURL {
+                if let imageURL = offer.imageURL {
                     AsyncImage(url: imageURL) { image in
                         image.resizable().scaledToFit()
                     } placeholder: { ProgressView() }
-                    .frame(maxWidth: .infinity, minHeight: 150, maxHeight: 260)
+                    .frame(maxWidth: .infinity, minHeight: 100, maxHeight: 180)
                     .listRowInsets(EdgeInsets())
                 }
 
-                if isRecognizing {
-                    HStack { ProgressView(); Text("Finder varianter på produktbilledet …") }
-                        .foregroundStyle(.secondary)
+                Section {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(offer.productName).font(.headline)
+                        HStack(spacing: 6) {
+                            Text(offer.retailer)
+                            if let price = offer.price {
+                                Text("·")
+                                Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                            }
+                        }
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    }
                 }
 
                 ForEach(names, id: \.self) { name in
-                Button { select(name) } label: {
+                Button { select(offer.shoppingItemName(variant: name)) } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(name).font(.headline)
                         if let quantity = offer.quantity, let unit = offer.unit {
@@ -331,10 +342,15 @@ private struct OfferPicker: View {
                 }
                 }
 
-                if offer.requiresVariantChoice {
-                    Section("Kan du ikke se den rigtige variant?") {
+                Section(names.isEmpty ? "Varianten kan ikke identificeres sikkert" : "Et andet valg") {
+                    Button("Tilføj uden bestemt variant") {
+                        select(offer.shoppingItemName(variant: nil))
+                    }
+                    if !names.isEmpty {
                         TextField("Skriv den konkrete vare", text: $customName)
-                        Button("Tilføj skrevet vare") { select(customName.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                        Button("Tilføj skrevet variant") {
+                            select(offer.shoppingItemName(variant: customName))
+                        }
                             .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
@@ -342,14 +358,6 @@ private struct OfferPicker: View {
             .navigationTitle("Vælg vare")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuller") { dismiss() } } }
-            .task { await recognizeVariants() }
         }
-    }
-
-    @MainActor private func recognizeVariants() async {
-        guard offer.requiresVariantChoice, let imageURL = offer.imageURL else { return }
-        isRecognizing = true
-        defer { isRecognizing = false }
-        recognizedNames = await OfferVariantRecognizer.names(in: imageURL, heading: offer.productName)
     }
 }
