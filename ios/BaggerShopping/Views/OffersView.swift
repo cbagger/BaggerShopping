@@ -84,7 +84,13 @@ struct OffersView: View {
                         ContentUnavailableView("Ingen tilbud fundet", systemImage: "magnifyingglass", description: Text("\"\(query)\" findes ikke i de valgte aktuelle aviser."))
                     } else {
                         ForEach(offers) { offer in
-                            OfferCard(offer: offer, wasAdded: addedOfferID == offer.id) {
+                            OfferCard(
+                                offer: offer,
+                                wasAdded: addedOfferID == offer.id || model.hasApprovedOfferMatch(
+                                    offerID: offer.id,
+                                    publicationID: offer.publicationID
+                                )
+                            ) {
                                 switch offer.choiceState {
                                 case .direct(let variant):
                                     add(offer.shoppingItemName(variant: variant), from: offer)
