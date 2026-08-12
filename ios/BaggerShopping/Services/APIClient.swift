@@ -116,6 +116,27 @@ struct APIClient {
         _ = try await perform(request(path: "/api/mobile/v1/category-overrides", method: "DELETE"))
     }
 
+    func fetchOfferMetadata() async throws -> OfferMetadataResponse {
+        let data = try await perform(request(path: "/api/mobile/v1/offer-metadata"))
+        return try JSONDecoder().decode(OfferMetadataResponse.self, from: data)
+    }
+
+    func setOfferMetadata(_ metadata: OfferMetadataDTO) async throws {
+        let body = try JSONEncoder().encode(metadata)
+        _ = try await perform(request(path: "/api/mobile/v1/offer-metadata", method: "PUT", body: body))
+    }
+
+    func syncOfferMetadata(_ metadata: [OfferMetadataDTO]) async throws -> OfferMetadataResponse {
+        let body = try JSONEncoder().encode(OfferMetadataSyncRequest(metadata: metadata))
+        let data = try await perform(request(path: "/api/mobile/v1/offer-metadata/sync", method: "PUT", body: body))
+        return try JSONDecoder().decode(OfferMetadataResponse.self, from: data)
+    }
+
+    func removeOfferMetadata(itemName: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["item_name": itemName])
+        _ = try await perform(request(path: "/api/mobile/v1/offer-metadata/remove", method: "POST", body: body))
+    }
+
     func fetchOfferPublications() async throws -> PublicationsResponse {
         let data = try await perform(request(path: "/api/mobile/v1/offers/publications"))
         return try JSONDecoder().decode(PublicationsResponse.self, from: data)
