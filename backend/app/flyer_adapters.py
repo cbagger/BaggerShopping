@@ -219,10 +219,49 @@ def _quantity(payload: object) -> tuple[float | None, str | None]:
     return (float(value), str(unit.get("symbol"))) if isinstance(value, (int, float)) and unit.get("symbol") else (None, None)
 
 
-def _tjek_variants(identity: str, heading: str, description: str | None, quantity: float | None, unit: str | None) -> list[OfferVariant]:
-    """Expose explicit alternatives from Tjek headings in the variant picker."""
+def _variant_strings(payload: dict) -> list[str]:
+    """Collect product alternatives supplied by Tjek's changing offer schema.
+
+    Depending on the retailer, alternatives have appeared as strings, product
+    dictionaries, or nested lists below ``variants``/``products``/``items``.
+    Do not treat marketing descriptions as product names.
+    """
+    values: list[str] = []
+
+    def visit(value: object, *, variant_context: bool = False) -> None:
+        if isinstance(value, str):
+            if variant_context:
+                cleaned = _normalize_space(value).strip(" -*")
+                if 2 <= len(cleaned) <= 120:
+                    values.append(cleaned)
+            return
+        if isinstance(value, list):
+            for item in value:
+                visit(item, variant_context=variant_context)
+            return
+        if not isinstance(value, dict):
+            return
+        for key, child in value.items():
+            lowered = str(key).casefold()
+            child_context = variant_context or lowered in {
+                "variants", "variant", "products", "product_variants",
+                "choices", "alternatives", "items",
+            }
+            if child_context and lowered in {"name", "title", "label", "heading"}:
+                visit(child, variant_context=True)
+            elif lowered in {"variants", "variant", "products", "product_variants", "choices", "alternatives", "items"}:
+                visit(child, variant_context=True)
+
+    visit(payload)
+    return list(dict.fromkeys(values))
+
+
+def _tjek_variants(identity: str, heading: str, description: str | None, quantity: float | None, unit: str | None, payload: dict) -> list[OfferVariant]:
+    """Expose every explicit alternative from Tjek before heading fallback."""
+    names = _variant_strings(payload)
     normalized = heading.replace(" / ", ", ")
-    names = [_normalize_space(value) for value in re.split(r"\s*,\s*|\s+eller\s+", normalized, flags=re.IGNORECASE)]
+    if not names:
+        names = [_normalize_space(value) for value in re.split(r"\s*,\s*|\s+eller\s+", normalized, flags=re.IGNORECASE)]
     names = [name for name in names if len(name) >= 2]
     if not 1 < len(names) <= 8:
         names = [heading]
@@ -232,15 +271,35 @@ def _tjek_variants(identity: str, heading: str, description: str | None, quantit
     ]
 
 
-def parse_tjek_hotspots(publication: Publication, rows: object) -> list[Offer]:
+def _offers_by_id(rows: object) -> dict[str, dict]:
+    if not isinstance(rows, list):
+        return {}
+    return {
+        str(row["id"]): row
+        for row in rows
+        if isinstance(row, dict) and row.get("id")
+    }
+
+
+def parse_tjek_hotspots(
+    publication: Publication,
+    rows: object,
+    offer_rows: object = None,
+) -> list[Offer]:
     """Convert Tjek's official offer polygons into the common MENY model."""
     offers: list[Offer] = []
     if not isinstance(rows, list):
         return offers
+    detailed_offers = _offers_by_id(offer_rows)
     for row in rows:
         if not isinstance(row, dict) or row.get("type") != "offer":
             continue
-        payload = row.get("offer") if isinstance(row.get("offer"), dict) else row
+        hotspot_payload = row.get("offer") if isinstance(row.get("offer"), dict) else row
+        offer_id = str(hotspot_payload.get("id") or row.get("id") or "")
+        # /catalogs/{id}/hotspots is authoritative for geometry, while the
+        # public /v2/offers feed contains the complete description, original
+        # price, crop image and validity. Both use the same offer id.
+        payload = {**hotspot_payload, **detailed_offers.get(offer_id, {})}
         heading = _normalize_space(str(payload.get("heading") or row.get("heading") or "")).rstrip("*")
         locations = row.get("locations") if isinstance(row.get("locations"), dict) else {}
         pricing = payload.get("pricing") if isinstance(payload.get("pricing"), dict) else {}
@@ -261,14 +320,22 @@ def parse_tjek_hotspots(publication: Publication, rows: object) -> list[Offer]:
             width = min(1.0 - x, (max(xs) - min(xs)))
             height = min(1.0 - y, (max(ys) - min(ys)) / page_aspect)
             identity = str(payload.get("id") or row.get("id") or hashlib.sha256(f"{publication.id}|{page}|{heading}".encode()).hexdigest()[:20])
-            variants = _tjek_variants(identity, heading, payload.get("description"), quantity, unit)
+            variants = _tjek_variants(identity, heading, payload.get("description"), quantity, unit, payload)
+            images = payload.get("images") if isinstance(payload.get("images"), dict) else {}
             offers.append(Offer(
                 id=f"{identity}-{page}", retailer=publication.retailer,
                 publication_id=publication.id, publication_title=publication.title,
                 valid_from=publication.valid_from, valid_until=publication.valid_until,
                 product_name=heading, price=pricing.get("price"), normal_price=pricing.get("pre_price"),
                 quantity=quantity, unit=unit,
-                image_url=publication.page_image_urls[page - 1] if 0 < page <= len(publication.page_image_urls) else None,
+                # Prefer Tjek's official offer crop. Besides being sharper in
+                # search results, it is the smallest possible input for the
+                # client-side variant recognizer and avoids server-side image
+                # downloads/cache growth.
+                image_url=images.get("zoom") or images.get("view") or (
+                    publication.page_image_urls[page - 1]
+                    if 0 < page <= len(publication.page_image_urls) else None
+                ),
                 source_url=publication.source_url, page_number=page,
                 hotspot_x=x, hotspot_y=y, hotspot_width=width, hotspot_height=height,
                 raw_text=_normalize_space(" ".join(filter(None, (heading, payload.get("description"))))),
@@ -473,10 +540,14 @@ async def fetch_retailer_publications(
             pass
     for catalog_id in dict.fromkeys(tjek_ids):
         try:
-            metadata_response, pages_response, hotspots_response = await asyncio.gather(
+            metadata_response, pages_response, hotspots_response, offers_response = await asyncio.gather(
                 client.get(f"https://squid-api.tjek.com/v2/catalogs/{catalog_id}"),
                 client.get(f"https://squid-api.tjek.com/v2/catalogs/{catalog_id}/pages?w=700"),
                 client.get(f"https://squid-api.tjek.com/v2/catalogs/{catalog_id}/hotspots"),
+                client.get(
+                    "https://api.etilbudsavis.dk/v2/offers",
+                    params={"catalog_id": catalog_id, "limit": 1000},
+                ),
             )
             metadata_response.raise_for_status()
             pages_response.raise_for_status()
@@ -484,7 +555,10 @@ async def fetch_retailer_publications(
                 metadata_response.json(), pages_response.json(), source, landing_url
             )
             if hotspots_response.is_success:
-                publication.structured_offers = parse_tjek_hotspots(publication, hotspots_response.json())
+                detailed_rows = offers_response.json() if offers_response.is_success else []
+                publication.structured_offers = parse_tjek_hotspots(
+                    publication, hotspots_response.json(), detailed_rows
+                )
             fingerprint = tuple(publication.page_image_urls)
             if publication.page_count and fingerprint not in seen_publications:
                 seen_publications.add(fingerprint)

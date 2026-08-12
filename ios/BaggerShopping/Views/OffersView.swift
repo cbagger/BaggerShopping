@@ -87,9 +87,9 @@ struct OffersView: View {
                         ForEach(offers) { offer in
                             OfferCard(offer: offer, wasAdded: addedOfferID == offer.id) {
                                 let matching = offer.variants.filter(\.matchesQuery)
-                                if offer.variants.count == 1, let variant = offer.variants.first {
+                                if !offer.requiresVariantChoice, let variant = offer.variants.first {
                                     add(variant.name, from: offer)
-                                } else if matching.count == 1, let variant = matching.first {
+                                } else if !offer.requiresVariantChoice, matching.count == 1, let variant = matching.first {
                                     add(variant.name, from: offer)
                                 } else {
                                     pendingOffer = offer
@@ -103,8 +103,8 @@ struct OffersView: View {
             .navigationTitle("Tilbud")
             .task { await loadRetailers() }
             .sheet(item: $pendingOffer) { offer in
-                OfferVariantSheet(offer: offer) { variant in
-                    add(variant.name, from: offer)
+                OfferVariantSheet(offer: offer) { name in
+                    add(name, from: offer)
                     pendingOffer = nil
                 }
                 .presentationDetents([.medium, .large])
@@ -235,7 +235,7 @@ private struct OfferCard: View {
 
             if offer.safeToAdd {
                 Button(action: add) {
-                    Label(wasAdded ? "Tilføjet" : (offer.variants.count == 1 || matchingCount == 1 ? "Tilføj til liste" : "Vælg vare"), systemImage: wasAdded ? "checkmark.circle.fill" : "plus.circle.fill")
+                    Label(wasAdded ? "Tilføjet" : (!offer.requiresVariantChoice ? "Tilføj til liste" : "Vælg vare"), systemImage: wasAdded ? "checkmark.circle.fill" : "plus.circle.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -270,22 +270,27 @@ struct OfferCropView: View {
             if let url = offer.imageURL {
                 AsyncImage(url: url) { phase in
                     if let image = phase.image {
-                        let pageRatio = 694.0 / 1007.0
-                        let scale = max(
-                            proxy.size.width / (crop.width * pageRatio),
-                            proxy.size.height / crop.height
-                        )
-                        let pageWidth = scale * pageRatio
-                        let pageHeight = scale
-                        let visibleWidth = crop.width * pageWidth
-                        let visibleHeight = crop.height * pageHeight
-                        image
-                            .resizable()
-                            .frame(width: pageWidth, height: pageHeight)
-                            .offset(
-                                x: -crop.minX * pageWidth + (proxy.size.width - visibleWidth) / 2,
-                                y: -crop.minY * pageHeight + (proxy.size.height - visibleHeight) / 2
+                        if url.absoluteString.contains("x1r=") || url.absoluteString.contains("business_images") {
+                            image.resizable().scaledToFit()
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            let pageRatio = 694.0 / 1007.0
+                            let scale = max(
+                                proxy.size.width / (crop.width * pageRatio),
+                                proxy.size.height / crop.height
                             )
+                            let pageWidth = scale * pageRatio
+                            let pageHeight = scale
+                            let visibleWidth = crop.width * pageWidth
+                            let visibleHeight = crop.height * pageHeight
+                            image
+                                .resizable()
+                                .frame(width: pageWidth, height: pageHeight)
+                                .offset(
+                                    x: -crop.minX * pageWidth + (proxy.size.width - visibleWidth) / 2,
+                                    y: -crop.minY * pageHeight + (proxy.size.height - visibleHeight) / 2
+                                )
+                        }
                     } else if phase.error != nil {
                         Color(uiColor: .tertiarySystemFill)
                             .overlay { Image(systemName: "photo").foregroundStyle(.secondary) }
@@ -303,24 +308,39 @@ struct OfferCropView: View {
 
 private struct OfferVariantSheet: View {
     let offer: GroceryOffer
-    let select: (OfferVariant) -> Void
+    let select: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var recognizedNames: [String] = []
+    @State private var customName = ""
+    @State private var isRecognizing = false
 
-    private var variants: [OfferVariant] {
-        offer.variants.filter(\.matchesQuery).sorted { lhs, rhs in
-            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-        }
+    private var names: [String] {
+        if !recognizedNames.isEmpty { return recognizedNames }
+        let matching = offer.variants.filter(\.matchesQuery)
+        return (matching.isEmpty ? offer.variants : matching)
+            .map(\.name)
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     var body: some View {
         NavigationStack {
             List {
-                ForEach(variants) { variant in
-                    Button { select(variant) } label: {
+                if offer.requiresVariantChoice, let imageURL = offer.imageURL {
+                    AsyncImage(url: imageURL) { image in image.resizable().scaledToFit() }
+                        placeholder: { ProgressView() }
+                        .frame(maxWidth: .infinity, minHeight: 150, maxHeight: 260)
+                        .listRowInsets(EdgeInsets())
+                }
+                if isRecognizing {
+                    HStack { ProgressView(); Text("Finder varianter på produktbilledet …") }
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(names, id: \.self) { name in
+                    Button { select(name) } label: {
                         VStack(alignment: .leading, spacing: 5) {
-                            Text(variant.name).font(.headline).foregroundStyle(.primary)
+                            Text(name).font(.headline).foregroundStyle(.primary)
                             HStack(spacing: 8) {
-                                if let quantity = variant.quantity, let unit = variant.unit {
+                                if let quantity = offer.quantity, let unit = offer.unit {
                                     Text("\(quantity.formatted(.number.precision(.fractionLength(0...2)))) \(unit)")
                                 }
                                 if let price = offer.price {
@@ -332,10 +352,25 @@ private struct OfferVariantSheet: View {
                         .padding(.vertical, 4)
                     }
                 }
+                if offer.requiresVariantChoice {
+                    Section("Kan du ikke se den rigtige variant?") {
+                        TextField("Skriv den konkrete vare", text: $customName)
+                        Button("Tilføj skrevet vare") { select(customName.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                            .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
             }
             .navigationTitle("Vælg vare")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuller") { dismiss() } } }
+            .task { await recognizeVariants() }
         }
+    }
+
+    @MainActor private func recognizeVariants() async {
+        guard offer.requiresVariantChoice, let imageURL = offer.imageURL else { return }
+        isRecognizing = true
+        defer { isRecognizing = false }
+        recognizedNames = await OfferVariantRecognizer.names(in: imageURL, heading: offer.productName)
     }
 }

@@ -202,6 +202,15 @@ final class AppModel: ObservableObject {
         return (metadata.retailer, metadata.price)
     }
 
+    func offerExpiresToday(for item: ShoppingItem) -> Bool {
+        guard let validUntil = offerMetadata[offerRetailerNameKey(item.name)]?.validUntil else { return false }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "da_DK")
+        formatter.dateFormat = "dd.MM.yyyy"
+        guard let expiry = formatter.date(from: validUntil) else { return false }
+        return Calendar.current.isDateInToday(expiry)
+    }
+
     func setCategory(_ category: ShoppingCategory, for item: ShoppingItem) {
         categories.setCategory(category, for: item.name)
         objectWillChange.send()

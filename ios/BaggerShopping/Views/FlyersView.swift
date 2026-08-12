@@ -80,8 +80,10 @@ private struct FlyerCoverCard: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            .frame(maxWidth: .infinity)
             .aspectRatio(694.0 / 1007.0, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .clipped()
             .overlay {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .stroke(.black.opacity(0.08), lineWidth: 1)
@@ -107,6 +109,7 @@ private struct FlyerCoverCard: View {
                 .foregroundStyle(expiryColor)
                 .lineLimit(1)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityHint("Åbner tilbudsavisen")
@@ -216,7 +219,7 @@ private struct NativeFlyerReader: View {
     }
 
     private func choose(_ offer: GroceryOffer) {
-        if offer.variants.count == 1, let variant = offer.variants.first { add(variant.name, from: offer) }
+        if !offer.requiresVariantChoice, let variant = offer.variants.first { add(variant.name, from: offer) }
         else { pendingOffer = offer }
     }
 
@@ -292,25 +295,61 @@ private struct OfferPicker: View {
     let offer: GroceryOffer
     let select: (String) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var recognizedNames: [String] = []
+    @State private var customName = ""
+    @State private var isRecognizing = false
+
+    private var names: [String] {
+        recognizedNames.isEmpty ? offer.variants.map(\.name) : recognizedNames
+    }
 
     var body: some View {
         NavigationStack {
             List {
-                ForEach(offer.variants) { variant in
-                Button { select(variant.name) } label: {
+                if offer.requiresVariantChoice, let imageURL = offer.imageURL {
+                    AsyncImage(url: imageURL) { image in
+                        image.resizable().scaledToFit()
+                    } placeholder: { ProgressView() }
+                    .frame(maxWidth: .infinity, minHeight: 150, maxHeight: 260)
+                    .listRowInsets(EdgeInsets())
+                }
+
+                if isRecognizing {
+                    HStack { ProgressView(); Text("Finder varianter på produktbilledet …") }
+                        .foregroundStyle(.secondary)
+                }
+
+                ForEach(names, id: \.self) { name in
+                Button { select(name) } label: {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(variant.name).font(.headline)
-                        if let quantity = variant.quantity, let unit = variant.unit {
+                        Text(name).font(.headline)
+                        if let quantity = offer.quantity, let unit = offer.unit {
                             Text("\(quantity.formatted(.number.precision(.fractionLength(0...2)))) \(unit)")
                                 .font(.subheadline).foregroundStyle(.secondary)
                         }
                     }
                 }
                 }
+
+                if offer.requiresVariantChoice {
+                    Section("Kan du ikke se den rigtige variant?") {
+                        TextField("Skriv den konkrete vare", text: $customName)
+                        Button("Tilføj skrevet vare") { select(customName.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                            .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
             }
             .navigationTitle("Vælg vare")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuller") { dismiss() } } }
+            .task { await recognizeVariants() }
         }
+    }
+
+    @MainActor private func recognizeVariants() async {
+        guard offer.requiresVariantChoice, let imageURL = offer.imageURL else { return }
+        isRecognizing = true
+        defer { isRecognizing = false }
+        recognizedNames = await OfferVariantRecognizer.names(in: imageURL, heading: offer.productName)
     }
 }

@@ -179,6 +179,11 @@ struct ShoppingListView: View {
 
             if let retailer = model.offerRetailer(for: item) {
                 HStack(spacing: 4) {
+                    if !item.checked && model.offerExpiresToday(for: item) {
+                        Image(systemName: "clock.badge.exclamationmark")
+                            .foregroundStyle(.orange)
+                            .symbolEffect(.pulse)
+                    }
                     Text(retailer)
                     if let price = model.offerPrice(for: item) {
                         Text("·")
@@ -186,7 +191,7 @@ struct ShoppingListView: View {
                     }
                 }
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(model.offerExpiresToday(for: item) ? .orange : .secondary)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Tilbud fra \(retailer)")
             } else if !item.checked, let expired = model.expiredOfferMetadata(for: item) {

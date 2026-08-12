@@ -40,9 +40,31 @@ struct APIClient {
     }
 
     private func perform(_ request: URLRequest) async throws -> Data {
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try validate(response: response, data: data)
-        return data
+        var lastError: Error?
+        let attempts = request.httpMethod == "GET" ? 3 : 1
+        for attempt in 1...attempts {
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                try validate(response: response, data: data)
+                return data
+            } catch {
+                lastError = error
+                guard attempt < attempts, isTransient(error) else { throw error }
+                try await Task.sleep(for: .milliseconds(350 * attempt))
+            }
+        }
+        throw lastError ?? APIError.invalidResponse
+    }
+
+    private func isTransient(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            return [.timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
+                    .networkConnectionLost, .notConnectedToInternet].contains(urlError.code)
+        }
+        if case let APIError.server(code, message) = error {
+            return [502, 503, 504].contains(code) || message.localizedCaseInsensitiveContains("name resolution")
+        }
+        return false
     }
 
     func fetchList() async throws -> ShoppingListResponse {
