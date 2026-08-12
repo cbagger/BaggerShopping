@@ -1,5 +1,45 @@
 import SwiftUI
 import MapKit
+import CoreLocation
+
+private enum StoreAddressResolver {
+    static func resolve(latitude: Double, longitude: Double) async -> String? {
+        let location = CLLocation(latitude: latitude, longitude: longitude)
+        let geocoder = CLGeocoder()
+
+        do {
+            guard let placemark = try await geocoder.reverseGeocodeLocation(
+                location,
+                preferredLocale: Locale(identifier: "da_DK")
+            ).first else {
+                return nil
+            }
+
+            let street: String = {
+                let streetName = placemark.thoroughfare?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let number = placemark.subThoroughfare?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+                if !streetName.isEmpty && !number.isEmpty { return "\(streetName) \(number)" }
+                if !streetName.isEmpty { return streetName }
+                return placemark.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            }()
+
+            let city = [placemark.postalCode, placemark.locality]
+                .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+
+            let components = [street, city, placemark.country ?? ""]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+
+            let address = components.joined(separator: ", ")
+            return address.isEmpty ? nil : address
+        } catch {
+            return nil
+        }
+    }
+}
 
 struct StoresView: View {
     @EnvironmentObject private var model: AppModel
@@ -104,6 +144,24 @@ private struct StoresListContent: View {
                     syncGeofences()
                 }
             }
+            .task {
+                await backfillMissingAddresses()
+            }
+        }
+    }
+
+    private func backfillMissingAddresses() async {
+        let missing = stores.stores.filter {
+            $0.address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+
+        for store in missing {
+            guard let address = await StoreAddressResolver.resolve(
+                latitude: store.latitude,
+                longitude: store.longitude
+            ) else { continue }
+
+            stores.setAddress(address, for: store.id)
         }
     }
 }
@@ -258,6 +316,10 @@ private struct ManualStoreMapView: View {
     @State private var radius = 100.0
     @State private var latitude = 56.0
     @State private var longitude = 10.0
+    @State private var address = ""
+    @State private var isResolvingAddress = false
+    @State private var isAdding = false
+    @State private var addressLookupID = UUID()
     @State private var mapPosition: MapCameraPosition = .userLocation(
         followsHeading: false,
         fallback: .region(
@@ -276,7 +338,7 @@ private struct ManualStoreMapView: View {
         NavigationStack {
             Form {
                 Section("Navn") {
-                    TextField("Fx 365discount Skørping", text: $name)
+                    TextField("Fx Coop 365discount", text: $name)
                         .textInputAutocapitalization(.words)
                 }
 
@@ -293,6 +355,19 @@ private struct ManualStoreMapView: View {
                         latitude = context.region.center.latitude
                         longitude = context.region.center.longitude
                     }
+                    .onMapCameraChange(frequency: .onEnd) { context in
+                        let selectedLatitude = context.region.center.latitude
+                        let selectedLongitude = context.region.center.longitude
+                        latitude = selectedLatitude
+                        longitude = selectedLongitude
+                        address = ""
+                        Task {
+                            await resolveAddress(
+                                latitude: selectedLatitude,
+                                longitude: selectedLongitude
+                            )
+                        }
+                    }
                     .overlay {
                         Image(systemName: "mappin.circle.fill")
                             .font(.system(size: 38, weight: .semibold))
@@ -303,11 +378,27 @@ private struct ManualStoreMapView: View {
                     .frame(height: 330)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
 
-                    Text("Flyt kortet, så den røde nål står på butikkens indgang eller parkeringsområde. Brug placeringsknappen på kortet for hurtigt at hoppe til din egen position.")
+                    Text("Flyt kortet, så den røde nål står på butikkens indgang eller parkeringsområde. Appen finder automatisk adressen ud fra nålens placering.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } header: {
                     Text("Placering")
+                }
+
+                Section("Adresse") {
+                    if isResolvingAddress {
+                        HStack(spacing: 10) {
+                            ProgressView().controlSize(.small)
+                            Text("Finder adresse…")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if !address.isEmpty {
+                        Label(address, systemImage: "mappin.and.ellipse")
+                            .font(.subheadline)
+                    } else {
+                        Text("Adressen vises automatisk, når kortet står på butikkens placering.")
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section("Geofence") {
@@ -323,22 +414,71 @@ private struct ManualStoreMapView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Annuller") { dismiss() }
+                        .disabled(isAdding)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Tilføj") {
-                        onAdd(
-                            StoreLocation(
-                                name: trimmedName,
-                                latitude: latitude,
-                                longitude: longitude,
-                                radius: radius
-                            )
-                        )
+                    Button {
+                        Task { await addStore() }
+                    } label: {
+                        if isAdding {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("Tilføj")
+                        }
                     }
-                    .disabled(trimmedName.isEmpty)
+                    .disabled(trimmedName.isEmpty || isAdding)
                 }
             }
         }
+    }
+
+    @MainActor
+    private func resolveAddress(latitude selectedLatitude: Double, longitude selectedLongitude: Double) async {
+        let lookupID = UUID()
+        addressLookupID = lookupID
+        isResolvingAddress = true
+
+        let resolved = await StoreAddressResolver.resolve(
+            latitude: selectedLatitude,
+            longitude: selectedLongitude
+        )
+
+        guard addressLookupID == lookupID else { return }
+        isResolvingAddress = false
+
+        guard abs(latitude - selectedLatitude) < 0.000001,
+              abs(longitude - selectedLongitude) < 0.000001 else { return }
+
+        address = resolved ?? ""
+    }
+
+    @MainActor
+    private func addStore() async {
+        guard !trimmedName.isEmpty else { return }
+
+        isAdding = true
+        addressLookupID = UUID()
+        let selectedLatitude = latitude
+        let selectedLongitude = longitude
+
+        let resolvedAddress = await StoreAddressResolver.resolve(
+            latitude: selectedLatitude,
+            longitude: selectedLongitude
+        )
+
+        let finalAddress = resolvedAddress ?? address
+
+        onAdd(
+            StoreLocation(
+                name: trimmedName,
+                address: finalAddress,
+                latitude: selectedLatitude,
+                longitude: selectedLongitude,
+                radius: radius
+            )
+        )
+
+        isAdding = false
     }
 }
 

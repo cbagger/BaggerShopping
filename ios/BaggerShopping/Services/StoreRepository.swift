@@ -40,6 +40,12 @@ final class StoreRepository: ObservableObject {
         save()
     }
 
+    func setAddress(_ address: String, for id: UUID) {
+        guard let index = stores.firstIndex(where: { $0.id == id }) else { return }
+        stores[index].address = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        save()
+    }
+
     private func save() {
         guard let data = try? JSONEncoder().encode(stores) else { return }
         UserDefaults.standard.set(data, forKey: key)
