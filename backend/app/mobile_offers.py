@@ -74,7 +74,16 @@ async def _publications() -> list[Publication]:
             return _publications_cache
         try:
             candidates = await fetch_all_publications()
-            usable = [candidate for candidate in candidates if candidate.status != "expired" and not _reader_problems(candidate)]
+            # Only expose editions that support the complete product contract:
+            # browse, search, positioned markers and add-to-list. Editorial or
+            # supplementary catalogues without structured offers must not
+            # masquerade as fully interactive flyers in the iPhone app.
+            usable = [
+                candidate for candidate in candidates
+                if candidate.status != "expired"
+                and not _reader_problems(candidate)
+                and not _health_problems(candidate)
+            ]
             if not usable:
                 raise ValueError("ingen funktionelt gyldige aviser")
             _publications_cache = usable
