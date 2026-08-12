@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from datetime import date, datetime
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from .flyer_adapters import RETAILER_ORDER, fetch_all_publications
-from .meny_flyer import Publication, search_publication
+from .meny_flyer import Offer, Publication, _is_pet_offer, _product_domain, search_publication
 
 
 router = APIRouter(prefix="/api/mobile/v1/offers", tags=["offers"])
@@ -17,6 +19,10 @@ _publication_cache: Publication | None = None
 _publication_cache_time = 0.0
 _publication_lock = asyncio.Lock()
 _publications_cache: list[Publication] = []
+
+
+class OfferMatchRequest(BaseModel):
+    items: list[str] = Field(min_length=1, max_length=100)
 
 
 def _coverage_payload(publication: Publication) -> dict:
@@ -140,6 +146,155 @@ def _reader_problems(publication: Publication, *, today: date | None = None) -> 
     return problems
 
 
+_MATCH_STOPWORDS = {
+    "af", "de", "den", "det", "eller", "fra", "i", "med", "og", "pak",
+    "pk", "pr", "på", "stk", "til", "uden", "x",
+}
+_MATCH_TOKEN_RE = re.compile(r"[0-9a-zæøå]+", re.IGNORECASE)
+_MATCH_THRESHOLD = 62
+_MAX_MATCHES_PER_ITEM = 4
+
+
+def _match_tokens(value: str) -> list[str]:
+    return [
+        token.casefold()
+        for token in _MATCH_TOKEN_RE.findall(value)
+        if token.casefold() not in _MATCH_STOPWORDS
+    ]
+
+
+def _token_forms(token: str) -> set[str]:
+    forms = {token}
+    if len(token) < 6:
+        return forms
+    for ending in ("erne", "ene", "eren", "er", "en", "et", "e", "s"):
+        if token.endswith(ending) and len(token) - len(ending) >= 4:
+            forms.add(token[:-len(ending)])
+    return forms
+
+
+def _token_matches(query_token: str, candidate_token: str) -> bool:
+    if query_token == candidate_token:
+        return True
+    if _token_forms(query_token) & _token_forms(candidate_token):
+        return True
+    # Compounds are common in Danish grocery names (sødmælk, multifrugtjuice,
+    # sandwichrugbrød). Keep short words exact so e.g. "æg" cannot match
+    # unrelated "pålæg".
+    if len(query_token) >= 4 and query_token in candidate_token:
+        return True
+    if len(candidate_token) >= 5 and candidate_token in query_token:
+        return True
+    return False
+
+
+def _text_match_score(item_name: str, candidate: str) -> int:
+    query_tokens = _match_tokens(item_name)
+    candidate_tokens = _match_tokens(candidate)
+    if not query_tokens or not candidate_tokens:
+        return 0
+
+    query_compact = "".join(query_tokens)
+    candidate_compact = "".join(candidate_tokens)
+    if len(query_compact) >= 4 and query_compact in candidate_compact:
+        return 120
+
+    matched = [
+        query_token
+        for query_token in query_tokens
+        if any(_token_matches(query_token, candidate_token) for candidate_token in candidate_tokens)
+    ]
+    if not matched:
+        return 0
+
+    coverage = len(matched) / len(query_tokens)
+    longest = max(query_tokens, key=len)
+    longest_matched = longest in matched
+
+    if coverage == 1:
+        return 90 + min(20, len(query_tokens) * 5)
+    if len(query_tokens) == 1:
+        return 85
+    if coverage >= 2 / 3 and longest_matched:
+        return 76
+    if coverage >= 0.5 and len(longest) >= 6 and longest_matched:
+        # This intentionally permits a missing brand qualifier: a list item
+        # such as "Coop pizzadej" may still get a relevant Pizzadej offer from
+        # another retailer, but the user must explicitly approve it.
+        return 62
+    return 0
+
+
+def _offer_match_score(item_name: str, offer: Offer) -> int:
+    query_domain = _product_domain(item_name)
+    if _is_pet_offer(offer) and query_domain != "pet":
+        return 0
+
+    candidates = [offer.product_name, *(variant.name for variant in offer.variants)]
+    if query_domain is not None:
+        domains = {_product_domain(candidate) for candidate in candidates}
+        concrete_domains = {domain for domain in domains if domain is not None}
+        if concrete_domains and query_domain not in concrete_domains:
+            return 0
+
+    return max((_text_match_score(item_name, candidate) for candidate in candidates), default=0)
+
+
+def _matched_offer(item_name: str, offer: Offer) -> tuple[int, Offer] | None:
+    score = _offer_match_score(item_name, offer)
+    if score < _MATCH_THRESHOLD or offer.price is None:
+        return None
+
+    matched = offer.model_copy(deep=True)
+    if matched.variants:
+        relevant = [
+            variant.model_copy(update={"matches_query": True})
+            for variant in matched.variants
+            if _text_match_score(item_name, variant.name) >= _MATCH_THRESHOLD
+        ]
+        # If the campaign heading itself is the match, retaining the campaign
+        # variants is more informative than throwing them away. Otherwise only
+        # expose the variants that actually matched the list item.
+        if relevant:
+            matched.variants = relevant
+    return score, matched
+
+
+def match_items_to_publications(item_names: list[str], publications: list[Publication]) -> list[dict]:
+    current = [publication for publication in publications if publication.status == "current"]
+    groups: list[dict] = []
+    seen_item_keys: set[str] = set()
+
+    for raw_item_name in item_names:
+        item_name = " ".join(raw_item_name.strip().split())
+        item_key = item_name.casefold()
+        if not item_name or item_key in seen_item_keys:
+            continue
+        seen_item_keys.add(item_key)
+
+        candidates: dict[str, tuple[int, Offer]] = {}
+        for publication in current:
+            for offer in publication.structured_offers:
+                result = _matched_offer(item_name, offer)
+                if result is None:
+                    continue
+                score, matched = result
+                previous = candidates.get(matched.id)
+                if previous is None or score > previous[0]:
+                    candidates[matched.id] = (score, matched)
+
+        ranked = sorted(
+            candidates.values(),
+            key=lambda value: (-value[0], value[1].price if value[1].price is not None else float("inf"), value[1].retailer.casefold()),
+        )[:_MAX_MATCHES_PER_ITEM]
+        if ranked:
+            groups.append({
+                "item_name": item_name,
+                "offers": [offer.model_dump() for _, offer in ranked],
+            })
+    return groups
+
+
 @router.get("/health")
 async def offers_health():
     publications = await _publications()
@@ -198,6 +353,23 @@ async def search_offers(
         "publication": _publication_payload(items[0]) if len(items) == 1 else None,
         "offer_count": len(offers),
         "offers": [offer.model_dump() for offer in offers],
+    }
+
+
+@router.post("/matches")
+async def smart_offer_matches(request: OfferMatchRequest):
+    """Return conservative current-offer suggestions for ordinary list items.
+
+    This route is read-only: it never changes Samsung items or shared offer
+    metadata. A client must explicitly persist one of the returned offers after
+    the user approves it.
+    """
+    groups = match_items_to_publications(request.items, await _publications())
+    return {
+        "ok": True,
+        "item_count": len(groups),
+        "offer_count": sum(len(group["offers"]) for group in groups),
+        "matches": groups,
     }
 
 
