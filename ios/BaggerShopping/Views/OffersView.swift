@@ -10,6 +10,7 @@ struct OffersView: View {
     @State private var errorMessage: String?
     @State private var addedOfferID: String?
     @State private var pendingOffer: GroceryOffer?
+    @FocusState private var searchIsFocused: Bool
 
     private let api = APIClient()
     private let retailers = ["MENY"]
@@ -29,9 +30,16 @@ struct OffersView: View {
                             TextField("Søg fx juice eller oksekød", text: $query)
                                 .textInputAutocapitalization(.never)
                                 .submitLabel(.search)
+                                .focused($searchIsFocused)
                                 .onSubmit { Task { await search() } }
                             if !query.isEmpty {
-                                Button { query = ""; offers = []; hasSearched = false } label: {
+                                Button {
+                                    query = ""
+                                    offers = []
+                                    hasSearched = false
+                                    errorMessage = nil
+                                    searchIsFocused = true
+                                } label: {
                                     Image(systemName: "xmark.circle.fill")
                                         .foregroundStyle(.tertiary)
                                 }
@@ -122,38 +130,40 @@ private struct OfferCard: View {
     var body: some View {
         let matchingCount = offer.variants.filter(\.matchesQuery).count
         VStack(alignment: .leading, spacing: 10) {
-            if offer.imageURL != nil {
-                OfferCropView(offer: offer)
-                    .frame(height: 150)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-            }
-
-            HStack(alignment: .firstTextBaseline) {
-                Text(offer.productName)
-                    .font(.headline)
-                    .lineLimit(3)
-                Spacer(minLength: 12)
-                if let price = offer.price {
-                    Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
-                        .font(.title3.bold())
-                        .foregroundStyle(.red)
+            HStack(alignment: .top, spacing: 12) {
+                if offer.imageURL != nil {
+                    OfferCropView(offer: offer)
+                        .frame(width: 92, height: 92)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .allowsHitTesting(false)
                 }
-            }
 
-            HStack(spacing: 8) {
-                Text(offer.retailer).fontWeight(.semibold)
-                if let quantity = offer.quantity, let unit = offer.unit {
-                    Text("· \(quantity.formatted(.number.precision(.fractionLength(0...2)))) \(unit)")
-                }
-                if let page = offer.pageNumber { Text("· Side \(page)") }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(offer.productName)
+                            .font(.headline)
+                            .lineLimit(3)
+                        Spacer(minLength: 8)
+                        if let price = offer.price {
+                            Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                                .font(.headline.bold())
+                                .foregroundStyle(.red)
+                        }
+                    }
 
-            if let from = offer.validFrom, let until = offer.validUntil {
-                Text("Gyldig \(from)–\(until)")
-                    .font(.caption2)
+                    HStack(spacing: 6) {
+                        Text(offer.retailer).fontWeight(.semibold)
+                        if let page = offer.pageNumber { Text("· Side \(page)") }
+                    }
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+
+                    if let from = offer.validFrom, let until = offer.validUntil {
+                        Text("Gyldig \(from)–\(until)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
 
             if offer.variants.count > 1 {
@@ -227,6 +237,7 @@ struct OfferCropView: View {
             }
         }
         .clipped()
+        .allowsHitTesting(false)
         .accessibilityLabel("Udsnit fra tilbudsavisen for \(offer.productName)")
     }
 }
@@ -245,12 +256,6 @@ private struct OfferVariantSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                if offer.imageURL != nil {
-                    OfferCropView(offer: offer)
-                        .frame(height: 190)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                        .listRowInsets(EdgeInsets())
-                }
                 ForEach(variants) { variant in
                     Button { select(variant) } label: {
                         VStack(alignment: .leading, spacing: 5) {

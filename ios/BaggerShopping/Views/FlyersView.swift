@@ -294,12 +294,6 @@ private struct OfferPicker: View {
     var body: some View {
         NavigationStack {
             List {
-                if offer.imageURL != nil {
-                    OfferCropView(offer: offer)
-                        .frame(height: 190)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                        .listRowInsets(EdgeInsets())
-                }
                 ForEach(offer.variants) { variant in
                 Button { select(variant.name) } label: {
                     VStack(alignment: .leading, spacing: 4) {
