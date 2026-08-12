@@ -153,6 +153,19 @@ def test_fetches_tjek_catalogs_for_365_rema_and_netto():
                     {"view": "https://image-transformer-api.tjek.com/p-1.webp"},
                     {"view": "https://image-transformer-api.tjek.com/p-2.webp"},
                 ])
+            if request.url.path == "/v2/catalogs/catalog1/hotspots":
+                return httpx.Response(200, json=[{
+                    "type": "offer", "locations": {"1": [[0.1, 0.2], [0.4, 0.2], [0.4, 0.6]]},
+                    "offer": {"id": "offer1", "heading": "Kaffe", "pricing": {"price": 30}},
+                }])
+            if request.url.host == "api.etilbudsavis.dk" and request.url.path == "/v2/offers":
+                assert request.url.params.get("dealer_id") == dealer
+                assert request.url.params.get("catalog_id") is None
+                return httpx.Response(200, json=[{
+                    "id": "offer1", "heading": "Kaffe", "description": "400 g. Frit valg.",
+                    "pricing": {"price": 30, "pre_price": 45},
+                    "images": {"view": "https://images.test/coffee.webp"},
+                }])
             return httpx.Response(404)
 
         async def fetch():
@@ -165,6 +178,8 @@ def test_fetches_tjek_catalogs_for_365_rema_and_netto():
         assert publications[0].valid_from == "09.08.2026"
         assert publications[0].valid_until == "15.08.2026"
         assert publications[0].page_count == 2
+        assert publications[0].structured_offers[0].normal_price == 45
+        assert publications[0].structured_offers[0].image_url == "https://images.test/coffee.webp"
 
 
 def test_fetches_complete_lidl_flyer_from_schwarz_api():
