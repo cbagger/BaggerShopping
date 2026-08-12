@@ -189,6 +189,18 @@ struct ShoppingListView: View {
                 .foregroundStyle(.secondary)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Tilbud fra \(retailer)")
+            } else if !item.checked, let expired = model.expiredOfferMetadata(for: item) {
+                HStack(spacing: 4) {
+                    Text(expired.retailer)
+                    if let price = expired.price {
+                        Text("·")
+                        Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                    }
+                }
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.red)
+                .strikethrough(true, color: .red)
+                .accessibilityLabel("Udløbet tilbud fra \(expired.retailer)")
             }
 
             if let quantity = item.quantity, quantity > 1, let displayQuantity = item.displayQuantity {

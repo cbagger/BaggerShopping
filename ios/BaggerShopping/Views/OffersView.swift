@@ -3,7 +3,7 @@ import SwiftUI
 struct OffersView: View {
     @EnvironmentObject private var model: AppModel
     @State private var query = ""
-    @State private var selectedRetailer = "MENY"
+    @State private var selectedRetailers: Set<String> = []
     @State private var retailers = ["MENY"]
     @State private var offers: [GroceryOffer] = []
     @State private var hasSearched = false
@@ -48,27 +48,28 @@ struct OffersView: View {
                         .padding(12)
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
 
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 8) {
+                        FlowLayout(spacing: 8) {
                                 ForEach(retailers, id: \.self) { retailer in
                                     Button {
-                                        selectedRetailer = retailer
+                                        if selectedRetailers.contains(retailer) { selectedRetailers.remove(retailer) }
+                                        else { selectedRetailers.insert(retailer) }
                                     } label: {
                                         Text(retailer)
-                                            .font(.subheadline.weight(selectedRetailer == retailer ? .semibold : .regular))
-                                            .foregroundStyle(selectedRetailer == retailer ? Color.white : Color.primary)
+                                            .font(.subheadline.weight(selectedRetailers.contains(retailer) ? .semibold : .regular))
+                                            .foregroundStyle(selectedRetailers.contains(retailer) ? Color.white : Color.primary)
                                             .padding(.horizontal, 13)
                                             .padding(.vertical, 8)
                                             .background(
-                                                selectedRetailer == retailer ? Color.accentColor : Color(uiColor: .secondarySystemGroupedBackground),
+                                                selectedRetailers.contains(retailer) ? Color.accentColor : Color(uiColor: .secondarySystemGroupedBackground),
                                                 in: Capsule()
                                             )
                                     }
                                     .buttonStyle(.plain)
                                 }
-                            }
                         }
-                        .onChange(of: selectedRetailer) {
+                        Text(selectedRetailers.isEmpty ? "Søger i alle butikker" : "Søger i \(selectedRetailers.count) valgte butikker")
+                            .font(.caption).foregroundStyle(.secondary)
+                        .onChange(of: selectedRetailers) {
                             offers = []
                             hasSearched = false
                             errorMessage = nil
@@ -81,7 +82,7 @@ struct OffersView: View {
                     } else if let errorMessage {
                         ContentUnavailableView("Kunne ikke hente tilbud", systemImage: "wifi.exclamationmark", description: Text(errorMessage))
                     } else if hasSearched && offers.isEmpty {
-                        ContentUnavailableView("Ingen tilbud fundet", systemImage: "magnifyingglass", description: Text("\"\(query)\" findes ikke i den aktuelle \(selectedRetailer)-avis."))
+                        ContentUnavailableView("Ingen tilbud fundet", systemImage: "magnifyingglass", description: Text("\"\(query)\" findes ikke i de valgte aktuelle aviser."))
                     } else {
                         ForEach(offers) { offer in
                             OfferCard(offer: offer, wasAdded: addedOfferID == offer.id) {
@@ -121,9 +122,7 @@ struct OffersView: View {
         retailers = available.reduce(into: []) { result, retailer in
             if !result.contains(retailer) { result.append(retailer) }
         }
-        if !retailers.contains(selectedRetailer), let first = retailers.first {
-            selectedRetailer = first
-        }
+        selectedRetailers.formIntersection(retailers)
     }
 
     private func add(_ itemName: String, from offer: GroceryOffer) {
@@ -149,12 +148,36 @@ struct OffersView: View {
         addedOfferID = nil
         defer { isLoading = false }
         do {
-            offers = try await api.searchOffers(query: term, retailer: selectedRetailer).offers
+            offers = try await api.searchOffers(query: term, retailers: Array(selectedRetailers)).offers
                 .filter { $0.variants.contains(where: \.matchesQuery) }
         } catch {
             offers = []
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+private struct FlowLayout: Layout {
+    let spacing: CGFloat
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        layout(proposal: proposal, subviews: subviews).size
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = layout(proposal: ProposedViewSize(width: bounds.width, height: proposal.height), subviews: subviews)
+        for (index, point) in result.points.enumerated() {
+            subviews[index].place(at: CGPoint(x: bounds.minX + point.x, y: bounds.minY + point.y), proposal: .unspecified)
+        }
+    }
+    private func layout(proposal: ProposedViewSize, subviews: Subviews) -> (size: CGSize, points: [CGPoint]) {
+        let width = proposal.width ?? 0
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
+        var points: [CGPoint] = []
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0 && x + size.width > width { x = 0; y += rowHeight + spacing; rowHeight = 0 }
+            points.append(CGPoint(x: x, y: y)); x += size.width + spacing; rowHeight = max(rowHeight, size.height)
+        }
+        return (CGSize(width: width, height: y + rowHeight), points)
     }
 }
 

@@ -99,14 +99,15 @@ struct APIClient {
         return try JSONDecoder().decode(PublicationsResponse.self, from: data)
     }
 
-    func searchOffers(query: String, retailer: String = "MENY") async throws -> OfferSearchResponse {
+    func searchOffers(query: String, retailers: [String] = []) async throws -> OfferSearchResponse {
+        var queryItems = [URLQueryItem(name: "q", value: query)]
+        if !retailers.isEmpty {
+            queryItems.append(URLQueryItem(name: "retailer", value: retailers.joined(separator: ",")))
+        }
         let data = try await perform(
             request(
                 path: "/api/mobile/v1/offers/search",
-                queryItems: [
-                    URLQueryItem(name: "q", value: query),
-                    URLQueryItem(name: "retailer", value: retailer)
-                ]
+                queryItems: queryItems
             )
         )
         return try JSONDecoder().decode(OfferSearchResponse.self, from: data)

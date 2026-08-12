@@ -1,8 +1,54 @@
 import asyncio
 from datetime import date
+from types import SimpleNamespace
 
 from app import mobile_offers
 from app.meny_flyer import parse_enrichment_chunks, parse_meny_flyer_html
+
+
+def test_search_without_retailer_searches_all_current_publications(monkeypatch):
+    publications = []
+    for retailer in ("MENY", "Bilka"):
+        publication = parse_meny_flyer_html("<p>MENY uge 3326</p>")
+        publication.retailer = retailer
+        publication.status = "current"
+        publications.append(publication)
+
+    async def all_publications():
+        return publications
+
+    def search(publication, query):
+        return SimpleNamespace(offers=[])
+
+    monkeypatch.setattr(mobile_offers, "_publications", all_publications)
+    monkeypatch.setattr(mobile_offers, "search_publication", search)
+    response = asyncio.run(mobile_offers.search_offers(q="mælk", retailer=None))
+
+    assert response["retailer"] == "Alle butikker"
+    assert response["publication"] is None
+
+
+def test_search_accepts_comma_separated_retailer_filter(monkeypatch):
+    publications = []
+    for retailer in ("MENY", "Bilka", "Lidl"):
+        publication = parse_meny_flyer_html("<p>MENY uge 3326</p>")
+        publication.retailer = retailer
+        publication.status = "current"
+        publications.append(publication)
+
+    async def all_publications():
+        return publications
+
+    searched = []
+    def search(publication, query):
+        searched.append(publication.retailer)
+        return SimpleNamespace(offers=[])
+
+    monkeypatch.setattr(mobile_offers, "_publications", all_publications)
+    monkeypatch.setattr(mobile_offers, "search_publication", search)
+    asyncio.run(mobile_offers.search_offers(q="mælk", retailer="Bilka,Lidl"))
+
+    assert searched == ["Bilka", "Lidl"]
 
 
 def test_publication_offers_returns_current_publication_when_client_id_is_stale(monkeypatch):

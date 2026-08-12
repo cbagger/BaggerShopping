@@ -153,7 +153,7 @@ struct OfferSearchResponse: Codable {
     let ok: Bool
     let query: String
     let retailer: String
-    let publication: OfferPublication
+    let publication: OfferPublication?
     let offerCount: Int
     let offers: [GroceryOffer]
 

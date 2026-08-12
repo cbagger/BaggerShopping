@@ -17,11 +17,11 @@ struct FlyersView: View {
                 } else {
                     ScrollView {
                         LazyVGrid(
-                            columns: [GridItem(.adaptive(minimum: 148, maximum: 190), spacing: 18)],
+                            columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)],
                             alignment: .leading,
                             spacing: 24
                         ) {
-                            ForEach(publications) { publication in
+                            ForEach(Array(publications.enumerated()), id: \.element.id) { _, publication in
                                 Button { selectedPublication = publication } label: {
                                     FlyerCoverCard(publication: publication)
                                 }
@@ -201,7 +201,7 @@ private struct NativeFlyerReader: View {
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Luk", systemImage: "xmark") { dismiss() } } }
             .task { await loadOffers() }
             .sheet(item: $pendingOffer) { offer in
-                OfferPicker(offer: offer) { name in add(name); pendingOffer = nil }
+                OfferPicker(offer: offer) { name in add(name, from: offer); pendingOffer = nil }
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
@@ -216,12 +216,12 @@ private struct NativeFlyerReader: View {
     }
 
     private func choose(_ offer: GroceryOffer) {
-        if offer.variants.count == 1, let variant = offer.variants.first { add(variant.name) }
+        if offer.variants.count == 1, let variant = offer.variants.first { add(variant.name, from: offer) }
         else { pendingOffer = offer }
     }
 
-    private func add(_ name: String) {
-        let offer = pendingOffer ?? offers.first { $0.variants.contains(where: { $0.name == name }) }
+    private func add(_ name: String, from selectedOffer: GroceryOffer? = nil) {
+        let offer = selectedOffer ?? pendingOffer ?? offers.first { $0.variants.contains(where: { $0.name == name }) }
         Task {
             if await model.addItem(
                 name,

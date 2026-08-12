@@ -180,9 +180,13 @@ async def publications():
 @router.get("/search")
 async def search_offers(
     q: str = Query(min_length=1, max_length=100),
-    retailer: str = Query(default="MENY", max_length=40),
+    retailer: str | None = Query(default=None, max_length=40),
 ):
-    items = [p for p in await _publications() if p.retailer.casefold() == retailer.casefold() and p.status == "current"]
+    selected = {value.strip().casefold() for value in (retailer or "").split(",") if value.strip()}
+    items = [
+        p for p in await _publications()
+        if p.status == "current" and (not selected or p.retailer.casefold() in selected)
+    ]
     if not items:
         raise HTTPException(status_code=404, detail="Der er ingen aktuel avis for den valgte butik")
     results = [search_publication(publication, q) for publication in items]
@@ -190,8 +194,8 @@ async def search_offers(
     return {
         "ok": True,
         "query": q,
-        "retailer": items[0].retailer,
-        "publication": _publication_payload(items[0]),
+        "retailer": items[0].retailer if len({item.retailer for item in items}) == 1 else "Alle butikker",
+        "publication": _publication_payload(items[0]) if len(items) == 1 else None,
         "offer_count": len(offers),
         "offers": [offer.model_dump() for offer in offers],
     }
