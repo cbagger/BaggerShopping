@@ -64,7 +64,38 @@ final class SmartOfferMatchService: ObservableObject {
         }
     }
 
-    func approve(_ offer: GroceryOffer, for item: ShoppingItem, model: AppModel) async -> Bool {
+    func approve(
+        _ offer: GroceryOffer,
+        selectedItemName: String,
+        for item: ShoppingItem,
+        model: AppModel
+    ) async -> Bool {
+        let selectedName = normalizedName(selectedItemName)
+        guard !selectedName.isEmpty else {
+            errorMessage = "Den valgte tilbudsvariant mangler et varenavn."
+            return false
+        }
+
+        let oldName = normalizedName(item.name)
+        let needsRename = ShoppingCategoryService.normalize(oldName)
+            != ShoppingCategoryService.normalize(selectedName)
+
+        if needsRename {
+            let duplicateExists = model.shoppingList?.items.contains { candidate in
+                candidate.stableID != item.stableID
+                    && ShoppingCategoryService.normalize(candidate.name)
+                        == ShoppingCategoryService.normalize(selectedName)
+            } ?? false
+            if duplicateExists {
+                errorMessage = "Der findes allerede en vare med navnet \"\(selectedName)\" på indkøbslisten."
+                return false
+            }
+        }
+
+        // Persist the selected offer against the existing item first. The
+        // existing in-place Samsung rename endpoint moves this metadata to the
+        // new item name in the same server operation, preserving item ID,
+        // quantity and checked state.
         let metadata = OfferMetadataDTO(
             itemName: item.name,
             retailer: offer.retailer,
@@ -73,27 +104,58 @@ final class SmartOfferMatchService: ObservableObject {
             validUntil: offer.validUntil,
             offerID: offer.id,
             publicationID: offer.publicationID,
-            matchedItemName: item.name
+            matchedItemName: selectedName
         )
 
         do {
             try await api.setOfferMetadata(metadata)
+
+            var renameWarning: String?
+            if needsRename {
+                let categoryOverride = model.hasCategoryOverride(for: item)
+                    ? model.category(for: item)
+                    : nil
+                do {
+                    let result = try await ItemRenameService().rename(
+                        item: item,
+                        to: selectedName,
+                        categoryOverride: categoryOverride
+                    )
+                    renameWarning = result.warning
+                } catch {
+                    // The offer was written under the old item name immediately
+                    // before rename. If rename did not complete, remove that
+                    // provisional assignment so the list is not left half-updated.
+                    try? await api.removeOfferMetadata(itemName: item.name)
+                    await model.syncSharedOfferMetadata()
+                    throw error
+                }
+            }
+
+            await model.refresh()
+            await model.syncSharedCategories()
             await model.syncSharedOfferMetadata()
             matchesByItem.removeValue(forKey: key(item.name))
             errorMessage = nil
+            if let renameWarning {
+                model.errorMessage = renameWarning
+            }
             return true
         } catch {
-            errorMessage = "Tilbuddet kunne ikke tilknyttes endnu: \(error.localizedDescription)"
+            errorMessage = "Tilbuddet kunne ikke bruges endnu: \(error.localizedDescription)"
             return false
         }
     }
 
-    private func key(_ value: String) -> String {
+    private func normalizedName(_ value: String) -> String {
         value
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(whereSeparator: { $0.isWhitespace })
             .joined(separator: " ")
-            .lowercased()
+    }
+
+    private func key(_ value: String) -> String {
+        normalizedName(value).lowercased()
     }
 }
 
@@ -104,6 +166,7 @@ struct SmartOfferMatchesView: View {
     let item: ShoppingItem
 
     @State private var applyingOfferID: String?
+    @State private var pendingVariantOffer: GroceryOffer?
 
     private var offers: [GroceryOffer] {
         service.matches(for: item)
@@ -121,7 +184,7 @@ struct SmartOfferMatchesView: View {
                 } else {
                     List {
                         Section {
-                            Text("Vælg et tilbud til “\(item.name)”. Varen ændres først, når du trykker Brug tilbud — navn og antal bevares.")
+                            Text("Vælg et tilbud til “\(item.name)”. Hvis tilbuddet har flere varianter, vælger du den konkrete vare først. Når du bruger tilbuddet, omdøbes varen på indkøbslisten til den valgte tilbudsvariant, mens antal og købt-status bevares.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -141,6 +204,13 @@ struct SmartOfferMatchesView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Luk") { dismiss() }
                 }
+            }
+            .sheet(item: $pendingVariantOffer) { offer in
+                SmartOfferVariantSheet(offer: offer) { selectedName in
+                    Task { await apply(offer, selectedItemName: selectedName) }
+                }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
             }
             .alert(
                 "Kunne ikke bruge tilbud",
@@ -197,12 +267,7 @@ struct SmartOfferMatchesView: View {
                 Spacer(minLength: 8)
 
                 Button {
-                    Task {
-                        applyingOfferID = offer.id
-                        let success = await service.approve(offer, for: item, model: model)
-                        applyingOfferID = nil
-                        if success { dismiss() }
-                    }
+                    choose(offer)
                 } label: {
                     HStack(spacing: 5) {
                         if applyingOfferID == offer.id {
@@ -217,5 +282,134 @@ struct SmartOfferMatchesView: View {
             }
         }
         .padding(.vertical, 3)
+    }
+
+    private func choose(_ offer: GroceryOffer) {
+        switch offer.choiceState {
+        case .direct(let variant):
+            Task {
+                await apply(
+                    offer,
+                    selectedItemName: offer.shoppingItemName(variant: variant)
+                )
+            }
+        case .variants, .unspecified:
+            pendingVariantOffer = offer
+        }
+    }
+
+    @MainActor
+    private func apply(_ offer: GroceryOffer, selectedItemName: String) async {
+        guard applyingOfferID == nil else { return }
+        applyingOfferID = offer.id
+        let success = await service.approve(
+            offer,
+            selectedItemName: selectedItemName,
+            for: item,
+            model: model
+        )
+        applyingOfferID = nil
+        if success {
+            pendingVariantOffer = nil
+            dismiss()
+        }
+    }
+}
+
+/// Smart Matching intentionally mirrors the established offer variant picker
+/// used in the Tilbud tab. Search responses may contain several matching
+/// variants (for example ordinary butter and spreadable butter), so approving
+/// the campaign alone is not enough to identify what should be put on the list.
+private struct SmartOfferVariantSheet: View {
+    let offer: GroceryOffer
+    let select: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var customName = ""
+
+    private var names: [String] {
+        guard case .variants(let available) = offer.choiceState else { return [] }
+        let matching = offer.variants.filter(\.matchesQuery).map(\.name)
+        return (matching.isEmpty ? available : matching)
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let imageURL = offer.imageURL {
+                    AsyncImage(url: imageURL) { image in
+                        image.resizable().scaledToFit()
+                    } placeholder: {
+                        ProgressView()
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 100, maxHeight: 180)
+                    .listRowInsets(EdgeInsets())
+                }
+
+                Section {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(offer.conciseProductName).font(.headline)
+                        HStack(spacing: 6) {
+                            Text(offer.retailer)
+                            if let price = offer.price {
+                                Text("·")
+                                Text(
+                                    price,
+                                    format: .currency(code: "DKK")
+                                        .precision(.fractionLength(price.rounded() == price ? 0 : 2))
+                                )
+                            }
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+
+                ForEach(names, id: \.self) { name in
+                    Button {
+                        select(offer.shoppingItemName(variant: name))
+                    } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(name)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                            HStack(spacing: 8) {
+                                if let quantity = offer.quantity, let unit = offer.unit {
+                                    Text("\(quantity.formatted(.number.precision(.fractionLength(0...2)))) \(unit)")
+                                }
+                                if let price = offer.price {
+                                    Text(
+                                        price,
+                                        format: .currency(code: "DKK")
+                                            .precision(.fractionLength(price.rounded() == price ? 0 : 2))
+                                    )
+                                }
+                            }
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
+                Section(names.isEmpty ? "Varianten kan ikke identificeres sikkert" : "Et andet valg") {
+                    Button("Brug uden bestemt variant") {
+                        select(offer.shoppingItemName(variant: nil))
+                    }
+                    TextField("Skriv den konkrete vare", text: $customName)
+                    Button("Brug skrevet variant") {
+                        select(offer.shoppingItemName(customVariant: customName))
+                    }
+                    .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .navigationTitle("Vælg vare")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuller") { dismiss() }
+                }
+            }
+        }
     }
 }
