@@ -66,6 +66,36 @@ struct CategoryOverridesResponse: Codable {
     let overrides: [CategoryOverrideDTO]
 }
 
+struct OfferMetadataDTO: Codable, Hashable {
+    let itemName: String
+    let retailer: String
+    let price: Double?
+    let validFrom: String?
+    let validUntil: String?
+    let offerID: String?
+    let publicationID: String?
+    let matchedItemName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case retailer, price
+        case itemName = "item_name"
+        case validFrom = "valid_from"
+        case validUntil = "valid_until"
+        case offerID = "offer_id"
+        case publicationID = "publication_id"
+        case matchedItemName = "matched_item_name"
+    }
+}
+
+struct OfferMetadataResponse: Codable {
+    let ok: Bool
+    let metadata: [OfferMetadataDTO]
+}
+
+struct OfferMetadataSyncRequest: Codable {
+    let metadata: [OfferMetadataDTO]
+}
+
 struct StoreLocation: Codable, Identifiable, Hashable {
     let id: UUID
     var name: String
