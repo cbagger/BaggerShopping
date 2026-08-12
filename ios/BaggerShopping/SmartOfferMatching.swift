@@ -134,13 +134,13 @@ struct SmartOfferMatchesView: View {
 
     @State private var applyingOfferID: String?
 
-    private struct Group: Identifiable {
+    private struct MatchGroup: Identifiable {
         let item: ShoppingItem
         let offers: [GroceryOffer]
         var id: String { item.stableID }
     }
 
-    private var groups: [Group] {
+    private var groups: [MatchGroup] {
         let active = model.shoppingList?.items.filter { !$0.checked } ?? []
         let source: [ShoppingItem]
         if let focusItem {
@@ -150,7 +150,7 @@ struct SmartOfferMatchesView: View {
         }
         return source.compactMap { item in
             let offers = service.matches(for: item)
-            return offers.isEmpty ? nil : Group(item: item, offers: offers)
+            return offers.isEmpty ? nil : MatchGroup(item: item, offers: offers)
         }
     }
 
