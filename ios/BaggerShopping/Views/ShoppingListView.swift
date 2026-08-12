@@ -309,7 +309,10 @@ struct ShoppingListView: View {
     private func offerStatus(for item: ShoppingItem) -> (label: String, icon: String, color: Color)? {
         switch model.offerState(for: item) {
         case .upcoming(let date):
-            return ("Tilbud fra \(date.formatted(.dateTime.weekday(.wide).day().month(.abbreviated)))", "calendar.badge.clock", .indigo)
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "da_DK")
+            formatter.dateFormat = "'Tilbud fra' EEEE d. MMMM"
+            return (formatter.string(from: date), "calendar.badge.clock", .indigo)
         case .expiresSoon:
             return ("Udløber snart", "clock.badge.exclamationmark", .orange)
         case .expired:

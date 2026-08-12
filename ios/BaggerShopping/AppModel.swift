@@ -99,12 +99,9 @@ final class AppModel: ObservableObject {
                 objectWillChange.send()
             }
             errorMessage = nil
-            // Samsung can be eventually consistent after SyncItems. Keep the
-            // optimistic row instead of immediately replacing it with stale data.
-            Task {
-                try? await Task.sleep(for: .seconds(4))
-                await refresh()
-            }
+            // Samsung can be eventually consistent after SyncItems. Do not
+            // replace the confirmed optimistic row with a stale response a few
+            // seconds later; the next ordinary refresh will reconcile it.
             return true
         } catch {
             shoppingList = previous

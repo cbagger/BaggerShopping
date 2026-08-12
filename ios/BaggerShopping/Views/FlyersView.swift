@@ -318,7 +318,7 @@ private struct OfferPicker: View {
 
                 Section {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(offer.productName).font(.headline)
+                        Text(offer.conciseProductName).font(.headline)
                         HStack(spacing: 6) {
                             Text(offer.retailer)
                             if let price = offer.price {
@@ -346,13 +346,11 @@ private struct OfferPicker: View {
                     Button("Tilføj uden bestemt variant") {
                         select(offer.shoppingItemName(variant: nil))
                     }
-                    if !names.isEmpty {
-                        TextField("Skriv den konkrete vare", text: $customName)
-                        Button("Tilføj skrevet variant") {
-                            select(offer.shoppingItemName(variant: customName))
-                        }
-                            .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    TextField("Skriv den konkrete vare", text: $customName)
+                    Button("Tilføj skrevet variant") {
+                        select(offer.shoppingItemName(variant: customName))
                     }
+                        .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
             .navigationTitle("Vælg vare")

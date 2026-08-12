@@ -302,6 +302,22 @@ def test_tjek_hotspots_prefer_nested_product_variants_over_campaign_heading():
     assert [variant.name for variant in offers[0].variants] == ["Xtra! tun i vand", "Xtra! tun i olie"]
 
 
+def test_tjek_description_variants_are_used_without_image_ocr():
+    publication = Publication(
+        id="catalog", retailer="365discount", title="Uge 33", source_url="https://365.test",
+        valid_from="06.08.2026", valid_until="12.08.2026", page_count=1,
+        page_image_urls=["https://images.test/page.webp"],
+    )
+    offers = parse_tjek_hotspots(publication, [{
+        "type": "offer", "locations": {"1": [[0.1, 0.2], [0.4, 0.2], [0.4, 0.6]]},
+        "offer": {
+            "id": "tun", "heading": "Xtra! tun", "pricing": {"price": 5},
+            "description": "Xtra! tun i vand eller Xtra! tun i olie. Frit valg. 56 g.",
+        },
+    }])
+    assert [variant.name for variant in offers[0].variants] == ["Xtra! tun i vand", "Xtra! tun i olie"]
+
+
 def test_tjek_offer_feed_enriches_matching_hotspot_by_offer_id():
     publication = Publication(
         id="catalog", retailer="365discount", title="Uge 33", source_url="https://365.test",

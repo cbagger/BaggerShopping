@@ -262,8 +262,24 @@ def _tjek_variants(identity: str, heading: str, description: str | None, quantit
     normalized = heading.replace(" / ", ", ")
     if not names:
         names = [_normalize_space(value) for value in re.split(r"\s*,\s*|\s+eller\s+", normalized, flags=re.IGNORECASE)]
+    # Some Tjek retailers expose alternatives only in the first descriptive
+    # sentence. Accept product-like alternatives there, while rejecting price,
+    # weight and campaign boilerplate rather than falling back to image OCR.
+    if len(names) <= 1 and description:
+        first_clause = re.split(r"\.(?:\s|$)|\b(?:frit valg|flere varianter|kg-pris|literpris)\b", description, maxsplit=1, flags=re.IGNORECASE)[0]
+        described = [
+            _normalize_space(value).strip(" -*")
+            for value in re.split(r"\s*,\s*|\s+eller\s+|\s*/\s*", first_clause, flags=re.IGNORECASE)
+        ]
+        described = [
+            value for value in described
+            if 2 <= len(value) <= 80
+            and not re.fullmatch(r"[\d\s.,x×%+-]+(?:g|kg|ml|cl|l|stk)?", value, re.IGNORECASE)
+        ]
+        if len(described) > 1:
+            names = described
     names = [name for name in names if len(name) >= 2]
-    if not 1 < len(names) <= 8:
+    if not 1 < len(names) <= 16:
         names = [heading]
     return [
         OfferVariant(id=f"{identity}-{index}", name=name, description=description, quantity=quantity, unit=unit)

@@ -23,6 +23,24 @@ final class OfferPresentationTests: XCTestCase {
         XCTAssertEqual(offer.shoppingItemName(variant: "Xtra! tun i vand"), "Xtra! tun i vand")
     }
 
+    func testCompleteBrandProductVariantsStandAlone() throws {
+        let softDrinks = try decodeOffer(
+            productName: "Coca-Cola, Fanta, Tuborg Squash eller Sprite",
+            rawText: "Flere varianter",
+            variants: ["Coca-Cola", "Tuborg Squash"]
+        )
+        XCTAssertEqual(softDrinks.shoppingItemName(variant: "Coca-Cola"), "Coca-Cola")
+        XCTAssertEqual(softDrinks.shoppingItemName(variant: "Tuborg Squash"), "Tuborg Squash")
+
+        let dairy = try decodeOffer(
+            productName: "Arla eller Cheasy Koldskål eller Cultura Kefir",
+            rawText: "Frit valg",
+            variants: ["Cheasy Koldskål", "Cultura Kefir"]
+        )
+        XCTAssertEqual(dairy.shoppingItemName(variant: "Cheasy Koldskål"), "Cheasy Koldskål")
+        XCTAssertEqual(dairy.shoppingItemName(variant: "Cultura Kefir"), "Cultura Kefir")
+    }
+
     func testUnresolvedGroupedOfferDoesNotAddFallbackVariantDirectly() throws {
         let offer = try decodeOffer(
             productName: "3-stjernet pålæg",
