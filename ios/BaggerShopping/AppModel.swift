@@ -14,6 +14,7 @@ final class AppModel: ObservableObject {
     private let api = APIClient()
     private let offerMetadataKey = "bagger-shopping-offer-metadata-v2"
     private var offerMetadata: [String: OfferItemMetadata]
+    private var reconciliationTasks: [String: Task<Void, Never>] = [:]
 
     init() {
         if let data = UserDefaults.standard.data(forKey: offerMetadataKey),
@@ -29,7 +30,14 @@ final class AppModel: ObservableObject {
         if tokenConfigured {
             await refresh()
             await syncSharedCategories()
+            await checkForNewFlyers()
         }
+    }
+
+    func checkForNewFlyers() async {
+        guard tokenConfigured,
+              let publications = try? await api.fetchOfferPublications().publications else { return }
+        await NewFlyerNotifier.process(publications)
     }
 
     func refresh() async {
@@ -39,6 +47,7 @@ final class AppModel: ObservableObject {
         do {
             let list = try await api.fetchList()
             shoppingList = list
+            mutatingItemIDs = mutatingItemIDs.intersection(Set(list.items.map(\.stableID)))
             ShoppingListCache.save(list)
             errorMessage = nil
         } catch {
@@ -102,11 +111,28 @@ final class AppModel: ObservableObject {
             // Samsung can be eventually consistent after SyncItems. Do not
             // replace the confirmed optimistic row with a stale response a few
             // seconds later; the next ordinary refresh will reconcile it.
+            scheduleReconciliation(for: trimmed)
             return true
         } catch {
             shoppingList = previous
             errorMessage = error.localizedDescription
             return false
+        }
+    }
+
+    private func scheduleReconciliation(for name: String) {
+        let key = offerRetailerNameKey(name)
+        reconciliationTasks[key]?.cancel()
+        reconciliationTasks[key] = Task { [weak self] in
+            for delay in [2, 4, 8] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled, let self else { return }
+                await self.refresh()
+                if self.shoppingList?.items.contains(where: {
+                    $0.id != nil && self.offerRetailerNameKey($0.name) == key
+                }) == true { break }
+            }
+            self.reconciliationTasks[key] = nil
         }
     }
 

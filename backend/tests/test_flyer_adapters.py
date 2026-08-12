@@ -234,6 +234,26 @@ def test_paginates_tjek_offer_details_beyond_api_limit():
     assert publications[0].structured_offers[0].image_url == "https://images.test/tun.webp"
 
 
+def test_restores_shared_compound_in_tjek_variants():
+    publication = Publication(
+        id="netto-week", retailer="Netto", title="Uge 34",
+        source_url="https://netto.test", page_count=1,
+        page_image_urls=["https://images.test/page.webp"],
+    )
+    rows = [{
+        "type": "offer",
+        "locations": {"1": [[0.1, 0.1], [0.4, 0.1], [0.4, 0.4]]},
+        "offer": {
+            "id": "chicken", "heading": "Coop kyllingeover- eller underlår",
+            "pricing": {"price": 29},
+        },
+    }]
+    offers = parse_tjek_hotspots(publication, rows)
+    assert [variant.name for variant in offers[0].variants] == [
+        "Coop kyllingeover", "Coop kyllingeunderlår"
+    ]
+
+
 def test_fetches_complete_lidl_flyer_from_schwarz_api():
     source = RetailerSource("Lidl", "https://lidl.test/aviser", ("lidl.test",))
     flyer_id = "019fb848-75bf-75c9-95d5-477c1069ddaf"
@@ -316,6 +336,22 @@ def test_tjek_description_variants_are_used_without_image_ocr():
         },
     }])
     assert [variant.name for variant in offers[0].variants] == ["Xtra! tun i vand", "Xtra! tun i olie"]
+
+
+def test_tjek_heading_keeps_relative_product_alternatives_selectable():
+    publication = Publication(
+        id="catalog", retailer="365discount", title="Uge 33", source_url="https://365.test",
+        valid_from="06.08.2026", valid_until="12.08.2026", page_count=1,
+        page_image_urls=["https://images.test/page.webp"],
+    )
+    offers = parse_tjek_hotspots(publication, [{
+        "type": "offer", "locations": {"1": [[0.1, 0.2], [0.4, 0.2], [0.4, 0.6]]},
+        "offer": {
+            "id": "bacon", "heading": "Tulip bacon i skiver eller i tern",
+            "description": "2 x 150 g. Frit valg.", "pricing": {"price": 35},
+        },
+    }])
+    assert [variant.name for variant in offers[0].variants] == ["Tulip bacon i skiver", "Tulip bacon i tern"]
 
 
 def test_tjek_offer_feed_enriches_matching_hotspot_by_offer_id():

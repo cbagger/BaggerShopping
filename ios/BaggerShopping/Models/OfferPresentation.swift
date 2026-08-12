@@ -47,6 +47,9 @@ extension GroceryOffer {
               !variant.isEmpty,
               variant.caseInsensitiveCompare(base) != .orderedSame else { return base }
 
+        if let composed = composedSharedAlternative(base: base, variant: variant) { return composed }
+        if let composed = composedPropertyVariant(base: base, variant: variant) { return composed }
+
         if variant.range(of: base, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
             return variant
         }
@@ -68,6 +71,48 @@ extension GroceryOffer {
             return "\(variant) \(productNoun)"
         }
         return "\(variantBaseName(from: base)) – \(cleanedVariantSuffix(variant))"
+    }
+
+    private func composedSharedAlternative(base: String, variant: String) -> String? {
+        let foldedBase = base.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+        let foldedVariant = variant.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+        guard foldedBase.contains("kyllingeover-") && foldedBase.contains("underlar"),
+              foldedVariant == "underlar" else { return nil }
+        let prefix = base.components(separatedBy: "kyllingeover-").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return [prefix, "kyllingeunderlår"].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    private func composedPropertyVariant(base: String, variant: String) -> String? {
+        let folded = variant.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+        guard folded.range(of: #"^(?:mellem|mild|ekstra|vellagret|lagret|stærk)"#, options: .regularExpression) != nil,
+              let noun = base.split(whereSeparator: \.isWhitespace).last.map(String.init),
+              variant.range(of: noun, options: [.caseInsensitive, .diacriticInsensitive]) == nil else { return nil }
+        let identity = base.split(whereSeparator: \.isWhitespace).dropLast().joined(separator: " ")
+        return [identity, variant, noun.lowercased()].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    /// User-entered text is always a qualifier for the advertised product.
+    /// It must never be mistaken for a complete product name just because it
+    /// starts with a capital letter (for example "Havreflager" or "Æble").
+    func shoppingItemName(customVariant: String) -> String {
+        let base = manualVariantBaseName
+        let custom = customVariant.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !custom.isEmpty else { return base }
+        if custom.range(of: base, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+            return custom
+        }
+        return "\(base) – \(custom)"
+    }
+
+    private var manualVariantBaseName: String {
+        let base = conciseProductName
+        let folded = base.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+        if folded.contains("karen volf") { return "Karen Volf" }
+        if folded.contains("godmorgen") && folded.contains("juice") { return "Godmorgen juice" }
+        if folded.contains("tulip") && folded.contains("bacon") { return "Tulip bacon" }
+        if folded.contains("arla") && folded.contains("cheasy") && folded.contains("koldskal") { return "Koldskål" }
+        return variantBaseName(from: base)
     }
 
     private func firstWordOf(_ value: String) -> String {

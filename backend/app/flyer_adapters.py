@@ -260,6 +260,19 @@ def _tjek_variants(identity: str, heading: str, description: str | None, quantit
     """Expose every explicit alternative from Tjek before heading fallback."""
     names = _variant_strings(payload)
     normalized = heading.replace(" / ", ", ")
+    def restore_shared_compound(match: re.Match[str]) -> str:
+        first, second = match.group(1), match.group(2)
+        for ending in ("over", "under", "inder", "yder"):
+            if first.casefold().endswith(ending):
+                return f"{first}, {first[:-len(ending)]}{second}"
+        return match.group(0)
+
+    normalized = re.sub(
+        r"\b([\wæøå]+)-\s+eller\s+([\wæøå]+)\b",
+        restore_shared_compound,
+        normalized,
+        flags=re.IGNORECASE,
+    )
     if not names:
         names = [_normalize_space(value) for value in re.split(r"\s*,\s*|\s+eller\s+", normalized, flags=re.IGNORECASE)]
     # Some Tjek retailers expose alternatives only in the first descriptive
@@ -279,6 +292,16 @@ def _tjek_variants(identity: str, heading: str, description: str | None, quantit
         if len(described) > 1:
             names = described
     names = [name for name in names if len(name) >= 2]
+    # A trailing alternative is frequently written as a relative fragment,
+    # e.g. "Tulip bacon i skiver eller i tern".  Keep it as a selectable
+    # variant and restore the shared product identity.
+    if len(names) > 1:
+        first = names[0]
+        shared = re.split(r"\s+(?:i|med|uden)\s+", first, maxsplit=1, flags=re.IGNORECASE)[0]
+        names = [
+            f"{shared} {name}" if re.match(r"^(?:i|med|uden)\b", name, re.IGNORECASE) else name
+            for name in names
+        ]
     if not 1 < len(names) <= 16:
         names = [heading]
     return [

@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct BaggerShoppingApp: App {
     @StateObject private var appModel = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -11,6 +12,13 @@ struct BaggerShoppingApp: App {
                 .task {
                     await appModel.bootstrap()
                 }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task {
+                await appModel.refresh()
+                await appModel.checkForNewFlyers()
+            }
         }
     }
 }

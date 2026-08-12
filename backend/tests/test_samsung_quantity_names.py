@@ -1,1 +1,20 @@
-m´ÎÜ⁄rGßw˚^≤€?µÎ-±©¨∫x*π©Ìä‹ßjg¨ß#h≤Á!~)^¢∑b≠Á-¢º
+from app.samsung import SamsungFoodClient
+
+
+def test_extracts_natural_quantity_suffixes():
+    cases = {
+        "s√∏dm√¶lk x2": ("s√∏dm√¶lk", 2),
+        "s√∏dm√¶lk √ó 2": ("s√∏dm√¶lk", 2),
+        "s√∏dm√¶lk 2x": ("s√∏dm√¶lk", 2),
+        "s√∏dm√¶lk 2 stk": ("s√∏dm√¶lk", 2),
+        "s√∏dm√¶lk 2stk.": ("s√∏dm√¶lk", 2),
+        "s√∏dm√¶lk 2 stykker": ("s√∏dm√¶lk", 2),
+    }
+    for value, expected in cases.items():
+        assert SamsungFoodClient._quantity_from_name(value) == expected
+
+
+def test_does_not_guess_quantity_without_explicit_suffix():
+    assert SamsungFoodClient._quantity_from_name("Coca-Cola 2 liter") == ("Coca-Cola 2 liter", None)
+    assert SamsungFoodClient._quantity_from_name("iPhone 16") == ("iPhone 16", None)
+    assert SamsungFoodClient._quantity_from_name("m√¶lk x1") == ("m√¶lk x1", None)
