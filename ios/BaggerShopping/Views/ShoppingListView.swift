@@ -16,7 +16,13 @@ struct ShoppingListView: View {
 
     @EnvironmentObject private var model: AppModel
     @State private var newItem = ""
+    @State private var selectedRetailerFilters: Set<String> = []
     @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
+
+    private let retailerFilterOptions = [
+        "MENY", "365discount", "REMA 1000", "Bilka",
+        "føtex", "Lidl", "Netto", "SPAR"
+    ]
 
     private var activeItems: [ShoppingItem] {
         model.shoppingList?.items.filter { !$0.checked } ?? []
@@ -48,6 +54,11 @@ struct ShoppingListView: View {
         let grouped = Dictionary(grouping: activeItems) { model.assignedRetailer(for: $0) }
         return grouped.map { retailer, items in
             RetailerGroup(retailer: retailer, categories: categoryGroups(for: items))
+        }
+        .filter { group in
+            guard let retailer = group.retailer else { return true }
+            return selectedRetailerFilters.isEmpty
+                || selectedRetailerFilters.contains(retailer)
         }
         .sorted { lhs, rhs in
             if lhs.retailer == nil { return rhs.retailer != nil }
@@ -100,7 +111,10 @@ struct ShoppingListView: View {
 
                         Section {
                             Button {
-                                withAnimation { sortByRetailer.toggle() }
+                                withAnimation {
+                                    sortByRetailer.toggle()
+                                    if !sortByRetailer { selectedRetailerFilters.removeAll() }
+                                }
                             } label: {
                                 Label(
                                     "Sorter efter butik",
@@ -118,6 +132,37 @@ struct ShoppingListView: View {
                             .buttonStyle(.plain)
                             .listRowBackground(Color.clear)
                             .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
+
+                            if sortByRetailer {
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 8) {
+                                        retailerFilterButton(
+                                            title: "Alle",
+                                            selected: selectedRetailerFilters.isEmpty
+                                        ) {
+                                            withAnimation { selectedRetailerFilters.removeAll() }
+                                        }
+
+                                        ForEach(retailerFilterOptions, id: \.self) { retailer in
+                                            retailerFilterButton(
+                                                title: retailer,
+                                                selected: selectedRetailerFilters.contains(retailer)
+                                            ) {
+                                                withAnimation {
+                                                    if selectedRetailerFilters.contains(retailer) {
+                                                        selectedRetailerFilters.remove(retailer)
+                                                    } else {
+                                                        selectedRetailerFilters.insert(retailer)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .padding(.horizontal, 2)
+                                }
+                                .listRowBackground(Color.clear)
+                                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                            }
                         }
 
                         if activeItems.isEmpty {
@@ -247,6 +292,25 @@ struct ShoppingListView: View {
                 newItem = value
             }
         }
+    }
+
+    private func retailerFilterButton(
+        title: String,
+        selected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption.weight(selected ? .semibold : .regular))
+                .foregroundStyle(selected ? Color.white : Color.primary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(
+                    selected ? Color.accentColor : Color(uiColor: .secondarySystemGroupedBackground),
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
