@@ -30,7 +30,6 @@ struct ShoppingListView: View {
     @State private var selectedRetailerFilters: Set<String> = []
     @State private var renameTarget: ShoppingItemRenameTarget?
     @State private var offerTarget: ShoppingItemOfferTarget?
-    @State private var showingOfferOverview = false
     @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
 
     private let retailerFilterOptions = [
@@ -44,16 +43,6 @@ struct ShoppingListView: View {
 
     private var checkedItems: [ShoppingItem] {
         model.shoppingList?.items.filter(\.checked) ?? []
-    }
-
-    private var offerMatchedItems: [ShoppingItem] {
-        activeItems.filter {
-            model.offerRetailer(for: $0) == nil && !smartOffers.matches(for: $0).isEmpty
-        }
-    }
-
-    private var totalOfferMatchCount: Int {
-        offerMatchedItems.reduce(0) { $0 + smartOffers.matches(for: $1).count }
     }
 
     private var offerMatchSignature: String {
@@ -196,37 +185,6 @@ struct ShoppingListView: View {
                             }
                         }
 
-                        if !offerMatchedItems.isEmpty {
-                            Section {
-                                Button {
-                                    showingOfferOverview = true
-                                } label: {
-                                    HStack(spacing: 12) {
-                                        Image(systemName: "tag.fill")
-                                            .font(.title3)
-                                            .foregroundStyle(Color.accentColor)
-
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            Text("Tilbud til din liste")
-                                                .font(.headline)
-                                                .foregroundStyle(.primary)
-                                            Text("\(offerMatchedItems.count) varer · \(totalOfferMatchCount) aktuelle tilbud")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-
-                                        Spacer()
-                                        Image(systemName: "chevron.right")
-                                            .font(.caption.weight(.semibold))
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                            } footer: {
-                                Text("Forslag ændrer aldrig en vare automatisk. Du vælger selv, hvis et tilbud skal bruges.")
-                            }
-                        }
-
                         if activeItems.isEmpty {
                             Section {
                                 ContentUnavailableView(
@@ -338,11 +296,7 @@ struct ShoppingListView: View {
                     .environmentObject(model)
             }
             .sheet(item: $offerTarget) { target in
-                SmartOfferMatchesView(service: smartOffers, focusItem: target.item)
-                    .environmentObject(model)
-            }
-            .sheet(isPresented: $showingOfferOverview) {
-                SmartOfferMatchesView(service: smartOffers, focusItem: nil)
+                SmartOfferMatchesView(service: smartOffers, item: target.item)
                     .environmentObject(model)
             }
             .task(id: offerMatchSignature) {
