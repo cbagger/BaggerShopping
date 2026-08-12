@@ -302,6 +302,16 @@ def _tjek_variants(identity: str, heading: str, description: str | None, quantit
             f"{shared} {name}" if re.match(r"^(?:i|med|uden)\b", name, re.IGNORECASE) else name
             for name in names
         ]
+        # When a compound alternative is reconstructed after a branded first
+        # choice ("Coop kyllingeover- eller underlår"), the brand sits outside
+        # the matched compound. Carry that shared prefix into the one-word
+        # continuation as well.
+        if " " in first:
+            prefix = first.rsplit(" ", 1)[0]
+            names = [
+                name if index == 0 or " " in name else f"{prefix} {name}"
+                for index, name in enumerate(names)
+            ]
     if not 1 < len(names) <= 16:
         names = [heading]
     return [
