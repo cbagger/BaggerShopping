@@ -107,9 +107,6 @@ struct ShoppingListView: View {
                                 }
                                 .disabled(newItem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }
-                        }
-
-                        Section {
                             Button {
                                 withAnimation {
                                     sortByRetailer.toggle()
