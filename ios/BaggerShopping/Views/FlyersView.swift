@@ -348,7 +348,7 @@ private struct OfferPicker: View {
                     }
                     TextField("Skriv den konkrete vare", text: $customName)
                     Button("Tilføj skrevet variant") {
-                        select(offer.shoppingItemName(variant: customName))
+                        select(offer.shoppingItemName(customVariant: customName))
                     }
                         .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }

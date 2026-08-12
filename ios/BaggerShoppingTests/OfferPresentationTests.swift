@@ -75,6 +75,20 @@ final class OfferPresentationTests: XCTestCase {
         XCTAssertEqual(butter.shoppingItemName(variant: "smørbart"), "Thise – smørbart")
     }
 
+    func testManualVariantsAlwaysKeepAConciseProductIdentity() throws {
+        let biscuits = try decodeOffer(productName: "Karen Volf marked", rawText: "Flere varianter", variants: [])
+        XCTAssertEqual(biscuits.shoppingItemName(customVariant: "Havreflager"), "Karen Volf – Havreflager")
+
+        let juice = try decodeOffer(productName: "Økologisk Godmorgen juice", rawText: "Frit valg", variants: [])
+        XCTAssertEqual(juice.shoppingItemName(customVariant: "Æble"), "Godmorgen juice – Æble")
+
+        let chicken = try decodeOffer(productName: "Crispy Kylling", rawText: "Flere varianter", variants: [])
+        XCTAssertEqual(chicken.shoppingItemName(customVariant: "Sprøde Kyllingebidder"), "Crispy Kylling – Sprøde Kyllingebidder")
+
+        let bacon = try decodeOffer(productName: "Tulip bacon i skiver eller i tern", rawText: "Frit valg", variants: [])
+        XCTAssertEqual(bacon.shoppingItemName(customVariant: "i tern"), "Tulip bacon – i tern")
+    }
+
     private func decodeOffer(productName: String, rawText: String, variants: [String]) throws -> GroceryOffer {
         let payload: [String: Any] = [
             "id": "offer", "retailer": "365discount", "publication_id": "paper",

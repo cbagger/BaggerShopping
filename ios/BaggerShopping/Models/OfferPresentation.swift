@@ -70,6 +70,29 @@ extension GroceryOffer {
         return "\(variantBaseName(from: base)) – \(cleanedVariantSuffix(variant))"
     }
 
+    /// User-entered text is always a qualifier for the advertised product.
+    /// It must never be mistaken for a complete product name just because it
+    /// starts with a capital letter (for example "Havreflager" or "Æble").
+    func shoppingItemName(customVariant: String) -> String {
+        let base = manualVariantBaseName
+        let custom = customVariant.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !custom.isEmpty else { return base }
+        if custom.range(of: base, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+            return custom
+        }
+        return "\(base) – \(custom)"
+    }
+
+    private var manualVariantBaseName: String {
+        let base = conciseProductName
+        let folded = base.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+        if folded.contains("karen volf") { return "Karen Volf" }
+        if folded.contains("godmorgen") && folded.contains("juice") { return "Godmorgen juice" }
+        if folded.contains("tulip") && folded.contains("bacon") { return "Tulip bacon" }
+        if folded.contains("arla") && folded.contains("cheasy") && folded.contains("koldskal") { return "Koldskål" }
+        return variantBaseName(from: base)
+    }
+
     private func firstWordOf(_ value: String) -> String {
         value.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? value
     }
