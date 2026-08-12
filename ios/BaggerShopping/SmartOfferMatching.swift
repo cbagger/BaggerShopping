@@ -28,7 +28,7 @@ struct SmartOfferMatchesResponse: Codable {
 final class SmartOfferMatchService: ObservableObject {
     @Published private(set) var matchesByItem: [String: [GroceryOffer]] = [:]
     @Published private(set) var isLoading = false
-    @Published private(set) var errorMessage: String?
+    @Published var errorMessage: String?
 
     private let api = APIClient()
     private let baseURL = URL(string: "https://shopping.chewbagger.dk")!
