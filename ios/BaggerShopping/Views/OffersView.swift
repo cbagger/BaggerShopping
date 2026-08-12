@@ -129,7 +129,10 @@ struct OffersView: View {
                 retailer: offer.retailer,
                 offerPrice: offer.price,
                 offerValidFrom: offer.validFrom,
-                offerValidUntil: offer.validUntil
+                offerValidUntil: offer.validUntil,
+                offerID: offer.id,
+                publicationID: offer.publicationID,
+                matchedItemName: itemName
             ) {
                 withAnimation { addedOfferID = offer.id }
             }
