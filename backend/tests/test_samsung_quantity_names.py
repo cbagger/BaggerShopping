@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("SAMSUNG_LIST_ID", "test-list")
+
 from app.samsung import SamsungFoodClient
 
 

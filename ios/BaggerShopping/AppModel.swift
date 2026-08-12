@@ -132,7 +132,7 @@ final class AppModel: ObservableObject {
                     $0.id != nil && self.offerRetailerNameKey($0.name) == key
                 }) == true { break }
             }
-            self.reconciliationTasks[key] = nil
+            self?.reconciliationTasks[key] = nil
         }
     }
 
