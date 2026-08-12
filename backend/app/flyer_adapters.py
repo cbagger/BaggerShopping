@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from .meny_flyer import (
+    Offer,
+    OfferVariant,
     Publication,
     _normalize_space,
     _status,
@@ -38,11 +40,11 @@ class RetailerSource:
 SOURCES: tuple[RetailerSource, ...] = (
     RetailerSource("365discount", "https://365discount.coop.dk/365avis/", ("365discount.coop.dk", "tjek.com", "ipaper.io"), tjek_dealer_id="DWZE1w"),
     RetailerSource("REMA 1000", "https://rema1000.dk/avis", ("avis.rema1000.dk", "ipaper.io", "view.publitas.com"), tjek_dealer_id="11deC"),
-    RetailerSource("Bilka", "https://www.bilka.dk/bilkaavisen/", ("avis.bilka.dk",)),
-    RetailerSource("føtex", "https://www.foetex.dk/foetex-avis/", ("avis.foetex.dk",)),
-    RetailerSource("Lidl", "https://www.lidl.dk/c/tilbudsavis/s10013730", ("leaflets.schwarz", "lidl.dk")),
+    RetailerSource("Bilka", "https://www.bilka.dk/bilkaavisen/", ("avis.bilka.dk",), tjek_dealer_id="93f13"),
+    RetailerSource("føtex", "https://www.foetex.dk/foetex-avis/", ("avis.foetex.dk",), tjek_dealer_id="bdf5A"),
+    RetailerSource("Lidl", "https://www.lidl.dk/c/tilbudsavis/s10013730", ("leaflets.schwarz", "lidl.dk"), tjek_dealer_id="71c90"),
     RetailerSource("Netto", "https://netto.dk/netto-avisen/", ("viewer.ipaper.io", "netto.dk", "tjek.com"), tjek_dealer_id="9ba51"),
-    RetailerSource("SPAR", "https://spar.dk/ugensavis", ("ipaper.io", "view.publitas.com", "spar.dk")),
+    RetailerSource("SPAR", "https://spar.dk/ugensavis", ("ipaper.io", "view.publitas.com", "spar.dk"), tjek_dealer_id="88ddE"),
 )
 
 
@@ -208,6 +210,73 @@ def _publication_from_tjek(payload: dict, pages: object, source: RetailerSource,
     )
 
 
+def _quantity(payload: object) -> tuple[float | None, str | None]:
+    if not isinstance(payload, dict):
+        return None, None
+    size = payload.get("size") if isinstance(payload.get("size"), dict) else {}
+    unit = payload.get("unit") if isinstance(payload.get("unit"), dict) else {}
+    value = size.get("from")
+    return (float(value), str(unit.get("symbol"))) if isinstance(value, (int, float)) and unit.get("symbol") else (None, None)
+
+
+def _tjek_variants(identity: str, heading: str, description: str | None, quantity: float | None, unit: str | None) -> list[OfferVariant]:
+    """Expose explicit alternatives from Tjek headings in the variant picker."""
+    normalized = heading.replace(" / ", ", ")
+    names = [_normalize_space(value) for value in re.split(r"\s*,\s*|\s+eller\s+", normalized, flags=re.IGNORECASE)]
+    names = [name for name in names if len(name) >= 2]
+    if not 1 < len(names) <= 8:
+        names = [heading]
+    return [
+        OfferVariant(id=f"{identity}-{index}", name=name, description=description, quantity=quantity, unit=unit)
+        for index, name in enumerate(dict.fromkeys(names))
+    ]
+
+
+def parse_tjek_hotspots(publication: Publication, rows: object) -> list[Offer]:
+    """Convert Tjek's official offer polygons into the common MENY model."""
+    offers: list[Offer] = []
+    if not isinstance(rows, list):
+        return offers
+    for row in rows:
+        if not isinstance(row, dict) or row.get("type") != "offer":
+            continue
+        payload = row.get("offer") if isinstance(row.get("offer"), dict) else row
+        heading = _normalize_space(str(payload.get("heading") or row.get("heading") or "")).rstrip("*")
+        locations = row.get("locations") if isinstance(row.get("locations"), dict) else {}
+        pricing = payload.get("pricing") if isinstance(payload.get("pricing"), dict) else {}
+        quantity, unit = _quantity(payload.get("quantity"))
+        for page_key, polygon in locations.items():
+            try:
+                page = int(page_key)
+                points = [(float(point[0]), float(point[1])) for point in polygon if len(point) >= 2]
+            except (TypeError, ValueError):
+                continue
+            if not heading or not points:
+                continue
+            xs, ys = zip(*points)
+            # Tjek coordinates use page width as the unit on both axes. Their
+            # portrait pages are sqrt(2) units high; SwiftUI uses 0...1.
+            page_aspect = 2 ** 0.5
+            x, y = max(0.0, min(xs)), max(0.0, min(ys) / page_aspect)
+            width = min(1.0 - x, (max(xs) - min(xs)))
+            height = min(1.0 - y, (max(ys) - min(ys)) / page_aspect)
+            identity = str(payload.get("id") or row.get("id") or hashlib.sha256(f"{publication.id}|{page}|{heading}".encode()).hexdigest()[:20])
+            variants = _tjek_variants(identity, heading, payload.get("description"), quantity, unit)
+            offers.append(Offer(
+                id=f"{identity}-{page}", retailer=publication.retailer,
+                publication_id=publication.id, publication_title=publication.title,
+                valid_from=publication.valid_from, valid_until=publication.valid_until,
+                product_name=heading, price=pricing.get("price"), normal_price=pricing.get("pre_price"),
+                quantity=quantity, unit=unit,
+                image_url=publication.page_image_urls[page - 1] if 0 < page <= len(publication.page_image_urls) else None,
+                source_url=publication.source_url, page_number=page,
+                hotspot_x=x, hotspot_y=y, hotspot_width=width, hotspot_height=height,
+                raw_text=_normalize_space(" ".join(filter(None, (heading, payload.get("description"))))),
+                safe_to_add=True, variants=variants,
+            ))
+    return offers
+
+
 def _publication_from_schwarz(payload: dict, source: RetailerSource, reader_url: str) -> Publication:
     flyer = payload.get("flyer") if isinstance(payload.get("flyer"), dict) else {}
     rows = flyer.get("pages") if isinstance(flyer.get("pages"), list) else []
@@ -221,12 +290,44 @@ def _publication_from_schwarz(payload: dict, source: RetailerSource, reader_url:
         str(value) for value in (flyer.get("name"), flyer.get("title")) if value
     ) or "Lidl tilbudsavis")
     identity = hashlib.sha256(f"Lidl|{flyer.get('id')}".encode()).hexdigest()[:20]
-    return Publication(
+    publication = Publication(
         id=identity, retailer=source.retailer, title=title,
         valid_from=valid_from, valid_until=valid_until, status=_status(valid_from, valid_until),
         source_url=reader_url, reader_url=reader_url, reader_kind="schwarz-pages",
         page_count=len(page_images), page_image_urls=page_images, content_source="schwarz-flyer-api",
     )
+    products = flyer.get("products") if isinstance(flyer.get("products"), dict) else {}
+    for page_index, page in enumerate(rows, start=1):
+        if not isinstance(page, dict):
+            continue
+        for link in page.get("links") or []:
+            if not isinstance(link, dict) or link.get("displayType") != "product":
+                continue
+            product = products.get(str(link.get("id")), {})
+            if not isinstance(product, dict):
+                product = {}
+            details = link.get("productDetails") if isinstance(link.get("productDetails"), dict) else {}
+            name = _normalize_space(str(product.get("title") or details.get("title") or link.get("title") or ""))
+            if not name:
+                continue
+            identity = str(link.get("id") or details.get("productId") or hashlib.sha256(f"{publication.id}|{page_index}|{name}".encode()).hexdigest()[:20])
+            try:
+                price = float(str(product.get("price")).replace(",", ".")) if product.get("price") is not None else None
+                x, y, width, height = (float(link[key]) / 100 for key in ("left", "top", "width", "height"))
+            except (TypeError, ValueError, KeyError):
+                continue
+            variant = OfferVariant(id=identity, name=name, description=product.get("description"))
+            publication.structured_offers.append(Offer(
+                id=identity, retailer=source.retailer, publication_id=publication.id,
+                publication_title=publication.title, valid_from=publication.valid_from,
+                valid_until=publication.valid_until, product_name=name, brand=product.get("brand"),
+                price=price, image_url=product.get("image") or page_images[page_index - 1],
+                source_url=str(product.get("url") or link.get("url") or reader_url), page_number=page_index,
+                hotspot_x=x, hotspot_y=y, hotspot_width=width, hotspot_height=height,
+                raw_text=_normalize_space(" ".join(filter(None, (name, product.get("description"))))),
+                safe_to_add=True, variants=[variant],
+            ))
+    return publication
 
 
 def _publication_from_html(raw_html: str, source: RetailerSource, link: FlyerLink) -> Publication:
@@ -372,15 +473,18 @@ async def fetch_retailer_publications(
             pass
     for catalog_id in dict.fromkeys(tjek_ids):
         try:
-            metadata_response, pages_response = await asyncio.gather(
+            metadata_response, pages_response, hotspots_response = await asyncio.gather(
                 client.get(f"https://squid-api.tjek.com/v2/catalogs/{catalog_id}"),
                 client.get(f"https://squid-api.tjek.com/v2/catalogs/{catalog_id}/pages?w=700"),
+                client.get(f"https://squid-api.tjek.com/v2/catalogs/{catalog_id}/hotspots"),
             )
             metadata_response.raise_for_status()
             pages_response.raise_for_status()
             publication = _publication_from_tjek(
                 metadata_response.json(), pages_response.json(), source, landing_url
             )
+            if hotspots_response.is_success:
+                publication.structured_offers = parse_tjek_hotspots(publication, hotspots_response.json())
             fingerprint = tuple(publication.page_image_urls)
             if publication.page_count and fingerprint not in seen_publications:
                 seen_publications.add(fingerprint)
