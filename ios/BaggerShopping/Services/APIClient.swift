@@ -2,6 +2,7 @@ import Foundation
 
 struct APIClient {
     let baseURL = URL(string: "https://shopping.chewbagger.dk")!
+    private static let pendingOfferMetadataKey = "bagger-shopping-pending-offer-metadata-v1"
 
     enum APIError: LocalizedError {
         case missingToken
@@ -41,7 +42,8 @@ struct APIClient {
 
     private func perform(_ request: URLRequest) async throws -> Data {
         var lastError: Error?
-        let attempts = request.httpMethod == "GET" ? 3 : 1
+        let retryableMethods = ["GET", "PUT"]
+        let attempts = retryableMethods.contains(request.httpMethod ?? "") ? 3 : 1
         for attempt in 1...attempts {
             do {
                 let (data, response) = try await URLSession.shared.data(for: request)
@@ -114,6 +116,87 @@ struct APIClient {
 
     func clearCategoryOverrides() async throws {
         _ = try await perform(request(path: "/api/mobile/v1/category-overrides", method: "DELETE"))
+    }
+
+    func fetchOfferMetadata() async throws -> OfferMetadataResponse {
+        try await flushPendingOfferMetadata()
+        let data = try await perform(request(path: "/api/mobile/v1/offer-metadata"))
+        return try JSONDecoder().decode(OfferMetadataResponse.self, from: data)
+    }
+
+    func setOfferMetadata(_ metadata: OfferMetadataDTO) async throws {
+        enqueuePendingOfferMetadata(metadata)
+        do {
+            try await writeOfferMetadata(metadata)
+            removePendingOfferMetadata(itemName: metadata.itemName)
+        } catch {
+            // Keep the exact intended write in UserDefaults. The next metadata
+            // refresh will retry it before reading QNAP, so a transient iPhone
+            // request can no longer silently lose family-shared offer state.
+            throw error
+        }
+    }
+
+    func syncOfferMetadata(_ metadata: [OfferMetadataDTO]) async throws -> OfferMetadataResponse {
+        try await flushPendingOfferMetadata()
+        let body = try JSONEncoder().encode(OfferMetadataSyncRequest(metadata: metadata))
+        let data = try await perform(request(path: "/api/mobile/v1/offer-metadata/sync", method: "PUT", body: body))
+        return try JSONDecoder().decode(OfferMetadataResponse.self, from: data)
+    }
+
+    func removeOfferMetadata(itemName: String) async throws {
+        // A delete/manual same-name add must also cancel any queued stale PUT,
+        // otherwise an offline write could resurrect metadata after removal.
+        removePendingOfferMetadata(itemName: itemName)
+        let body = try JSONSerialization.data(withJSONObject: ["item_name": itemName])
+        _ = try await perform(request(path: "/api/mobile/v1/offer-metadata/remove", method: "POST", body: body))
+    }
+
+    private func writeOfferMetadata(_ metadata: OfferMetadataDTO) async throws {
+        let body = try JSONEncoder().encode(metadata)
+        _ = try await perform(request(path: "/api/mobile/v1/offer-metadata", method: "PUT", body: body))
+    }
+
+    private func flushPendingOfferMetadata() async throws {
+        let pending = loadPendingOfferMetadata()
+        guard !pending.isEmpty else { return }
+        for metadata in pending.values {
+            try await writeOfferMetadata(metadata)
+            removePendingOfferMetadata(itemName: metadata.itemName)
+        }
+    }
+
+    private func pendingOfferMetadataKey(for itemName: String) -> String {
+        itemName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func loadPendingOfferMetadata() -> [String: OfferMetadataDTO] {
+        guard let data = UserDefaults.standard.data(forKey: Self.pendingOfferMetadataKey),
+              let decoded = try? JSONDecoder().decode([String: OfferMetadataDTO].self, from: data) else {
+            return [:]
+        }
+        return decoded
+    }
+
+    private func savePendingOfferMetadata(_ pending: [String: OfferMetadataDTO]) {
+        if pending.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.pendingOfferMetadataKey)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(pending) else { return }
+        UserDefaults.standard.set(data, forKey: Self.pendingOfferMetadataKey)
+    }
+
+    private func enqueuePendingOfferMetadata(_ metadata: OfferMetadataDTO) {
+        var pending = loadPendingOfferMetadata()
+        pending[pendingOfferMetadataKey(for: metadata.itemName)] = metadata
+        savePendingOfferMetadata(pending)
+    }
+
+    private func removePendingOfferMetadata(itemName: String) {
+        var pending = loadPendingOfferMetadata()
+        pending.removeValue(forKey: pendingOfferMetadataKey(for: itemName))
+        savePendingOfferMetadata(pending)
     }
 
     func fetchOfferPublications() async throws -> PublicationsResponse {

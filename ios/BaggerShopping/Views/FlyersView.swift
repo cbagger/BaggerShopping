@@ -278,7 +278,10 @@ private struct NativeFlyerReader: View {
                 retailer: publication.retailer,
                 offerPrice: offer?.price,
                 offerValidFrom: offer?.validFrom ?? publication.validFrom,
-                offerValidUntil: offer?.validUntil ?? publication.validUntil
+                offerValidUntil: offer?.validUntil ?? publication.validUntil,
+                offerID: offer?.id,
+                publicationID: offer?.publicationID ?? publication.id,
+                matchedItemName: name
             ) { addedName = name }
         }
     }
@@ -376,15 +379,15 @@ private struct OfferPicker: View {
                 }
 
                 ForEach(names, id: \.self) { name in
-                Button { select(offer.shoppingItemName(variant: name)) } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(name).font(.headline)
-                        if let quantity = offer.quantity, let unit = offer.unit {
-                            Text("\(quantity.formatted(.number.precision(.fractionLength(0...2)))) \(unit)")
-                                .font(.subheadline).foregroundStyle(.secondary)
+                    Button { select(offer.shoppingItemName(variant: name)) } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(name).font(.headline)
+                            if let quantity = offer.quantity, let unit = offer.unit {
+                                Text("\(quantity.formatted(.number.precision(.fractionLength(0...2)))) \(unit)")
+                                    .font(.subheadline).foregroundStyle(.secondary)
+                            }
                         }
                     }
-                }
                 }
 
                 Section(names.isEmpty ? "Varianten kan ikke identificeres sikkert" : "Et andet valg") {
