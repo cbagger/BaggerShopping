@@ -279,16 +279,6 @@ def _tjek_variants(identity: str, heading: str, description: str | None, quantit
         if len(described) > 1:
             names = described
     names = [name for name in names if len(name) >= 2]
-    # A trailing alternative is frequently written as a relative fragment,
-    # e.g. "Tulip bacon i skiver eller i tern".  Keep it as a selectable
-    # variant and restore the shared product identity.
-    if len(names) > 1:
-        first = names[0]
-        shared = re.split(r"\s+(?:i|med|uden)\s+", first, maxsplit=1, flags=re.IGNORECASE)[0]
-        names = [
-            f"{shared} {name}" if re.match(r"^(?:i|med|uden)\b", name, re.IGNORECASE) else name
-            for name in names
-        ]
     if not 1 < len(names) <= 16:
         names = [heading]
     return [
