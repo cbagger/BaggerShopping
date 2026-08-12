@@ -546,7 +546,10 @@ async def fetch_retailer_publications(
                 client.get(f"https://squid-api.tjek.com/v2/catalogs/{catalog_id}/hotspots"),
                 client.get(
                     "https://api.etilbudsavis.dk/v2/offers",
-                    params={"catalog_id": catalog_id, "limit": 1000},
+                    # The public offers endpoint filters by dealer, not by
+                    # catalogue. Offer IDs are globally stable and are joined
+                    # to this catalogue's hotspots below.
+                    params={"dealer_id": source.tjek_dealer_id, "limit": 1000},
                 ),
             )
             metadata_response.raise_for_status()
