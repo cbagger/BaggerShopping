@@ -10,6 +10,7 @@ from app.flyer_adapters import (
     discover_flyer_links,
     extract_embedded_page_images,
     extract_ipaper_minipaper,
+    parse_tjek_hotspots,
     fetch_retailer_publications,
     fetch_all_publications,
     validity_from_text,
@@ -23,6 +24,9 @@ SOURCE = RetailerSource("Bilka", "https://www.bilka.dk/bilkaavisen/", ("avis.bil
 def test_every_requested_retailer_has_an_adapter():
     assert RETAILER_ORDER == ("MENY", "365discount", "REMA 1000", "Bilka", "føtex", "Lidl", "Netto", "SPAR")
     assert {source.retailer for source in SOURCES} == set(RETAILER_ORDER) - {"MENY"}
+    assert {source.retailer for source in SOURCES if source.tjek_dealer_id} == {
+        "365discount", "REMA 1000", "Bilka", "føtex", "Lidl", "Netto", "SPAR",
+    }
 
 
 def test_discovers_current_and_upcoming_official_publications_without_week_rules():
@@ -190,6 +194,29 @@ def test_fetches_complete_lidl_flyer_from_schwarz_api():
     assert len(publications) == 1
     assert publications[0].reader_kind == "schwarz-pages"
     assert publications[0].page_count == 2
+
+
+def test_tjek_hotspots_become_searchable_positioned_offers():
+    publication = Publication(
+        id="catalog", retailer="Netto", title="Uge 33", source_url="https://netto.test",
+        valid_from="08.08.2026", valid_until="15.08.2026", page_count=1,
+        page_image_urls=["https://images.test/page.webp"],
+    )
+    offers = parse_tjek_hotspots(publication, [{
+        "type": "offer", "id": "cola", "heading": "Coca-Cola eller Fanta",
+        "locations": {"1": [[0.1, 0.2], [0.5, 0.2], [0.5, 0.8], [0.1, 0.8]]},
+        "offer": {"id": "cola", "heading": "Coca-Cola eller Fanta", "description": "24 x 33 cl",
+                  "pricing": {"price": 69},
+                  "quantity": {"unit": {"symbol": "cl"}, "size": {"from": 33}}},
+    }])
+    assert len(offers) == 1
+    assert offers[0].retailer == "Netto"
+    assert offers[0].price == 69
+    assert offers[0].safe_to_add is True
+    assert [variant.name for variant in offers[0].variants] == ["Coca-Cola", "Fanta"]
+    assert offers[0].page_number == 1
+    assert offers[0].hotspot_x == 0.1
+    assert 0 < offers[0].hotspot_height < 1
 
 
 def test_one_broken_retailer_does_not_hide_healthy_publications(monkeypatch):
