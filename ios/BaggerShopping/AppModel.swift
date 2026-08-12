@@ -12,13 +12,32 @@ final class AppModel: ObservableObject {
     let geofence = GeofenceManager()
     let categories = ShoppingCategoryService()
     private let api = APIClient()
+    private let offerMetadataKey = "bagger-shopping-offer-metadata-v2"
+    private var offerMetadata: [String: OfferItemMetadata]
+    private var reconciliationTasks: [String: Task<Void, Never>] = [:]
+
+    init() {
+        if let data = UserDefaults.standard.data(forKey: offerMetadataKey),
+           let decoded = try? JSONDecoder().decode([String: OfferItemMetadata].self, from: data) {
+            offerMetadata = decoded
+        } else {
+            offerMetadata = [:]
+        }
+    }
 
     func bootstrap() async {
         geofence.sync(stores: stores.stores)
         if tokenConfigured {
             await refresh()
             await syncSharedCategories()
+            await checkForNewFlyers()
         }
+    }
+
+    func checkForNewFlyers() async {
+        guard tokenConfigured,
+              let publications = try? await api.fetchOfferPublications().publications else { return }
+        await NewFlyerNotifier.process(publications)
     }
 
     func refresh() async {
@@ -28,6 +47,7 @@ final class AppModel: ObservableObject {
         do {
             let list = try await api.fetchList()
             shoppingList = list
+            mutatingItemIDs = mutatingItemIDs.intersection(Set(list.items.map(\.stableID)))
             ShoppingListCache.save(list)
             errorMessage = nil
         } catch {
@@ -47,7 +67,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func addItem(_ name: String) async -> Bool {
+    func addItem(
+        _ name: String,
+        retailer: String? = nil,
+        offerPrice: Double? = nil,
+        offerValidFrom: String? = nil,
+        offerValidUntil: String? = nil
+    ) async -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
 
@@ -65,18 +91,48 @@ final class AppModel: ObservableObject {
 
         do {
             try await api.addItem(name: trimmed)
-            errorMessage = nil
-            // Samsung can be eventually consistent after SyncItems. Keep the
-            // optimistic row instead of immediately replacing it with stale data.
-            Task {
-                try? await Task.sleep(for: .seconds(4))
-                await refresh()
+            if let retailer, !retailer.isEmpty {
+                offerMetadata[offerRetailerNameKey(trimmed)] = OfferItemMetadata(
+                    retailer: retailer,
+                    price: offerPrice,
+                    validFrom: offerValidFrom,
+                    validUntil: offerValidUntil
+                )
+                saveOfferMetadata()
+                objectWillChange.send()
+            } else {
+                // Items typed in the app use the same plain Samsung Food flow
+                // as fridge-created items and must not inherit old offer data.
+                offerMetadata.removeValue(forKey: offerRetailerNameKey(trimmed))
+                saveOfferMetadata()
+                objectWillChange.send()
             }
+            errorMessage = nil
+            // Samsung can be eventually consistent after SyncItems. Do not
+            // replace the confirmed optimistic row with a stale response a few
+            // seconds later; the next ordinary refresh will reconcile it.
+            scheduleReconciliation(for: trimmed)
             return true
         } catch {
             shoppingList = previous
             errorMessage = error.localizedDescription
             return false
+        }
+    }
+
+    private func scheduleReconciliation(for name: String) {
+        let key = offerRetailerNameKey(name)
+        reconciliationTasks[key]?.cancel()
+        reconciliationTasks[key] = Task { [weak self] in
+            for delay in [2, 4, 8] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled, let self else { return }
+                await self.refresh()
+                if self.shoppingList?.items.contains(where: {
+                    $0.id != nil && self.offerRetailerNameKey($0.name) == key
+                }) == true { break }
+            }
+            self?.reconciliationTasks[key] = nil
         }
     }
 
@@ -134,6 +190,8 @@ final class AppModel: ObservableObject {
         defer { mutatingItemIDs.remove(key) }
         do {
             try await api.deleteItem(item)
+            offerMetadata.removeValue(forKey: offerRetailerNameKey(item.name))
+            saveOfferMetadata()
             errorMessage = nil
         } catch {
             shoppingList = previous
@@ -148,6 +206,49 @@ final class AppModel: ObservableObject {
 
     func category(for item: ShoppingItem) -> ShoppingCategory {
         categories.category(for: item.name)
+    }
+
+    func offerRetailer(for item: ShoppingItem) -> String? {
+        currentOfferMetadata(for: item)?.retailer
+    }
+
+    func assignedRetailer(for item: ShoppingItem) -> String? {
+        offerMetadata[offerRetailerNameKey(item.name)]?.retailer
+    }
+
+    func offerPrice(for item: ShoppingItem) -> Double? {
+        currentOfferMetadata(for: item)?.price
+    }
+
+    func offerState(for item: ShoppingItem) -> OfferItemState? {
+        guard let metadata = offerMetadata[offerRetailerNameKey(item.name)] else { return nil }
+        let today = Calendar.current.startOfDay(for: Date())
+        if let start = parseOfferDate(metadata.validFrom), start > today {
+            return .upcoming(start)
+        }
+        if let end = parseOfferDate(metadata.validUntil), end < today {
+            return .expired
+        }
+        if let end = parseOfferDate(metadata.validUntil) {
+            let days = Calendar.current.dateComponents([.day], from: today, to: Calendar.current.startOfDay(for: end)).day ?? 2
+            if days <= 1 { return .expiresSoon }
+        }
+        return .active
+    }
+
+    func expiredOfferMetadata(for item: ShoppingItem) -> (retailer: String, price: Double?)? {
+        guard let metadata = offerMetadata[offerRetailerNameKey(item.name)],
+              let validUntil = metadata.validUntil else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "da_DK")
+        formatter.dateFormat = "dd.MM.yyyy"
+        guard let expiry = formatter.date(from: validUntil),
+              Calendar.current.startOfDay(for: expiry) < Calendar.current.startOfDay(for: Date()) else { return nil }
+        return (metadata.retailer, metadata.price)
+    }
+
+    func offerExpiresToday(for item: ShoppingItem) -> Bool {
+        offerState(for: item) == .expiresSoon
     }
 
     func setCategory(_ category: ShoppingCategory, for item: ShoppingItem) {
@@ -214,4 +315,56 @@ final class AppModel: ObservableObject {
             items: items
         )
     }
+
+    private func offerRetailerNameKey(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func currentOfferMetadata(for item: ShoppingItem) -> OfferItemMetadata? {
+        guard let metadata = offerMetadata[offerRetailerNameKey(item.name)] else { return nil }
+        return offerState(for: item) == .expired ? nil : metadata
+    }
+
+    private func parseOfferDate(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "da_DK")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = "dd.MM.yyyy"
+        return formatter.date(from: value)
+    }
+
+    private func saveOfferMetadata() {
+        guard let data = try? JSONEncoder().encode(offerMetadata) else { return }
+        UserDefaults.standard.set(data, forKey: offerMetadataKey)
+    }
+}
+
+private struct OfferItemMetadata: Codable {
+    let retailer: String
+    let price: Double?
+    let validFrom: String?
+    let validUntil: String?
+
+    init(retailer: String, price: Double?, validFrom: String?, validUntil: String?) {
+        self.retailer = retailer
+        self.price = price
+        self.validFrom = validFrom
+        self.validUntil = validUntil
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        retailer = try values.decode(String.self, forKey: .retailer)
+        price = try values.decodeIfPresent(Double.self, forKey: .price)
+        validFrom = try values.decodeIfPresent(String.self, forKey: .validFrom)
+        validUntil = try values.decodeIfPresent(String.self, forKey: .validUntil)
+    }
+}
+
+enum OfferItemState: Equatable {
+    case upcoming(Date)
+    case active
+    case expiresSoon
+    case expired
 }

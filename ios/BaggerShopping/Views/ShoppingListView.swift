@@ -7,8 +7,22 @@ struct ShoppingListView: View {
         var id: String { category.id }
     }
 
+    private struct RetailerGroup: Identifiable {
+        let retailer: String?
+        let categories: [CategoryGroup]
+        var id: String { retailer ?? "__without-retailer__" }
+        var count: Int { categories.reduce(0) { $0 + $1.items.count } }
+    }
+
     @EnvironmentObject private var model: AppModel
     @State private var newItem = ""
+    @State private var selectedRetailerFilters: Set<String> = []
+    @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
+
+    private let retailerFilterOptions = [
+        "MENY", "365discount", "REMA 1000", "Bilka",
+        "føtex", "Lidl", "Netto", "SPAR"
+    ]
 
     private var activeItems: [ShoppingItem] {
         model.shoppingList?.items.filter { !$0.checked } ?? []
@@ -18,8 +32,43 @@ struct ShoppingListView: View {
         model.shoppingList?.items.filter(\.checked) ?? []
     }
 
+    private var upcomingItems: [ShoppingItem] {
+        activeItems.filter {
+            if case .upcoming = model.offerState(for: $0) { return true }
+            return false
+        }
+    }
+
+    private var currentItems: [ShoppingItem] {
+        activeItems.filter {
+            if case .upcoming = model.offerState(for: $0) { return false }
+            return true
+        }
+    }
+
     private var groupedActiveItems: [CategoryGroup] {
-        let grouped = Dictionary(grouping: activeItems) { model.category(for: $0) }
+        categoryGroups(for: currentItems)
+    }
+
+    private var retailerGroups: [RetailerGroup] {
+        let grouped = Dictionary(grouping: activeItems) { model.assignedRetailer(for: $0) }
+        return grouped.map { retailer, items in
+            RetailerGroup(retailer: retailer, categories: categoryGroups(for: items))
+        }
+        .filter { group in
+            guard let retailer = group.retailer else { return true }
+            return selectedRetailerFilters.isEmpty
+                || selectedRetailerFilters.contains(retailer)
+        }
+        .sorted { lhs, rhs in
+            if lhs.retailer == nil { return rhs.retailer != nil }
+            if rhs.retailer == nil { return false }
+            return lhs.retailer!.localizedCaseInsensitiveCompare(rhs.retailer!) == .orderedAscending
+        }
+    }
+
+    private func categoryGroups(for items: [ShoppingItem]) -> [CategoryGroup] {
+        let grouped = Dictionary(grouping: items) { model.category(for: $0) }
         return grouped
             .map {
                 CategoryGroup(
@@ -58,6 +107,59 @@ struct ShoppingListView: View {
                                 }
                                 .disabled(newItem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                             }
+                            Button {
+                                withAnimation {
+                                    sortByRetailer.toggle()
+                                    if !sortByRetailer { selectedRetailerFilters.removeAll() }
+                                }
+                            } label: {
+                                Label(
+                                    "Sorter efter butik",
+                                    systemImage: sortByRetailer ? "checkmark.circle.fill" : "storefront"
+                                )
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(sortByRetailer ? Color.white : Color.primary)
+                                .padding(.horizontal, 13)
+                                .padding(.vertical, 8)
+                                .background(
+                                    sortByRetailer ? Color.accentColor : Color(uiColor: .secondarySystemGroupedBackground),
+                                    in: Capsule()
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
+
+                            if sortByRetailer {
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 8) {
+                                        retailerFilterButton(
+                                            title: "Alle",
+                                            selected: selectedRetailerFilters.isEmpty
+                                        ) {
+                                            withAnimation { selectedRetailerFilters.removeAll() }
+                                        }
+
+                                        ForEach(retailerFilterOptions, id: \.self) { retailer in
+                                            retailerFilterButton(
+                                                title: retailer,
+                                                selected: selectedRetailerFilters.contains(retailer)
+                                            ) {
+                                                withAnimation {
+                                                    if selectedRetailerFilters.contains(retailer) {
+                                                        selectedRetailerFilters.remove(retailer)
+                                                    } else {
+                                                        selectedRetailerFilters.insert(retailer)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .padding(.horizontal, 2)
+                                }
+                                .listRowBackground(Color.clear)
+                                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                            }
                         }
 
                         if activeItems.isEmpty {
@@ -69,13 +171,54 @@ struct ShoppingListView: View {
                                 )
                             }
                         } else {
-                            ForEach(groupedActiveItems) { group in
+                            if sortByRetailer {
+                                ForEach(retailerGroups) { retailerGroup in
+                                    Section {
+                                        ForEach(retailerGroup.categories) { categoryGroup in
+                                            Label(
+                                                "\(categoryGroup.category.rawValue) · \(categoryGroup.items.count)",
+                                                systemImage: categoryGroup.category.icon
+                                            )
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+
+                                            ForEach(categoryGroup.items, id: \.stableID) { item in
+                                                itemRow(item, showCategory: false)
+                                            }
+                                        }
+                                    } header: {
+                                        if let retailer = retailerGroup.retailer {
+                                            Label("\(retailer) · \(retailerGroup.count)", systemImage: "storefront")
+                                        } else {
+                                            Label("Uden butik · \(retailerGroup.count)", systemImage: "tray")
+                                        }
+                                    } footer: {
+                                        if retailerGroup.retailer != nil {
+                                            Text("Husk varer øverst der ikke er dedikeret til én butik")
+                                        }
+                                    }
+                                }
+                            } else if !upcomingItems.isEmpty {
                                 Section {
-                                    ForEach(group.items, id: \.stableID) { item in
+                                    ForEach(upcomingItems, id: \.stableID) { item in
                                         itemRow(item, showCategory: false)
                                     }
                                 } header: {
-                                    Label("\(group.category.rawValue) · \(group.items.count)", systemImage: group.category.icon)
+                                    Label("Kommende tilbud · \(upcomingItems.count)", systemImage: "calendar.badge.clock")
+                                } footer: {
+                                    Text("Disse priser gælder ikke endnu.")
+                                }
+                            }
+
+                            if !sortByRetailer {
+                                ForEach(groupedActiveItems) { group in
+                                    Section {
+                                        ForEach(group.items, id: \.stableID) { item in
+                                            itemRow(item, showCategory: false)
+                                        }
+                                    } header: {
+                                        Label("\(group.category.rawValue) · \(group.items.count)", systemImage: group.category.icon)
+                                    }
                                 }
                             }
                         }
@@ -148,6 +291,25 @@ struct ShoppingListView: View {
         }
     }
 
+    private func retailerFilterButton(
+        title: String,
+        selected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption.weight(selected ? .semibold : .regular))
+                .foregroundStyle(selected ? Color.white : Color.primary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(
+                    selected ? Color.accentColor : Color(uiColor: .secondarySystemGroupedBackground),
+                    in: Capsule()
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
     @ViewBuilder
     private func itemRow(_ item: ShoppingItem, showCategory: Bool) -> some View {
         HStack(spacing: 12) {
@@ -166,6 +328,36 @@ struct ShoppingListView: View {
                 Text(item.name)
                     .strikethrough(item.checked)
                     .foregroundStyle(item.checked ? .secondary : .primary)
+
+                if let retailer = model.offerRetailer(for: item) {
+                    HStack(spacing: 4) {
+                        Text(retailer).lineLimit(1)
+                        if let price = model.offerPrice(for: item) {
+                            Text("·")
+                            Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    if !item.checked, let status = offerStatus(for: item) {
+                        Label(status.label, systemImage: status.icon)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(status.color)
+                    }
+                } else if !item.checked, let expired = model.expiredOfferMetadata(for: item) {
+                    HStack(spacing: 4) {
+                        Text(expired.retailer).lineLimit(1)
+                        if let price = expired.price {
+                            Text("·")
+                            Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                        }
+                        Text("· Udløbet")
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.red)
+                }
 
                 if showCategory {
                     let category = model.category(for: item)
@@ -247,6 +439,22 @@ struct ShoppingListView: View {
                     Label("Slet", systemImage: "trash")
                 }
             }
+        }
+    }
+
+    private func offerStatus(for item: ShoppingItem) -> (label: String, icon: String, color: Color)? {
+        switch model.offerState(for: item) {
+        case .upcoming(let date):
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "da_DK")
+            formatter.dateFormat = "'Tilbud fra' EEEE d. MMMM"
+            return (formatter.string(from: date), "calendar.badge.clock", .indigo)
+        case .expiresSoon:
+            return ("Udløber snart", "clock.badge.exclamationmark", .orange)
+        case .expired:
+            return ("Tilbud udløbet", "calendar.badge.exclamationmark", .red)
+        case .active, .none:
+            return nil
         }
     }
 }

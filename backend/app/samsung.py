@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -99,10 +100,15 @@ class SamsungFoodClient:
             if checked is None:
                 checked = raw.get("completed")
 
+            normalized_name, typed_quantity = self._quantity_from_name(str(name))
+            if quantity is None and typed_quantity is not None:
+                quantity = typed_quantity
+                unit = unit or "stk"
+
             items.append(
                 ShoppingItem(
                     id=raw.get("id"),
-                    name=str(name),
+                    name=normalized_name,
                     checked=checked if isinstance(checked, bool) else None,
                     quantity=quantity,
                     unit=unit,
@@ -121,6 +127,27 @@ class SamsungFoodClient:
             name=list_name,
             items=items,
         )
+
+    @staticmethod
+    def _quantity_from_name(name: str) -> tuple[str, float | None]:
+        """Extract an explicit final x/stk quantity without product rules."""
+        value = " ".join(name.split())
+        patterns = (
+            r"^(?P<count>\d+(?:[.,]\d+)?)\s*[x×]\s*(?P<name>.+)$",
+            r"^(?P<count>\d+(?:[.,]\d+)?)\s*(?:stk\.?|styk(?:ker)?)\s+(?P<name>.+)$",
+            r"^(?P<name>.+?)\s+[x×]\s*(?P<count>\d+(?:[.,]\d+)?)$",
+            r"^(?P<name>.+?)\s+(?P<count>\d+(?:[.,]\d+)?)\s*[x×]$",
+            r"^(?P<name>.+?)\s+(?P<count>\d+(?:[.,]\d+)?)\s*(?:stk\.?|styk(?:ker)?)$",
+        )
+        for pattern in patterns:
+            match = re.match(pattern, value, flags=re.IGNORECASE)
+            if not match:
+                continue
+            count = float(match.group("count").replace(",", "."))
+            product = match.group("name").strip(" -–—,")
+            if product and 1 < count <= 999:
+                return product, count
+        return value, None
 
     async def add_item(self, name: str) -> dict[str, Any]:
         token = await self._token()

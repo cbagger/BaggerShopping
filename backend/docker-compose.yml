@@ -32,6 +32,19 @@ services:
       - "8089:8081"
     volumes:
       - ./data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import os, urllib.request;
+          r=urllib.request.Request('http://127.0.0.1:8081/api/mobile/v1/offers/health',headers={'Authorization':'Bearer '+os.environ['MOBILE_API_TOKEN']});
+          assert urllib.request.urlopen(r,timeout=30).status == 200
+      interval: 30m
+      timeout: 40s
+      retries: 2
+      start_period: 30s
     shm_size: "256mb"
 
   login-ui:

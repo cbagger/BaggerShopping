@@ -19,6 +19,9 @@ final class ShoppingCategoryServiceTests: XCTestCase {
         XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Letmælk")), .dairy)
         XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Minimælk 1 liter")), .dairy)
         XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Kartofler")), .fruitAndVegetables)
+        XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Gestus Appelsinjuice")), .beverages)
+        XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Hakket Kødkvæg 14–18 %")), .meat)
+        XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Multikernesandwich")), .bakery)
     }
 
     func testShortTermsDoNotCreateFalsePositives() {

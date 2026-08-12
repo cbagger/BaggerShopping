@@ -8,6 +8,16 @@ struct RootView: View {
                     Label("Liste", systemImage: "cart")
                 }
 
+            OffersView()
+                .tabItem {
+                    Label("Tilbud", systemImage: "tag")
+                }
+
+            FlyersView()
+                .tabItem {
+                    Label("Aviser", systemImage: "book.pages")
+                }
+
             StoresView()
                 .tabItem {
                     Label("Butikker", systemImage: "mappin.and.ellipse")
