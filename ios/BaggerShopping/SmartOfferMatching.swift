@@ -9,6 +9,17 @@ final class SmartOfferMatchService: ObservableObject {
 
     private let api = APIClient()
 
+    private enum ApprovalError: LocalizedError {
+        case samsungItemStillSyncing
+
+        var errorDescription: String? {
+            switch self {
+            case .samsungItemStillSyncing:
+                return "Varen er stadig ved at blive synkroniseret med Samsung Food. Prøv igen om et øjeblik."
+            }
+        }
+    }
+
     func matches(for item: ShoppingItem) -> [GroceryOffer] {
         matchesByItem[key(item.name)] ?? []
     }
@@ -80,44 +91,57 @@ final class SmartOfferMatchService: ObservableObject {
         let needsRename = ShoppingCategoryService.normalize(oldName)
             != ShoppingCategoryService.normalize(selectedName)
 
-        if needsRename {
-            let duplicateExists = model.shoppingList?.items.contains { candidate in
-                candidate.stableID != item.stableID
-                    && ShoppingCategoryService.normalize(candidate.name)
-                        == ShoppingCategoryService.normalize(selectedName)
-            } ?? false
-            if duplicateExists {
-                errorMessage = "Der findes allerede en vare med navnet \"\(selectedName)\" på indkøbslisten."
-                return false
-            }
-        }
-
-        // Persist the selected offer against the existing item first. The
-        // existing in-place Samsung rename endpoint moves this metadata to the
-        // new item name in the same server operation, preserving item ID,
-        // quantity and checked state.
-        let metadata = OfferMetadataDTO(
-            itemName: item.name,
-            retailer: offer.retailer,
-            price: offer.price,
-            validFrom: offer.validFrom,
-            validUntil: offer.validUntil,
-            offerID: offer.id,
-            publicationID: offer.publicationID,
-            matchedItemName: selectedName
-        )
-
         do {
+            // The shopping-list sheet can outlive the optimistic ShoppingItem
+            // that opened it. A newly added Samsung item therefore sometimes
+            // still has id == nil in this snapshot even though Samsung assigns
+            // the real ID moments later. Resolve the newest persisted item
+            // before any in-place rename instead of surfacing a technical ID
+            // error to the user.
+            let persistedItem: ShoppingItem
+            if needsRename {
+                persistedItem = try await resolvePersistedItem(item, model: model)
+            } else {
+                persistedItem = item
+            }
+
+            if needsRename {
+                let duplicateExists = model.shoppingList?.items.contains { candidate in
+                    candidate.id != persistedItem.id
+                        && ShoppingCategoryService.normalize(candidate.name)
+                            == ShoppingCategoryService.normalize(selectedName)
+                } ?? false
+                if duplicateExists {
+                    errorMessage = "Der findes allerede en vare med navnet \"\(selectedName)\" på indkøbslisten."
+                    return false
+                }
+            }
+
+            // Persist the selected offer against the existing item first. The
+            // existing in-place Samsung rename endpoint moves this metadata to
+            // the new item name in the same server operation, preserving item
+            // ID, quantity and checked state.
+            let metadata = OfferMetadataDTO(
+                itemName: persistedItem.name,
+                retailer: offer.retailer,
+                price: offer.price,
+                validFrom: offer.validFrom,
+                validUntil: offer.validUntil,
+                offerID: offer.id,
+                publicationID: offer.publicationID,
+                matchedItemName: selectedName
+            )
+
             try await api.setOfferMetadata(metadata)
 
             var renameWarning: String?
             if needsRename {
-                let categoryOverride = model.hasCategoryOverride(for: item)
-                    ? model.category(for: item)
+                let categoryOverride = model.hasCategoryOverride(for: persistedItem)
+                    ? model.category(for: persistedItem)
                     : nil
                 do {
                     let result = try await ItemRenameService().rename(
-                        item: item,
+                        item: persistedItem,
                         to: selectedName,
                         categoryOverride: categoryOverride
                     )
@@ -126,7 +150,7 @@ final class SmartOfferMatchService: ObservableObject {
                     // The offer was written under the old item name immediately
                     // before rename. If rename did not complete, remove that
                     // provisional assignment so the list is not left half-updated.
-                    try? await api.removeOfferMetadata(itemName: item.name)
+                    try? await api.removeOfferMetadata(itemName: persistedItem.name)
                     await model.syncSharedOfferMetadata()
                     throw error
                 }
@@ -145,6 +169,45 @@ final class SmartOfferMatchService: ObservableObject {
             errorMessage = "Tilbuddet kunne ikke bruges endnu: \(error.localizedDescription)"
             return false
         }
+    }
+
+    private func resolvePersistedItem(
+        _ snapshot: ShoppingItem,
+        model: AppModel
+    ) async throws -> ShoppingItem {
+        // If this snapshot already has a Samsung ID, prefer the freshest copy
+        // from the current model but do not force another network round-trip.
+        if let snapshotID = snapshot.id {
+            return model.shoppingList?.items.first(where: { $0.id == snapshotID }) ?? snapshot
+        }
+
+        let wantedKey = key(snapshot.name)
+
+        if let current = model.shoppingList?.items.first(where: {
+            $0.id != nil && key($0.name) == wantedKey
+        }) {
+            return current
+        }
+
+        // Samsung Food is eventually consistent after SyncItems. Retry the
+        // authoritative list for a few seconds without replacing the visible
+        // optimistic list with an intermediate stale response.
+        let delays: [Duration] = [.zero, .milliseconds(500), .seconds(1), .seconds(2)]
+        for delay in delays {
+            if delay != .zero {
+                try await Task.sleep(for: delay)
+            }
+            guard !Task.isCancelled else { throw CancellationError() }
+
+            let list = try await api.fetchList()
+            if let persisted = list.items.first(where: {
+                $0.id != nil && key($0.name) == wantedKey
+            }) {
+                return persisted
+            }
+        }
+
+        throw ApprovalError.samsungItemStillSyncing
     }
 
     private func normalizedName(_ value: String) -> String {
