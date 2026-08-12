@@ -53,11 +53,70 @@ extension GroceryOffer {
         let words = variant.split(whereSeparator: \.isWhitespace)
         let leadingJoinWords = ["i", "med", "uden", "af", "til"]
         let beginsAsSuffix = words.first.map { leadingJoinWords.contains($0.lowercased()) } ?? false
-        if (words.count >= 2 && !beginsAsSuffix)
-            || variant.contains("-")
-            || variant.contains("!") {
+        let firstWord = words.first.map(String.init) ?? ""
+        let beginsWithBrandLikeName = firstWord.first?.isUppercase == true
+            && !firstWord.allSatisfy(\.isUppercase)
+        let beginsWithExplicitBrand = firstWord.contains("!")
+            || firstWord.allSatisfy { $0.isUppercase || $0.isNumber || $0 == "’" || $0 == "'" }
+        if !beginsAsSuffix && !isGenericVariantSuffix(variant)
+            && (beginsWithBrandLikeName || beginsWithExplicitBrand) {
             return variant
         }
-        return "\(base) – \(variant)"
+        if isGenericVariantSuffix(variant), variant.lowercased().hasPrefix(firstWordOf(base).lowercased() + " "),
+           let productNoun = base.split(whereSeparator: \.isWhitespace).last.map(String.init),
+           variant.range(of: productNoun, options: [.caseInsensitive, .diacriticInsensitive]) == nil {
+            return "\(variant) \(productNoun)"
+        }
+        return "\(variantBaseName(from: base)) – \(cleanedVariantSuffix(variant))"
+    }
+
+    private func firstWordOf(_ value: String) -> String {
+        value.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? value
+    }
+
+    private func isGenericVariantSuffix(_ variant: String) -> Bool {
+        let value = variant.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+        let exact = ["kakao", "barista", "instant kaffe", "ice tea", "letmaelk", "smorbart"]
+        return exact.contains(value)
+            || value.hasSuffix(" formalet")
+            || value.range(of: #"^\d+-pak\s+i\s+"#, options: .regularExpression) != nil
+            || value.hasPrefix("hele -lar")
+    }
+
+    private func variantBaseName(from base: String) -> String {
+        let alternatives = base.components(separatedBy: RegexChoiceSeparator.regex)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard alternatives.count > 1 else { return base }
+
+        let firstWords = alternatives[0].split(whereSeparator: \.isWhitespace).map(String.init)
+        guard firstWords.count > 1 else { return base }
+        let brandWords = firstWords.dropLast().prefix { word in
+            word.first?.isUppercase == true || word.allSatisfy(\.isNumber)
+        }
+        return brandWords.isEmpty ? base : brandWords.joined(separator: " ")
+    }
+
+    private func cleanedVariantSuffix(_ variant: String) -> String {
+        variant.replacingOccurrences(of: #"^hele\s+-lår"#, with: "hele kyllingelår", options: [.regularExpression, .caseInsensitive])
+    }
+}
+
+private enum RegexChoiceSeparator {
+    static let regex = try! NSRegularExpression(pattern: #"\s+(?:eller|/|,)\s+"#, options: [.caseInsensitive])
+}
+
+private extension String {
+    func components(separatedBy regex: NSRegularExpression) -> [String] {
+        let range = NSRange(startIndex..., in: self)
+        var result: [String] = []
+        var cursor = startIndex
+        for match in regex.matches(in: self, range: range) {
+            guard let matchRange = Range(match.range, in: self) else { continue }
+            result.append(String(self[cursor..<matchRange.lowerBound]))
+            cursor = matchRange.upperBound
+        }
+        result.append(String(self[cursor...]))
+        return result
     }
 }

@@ -52,6 +52,29 @@ final class OfferPresentationTests: XCTestCase {
         XCTAssertEqual(offer.shoppingItemName(variant: nil), "3-stjernet pålæg")
     }
 
+    func testGenericVariantsKeepTheProductIdentity() throws {
+        let coffee = try decodeOffer(productName: "BKI kaffe", rawText: "Frit valg", variants: ["BKI formalet", "instant kaffe"])
+        XCTAssertEqual(coffee.shoppingItemName(variant: "BKI formalet"), "BKI formalet kaffe")
+        XCTAssertEqual(coffee.shoppingItemName(variant: "instant kaffe"), "BKI kaffe – instant kaffe")
+
+        let drink = try decodeOffer(productName: "Rynkeby frugtdrik eller ice tea", rawText: "Frit valg", variants: ["Rynkeby frugtdrik", "ice tea"])
+        XCTAssertEqual(drink.shoppingItemName(variant: "ice tea"), "Rynkeby – ice tea")
+
+        let bacon = try decodeOffer(productName: "Tulip Bacon", rawText: "Frit valg", variants: ["5-pak i skiver", "2-pak i tern"])
+        XCTAssertEqual(bacon.shoppingItemName(variant: "5-pak i skiver"), "Tulip Bacon – 5-pak i skiver")
+
+        let chicken = try decodeOffer(productName: "MADVÆRKET Kyllingebrystfilet eller hele -lår med ryg", rawText: "Frit valg", variants: ["MADVÆRKET Kyllingebrystfilet", "hele -lår med ryg"])
+        XCTAssertEqual(chicken.shoppingItemName(variant: "hele -lår med ryg"), "MADVÆRKET – hele kyllingelår med ryg")
+    }
+
+    func testGroupedTitlesDoNotGetRepeatedInSelectedName() throws {
+        let milk = try decodeOffer(productName: "REMA 1000 Minimælk eller letmælk", rawText: "Frit valg", variants: ["REMA 1000 Minimælk", "letmælk"])
+        XCTAssertEqual(milk.shoppingItemName(variant: "letmælk"), "REMA 1000 – letmælk")
+
+        let butter = try decodeOffer(productName: "Thise økologisk smør eller smørbart", rawText: "Frit valg", variants: ["Thise økologisk smør", "smørbart"])
+        XCTAssertEqual(butter.shoppingItemName(variant: "smørbart"), "Thise – smørbart")
+    }
+
     private func decodeOffer(productName: String, rawText: String, variants: [String]) throws -> GroceryOffer {
         let payload: [String: Any] = [
             "id": "offer", "retailer": "365discount", "publication_id": "paper",
