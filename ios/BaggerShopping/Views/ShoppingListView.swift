@@ -1,5 +1,10 @@
 import SwiftUI
 
+private struct ShoppingItemRenameTarget: Identifiable {
+    let id = UUID()
+    let item: ShoppingItem
+}
+
 struct ShoppingListView: View {
     private struct CategoryGroup: Identifiable {
         let category: ShoppingCategory
@@ -17,6 +22,7 @@ struct ShoppingListView: View {
     @EnvironmentObject private var model: AppModel
     @State private var newItem = ""
     @State private var selectedRetailerFilters: Set<String> = []
+    @State private var renameTarget: ShoppingItemRenameTarget?
     @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
 
     private let retailerFilterOptions = [
@@ -266,6 +272,10 @@ struct ShoppingListView: View {
                     .disabled(!model.tokenConfigured || model.isLoading)
                 }
             }
+            .sheet(item: $renameTarget) { target in
+                RenameShoppingItemView(item: target.item)
+                    .environmentObject(model)
+            }
             .alert(
                 "Fejl",
                 isPresented: Binding(
@@ -431,6 +441,19 @@ struct ShoppingListView: View {
                 ProgressView().controlSize(.small)
             }
         }
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.55)
+                .onEnded { _ in
+                    guard item.id != nil,
+                          !model.mutatingItemIDs.contains(item.stableID) else { return }
+                    renameTarget = ShoppingItemRenameTarget(item: item)
+                }
+        )
+        .accessibilityAction(named: "Rediger navn") {
+            guard item.id != nil else { return }
+            renameTarget = ShoppingItemRenameTarget(item: item)
+        }
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             if item.id != nil {
                 Button(role: .destructive) {
@@ -455,6 +478,128 @@ struct ShoppingListView: View {
             return ("Tilbud udløbet", "calendar.badge.exclamationmark", .red)
         case .active, .none:
             return nil
+        }
+    }
+}
+
+private struct RenameShoppingItemView: View {
+    @EnvironmentObject private var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+
+    let item: ShoppingItem
+    @State private var name: String
+    @State private var isSaving = false
+    @State private var localError: String?
+
+    init(item: ShoppingItem) {
+        self.item = item
+        _name = State(initialValue: item.name)
+    }
+
+    private var trimmedName: String {
+        name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+    }
+
+    private var duplicateExists: Bool {
+        let wanted = ShoppingCategoryService.normalize(trimmedName)
+        guard !wanted.isEmpty else { return false }
+        return model.shoppingList?.items.contains { candidate in
+            candidate.stableID != item.stableID
+                && ShoppingCategoryService.normalize(candidate.name) == wanted
+        } ?? false
+    }
+
+    private var canSave: Bool {
+        item.id != nil
+            && !trimmedName.isEmpty
+            && trimmedName != item.name
+            && !duplicateExists
+            && !isSaving
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Varenavn") {
+                    TextField("Navn", text: $name)
+                        .textInputAutocapitalization(.sentences)
+                        .submitLabel(.done)
+                        .onSubmit {
+                            if canSave { Task { await save() } }
+                        }
+                } footer: {
+                    Text("Navnet ændres på den eksisterende Samsung Food-vare. Antal, købt-status, kategori og eventuelle tilbudsoplysninger bevares.")
+                }
+
+                if duplicateExists {
+                    Section {
+                        Label("Der findes allerede en vare med det navn på listen.", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                if let localError {
+                    Section {
+                        Text(localError)
+                            .foregroundStyle(.red)
+                    }
+                }
+
+                if isSaving {
+                    Section {
+                        HStack {
+                            ProgressView()
+                            Text("Opdaterer vare…")
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Rediger vare")
+            .navigationBarTitleDisplayMode(.inline)
+            .interactiveDismissDisabled(isSaving)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuller") { dismiss() }
+                        .disabled(isSaving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Gem") {
+                        Task { await save() }
+                    }
+                    .disabled(!canSave)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func save() async {
+        guard canSave else { return }
+        isSaving = true
+        localError = nil
+        defer { isSaving = false }
+
+        let categoryOverride = model.hasCategoryOverride(for: item)
+            ? model.category(for: item)
+            : nil
+
+        do {
+            let result = try await ItemRenameService().rename(
+                item: item,
+                to: trimmedName,
+                categoryOverride: categoryOverride
+            )
+            await model.refresh()
+            await model.syncSharedCategories()
+            if let warning = result.warning {
+                model.errorMessage = warning
+            }
+            dismiss()
+        } catch {
+            localError = error.localizedDescription
         }
     }
 }

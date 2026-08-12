@@ -1,4 +1,5 @@
 import SwiftUI
+import MapKit
 
 struct StoresView: View {
     @EnvironmentObject private var model: AppModel
@@ -24,7 +25,7 @@ private struct StoresListContent: View {
                     ContentUnavailableView(
                         "Ingen butikker endnu",
                         systemImage: "mappin.slash",
-                        description: Text("Søg efter fx ‘Rema 1000 Skørping’ og tilføj butikken.")
+                        description: Text("Søg efter en butik, eller placér den manuelt på kortet.")
                     )
                 } else {
                     Section {
@@ -114,6 +115,7 @@ private struct AddStoreSearchView: View {
     @State private var query = ""
     @State private var selected: StoreSearchResult?
     @State private var radius = 100.0
+    @State private var showingManualMap = false
 
     var body: some View {
         NavigationStack {
@@ -134,6 +136,20 @@ private struct AddStoreSearchView: View {
                         .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 } header: {
                     Text("Søg efter butik")
+                } footer: {
+                    Text("Søgningen bruger Apple Kort. Hvis en butik ikke kan findes, kan du placere den manuelt nedenfor.")
+                }
+
+                Section {
+                    Button {
+                        showingManualMap = true
+                    } label: {
+                        Label("Tilføj manuelt på kort", systemImage: "mappin.and.ellipse")
+                    }
+                } header: {
+                    Text("Kan du ikke finde butikken?")
+                } footer: {
+                    Text("Flyt kortet til butikkens placering, giv den et navn og vælg den samme geofence-radius som ved søgte butikker.")
                 }
 
                 if let error = search.errorMessage {
@@ -181,6 +197,14 @@ private struct AddStoreSearchView: View {
                     dismiss()
                 }
             }
+            .sheet(isPresented: $showingManualMap) {
+                ManualStoreMapView { store in
+                    model.stores.add(store)
+                    model.syncGeofences()
+                    showingManualMap = false
+                    dismiss()
+                }
+            }
         }
     }
 
@@ -206,9 +230,9 @@ private struct StoreConfirmView: View {
                 }
 
                 Section("Geofence") {
-                    Slider(value: $radius, in: 100...500, step: 25)
+                    Slider(value: $radius, in: 50...500, step: 25)
                     LabeledContent("Radius", value: "\(Int(radius)) m")
-                    Text("100 m er standard og er afprøvet til at give besked omkring parkeringsområdet. Øg radius, hvis du vil have besked tidligere.")
+                    Text("100 m er standard. Du kan vælge helt ned til 50 m, hvis butikkens placering kræver en mere præcis geofence.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -220,6 +244,98 @@ private struct StoreConfirmView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Tilføj") { onAdd() }
+                }
+            }
+        }
+    }
+}
+
+private struct ManualStoreMapView: View {
+    let onAdd: (StoreLocation) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var radius = 100.0
+    @State private var latitude = 56.0
+    @State private var longitude = 10.0
+    @State private var mapPosition: MapCameraPosition = .userLocation(
+        followsHeading: false,
+        fallback: .region(
+            MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: 56.0, longitude: 10.0),
+                span: MKCoordinateSpan(latitudeDelta: 3.2, longitudeDelta: 4.2)
+            )
+        )
+    )
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Navn") {
+                    TextField("Fx 365discount Skørping", text: $name)
+                        .textInputAutocapitalization(.words)
+                }
+
+                Section {
+                    Map(position: $mapPosition) {
+                        UserAnnotation()
+                    }
+                    .mapControls {
+                        MapUserLocationButton()
+                        MapCompass()
+                        MapScaleView()
+                    }
+                    .onMapCameraChange(frequency: .continuous) { context in
+                        latitude = context.region.center.latitude
+                        longitude = context.region.center.longitude
+                    }
+                    .overlay {
+                        Image(systemName: "mappin.circle.fill")
+                            .font(.system(size: 38, weight: .semibold))
+                            .foregroundStyle(.red)
+                            .offset(y: -18)
+                            .allowsHitTesting(false)
+                    }
+                    .frame(height: 330)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                    Text("Flyt kortet, så den røde nål står på butikkens indgang eller parkeringsområde. Brug placeringsknappen på kortet for hurtigt at hoppe til din egen position.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } header: {
+                    Text("Placering")
+                }
+
+                Section("Geofence") {
+                    Slider(value: $radius, in: 50...500, step: 25)
+                    LabeledContent("Radius", value: "\(Int(radius)) m")
+                    Text("100 m er standard. Manuelt tilføjede butikker bruger præcis de samme geofence-indstillinger og notifikationer som søgte butikker.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Manuel butik")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuller") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Tilføj") {
+                        onAdd(
+                            StoreLocation(
+                                name: trimmedName,
+                                latitude: latitude,
+                                longitude: longitude,
+                                radius: radius
+                            )
+                        )
+                    }
+                    .disabled(trimmedName.isEmpty)
                 }
             }
         }
@@ -259,9 +375,9 @@ private struct EditStoreView: View {
 
                 Section("Geofence") {
                     Toggle("Aktiv", isOn: $enabled)
-                    Slider(value: $radius, in: 100...500, step: 25)
+                    Slider(value: $radius, in: 50...500, step: 25)
                     LabeledContent("Radius", value: "\(Int(radius)) m")
-                    Text("Notifikationen udløses, når iOS registrerer ankomst til området omkring butikken.")
+                    Text("Notifikationen udløses, når iOS registrerer ankomst til området omkring butikken. Radius kan vælges fra 50 til 500 m.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

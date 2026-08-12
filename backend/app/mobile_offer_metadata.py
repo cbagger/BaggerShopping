@@ -3,10 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+
+from .grpc_web import _build_sync_items_update_request
+from .samsung import SamsungFoodClient, SamsungFoodError
 
 
 router = APIRouter(prefix="/api/mobile/v1", tags=["mobile-offer-metadata"])
@@ -35,6 +39,10 @@ class OfferMetadataRemoveRequest(BaseModel):
 
 class OfferMetadataSyncRequest(BaseModel):
     metadata: list[OfferMetadataRecord]
+
+
+class RenameShoppingItemRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
 
 
 def offer_metadata_key(item_name: str) -> str:
@@ -150,3 +158,64 @@ async def remove_offer_metadata(request: OfferMetadataRemoveRequest) -> dict[str
         if removed:
             save_offer_metadata_store(store)
     return {"ok": True, "removed": removed}
+
+
+@router.patch("/items/{item_id}/name")
+async def rename_shopping_item(
+    item_id: str,
+    request: RenameShoppingItemRequest,
+) -> dict[str, object]:
+    """Rename one Samsung shopping item in place and move its shared offer metadata.
+
+    Samsung's existing item-update SyncItems operation carries the item name as
+    part of the same payload used for checkbox and quantity updates. Reusing it
+    preserves the Samsung item ID, checked state, quantity and unit instead of
+    emulating rename with a delete/add pair.
+    """
+    new_name = " ".join(request.name.strip().split())
+    if not new_name:
+        raise HTTPException(status_code=422, detail="Item name cannot be empty")
+
+    client = SamsungFoodClient()
+    try:
+        item = await client._find_item(item_id)
+        old_name = item.name
+        body = _build_sync_items_update_request(
+            client.list_id,
+            item_id,
+            new_name,
+            bool(item.checked),
+            int(time.time() * 1000),
+            quantity=item.quantity,
+            unit=item.unit,
+        )
+        result = await client._post_sync_items(body)
+    except SamsungFoodError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    metadata_migrated = False
+    old_key = offer_metadata_key(old_name)
+    new_key = offer_metadata_key(new_name)
+    async with offer_metadata_store_lock:
+        store = load_offer_metadata_store()
+        raw_record = store.pop(old_key, None)
+        if raw_record is not None:
+            record = OfferMetadataRecord.model_validate(raw_record)
+            moved = record.model_copy(
+                update={
+                    "item_name": new_name,
+                    "matched_item_name": new_name if record.matched_item_name else None,
+                }
+            )
+            store[new_key] = moved.model_dump()
+            save_offer_metadata_store(store)
+            metadata_migrated = True
+
+    return {
+        "ok": True,
+        "item_id": item_id,
+        "old_name": old_name,
+        "name": new_name,
+        "offer_metadata_migrated": metadata_migrated,
+        "grpc_status": result.get("grpc_status"),
+    }

@@ -36,7 +36,7 @@ final class StoreRepository: ObservableObject {
 
     func setRadius(_ radius: Double, for id: UUID) {
         guard let index = stores.firstIndex(where: { $0.id == id }) else { return }
-        stores[index].radius = min(max(radius, 100), 500)
+        stores[index].radius = min(max(radius, 50), 500)
         save()
     }
 
