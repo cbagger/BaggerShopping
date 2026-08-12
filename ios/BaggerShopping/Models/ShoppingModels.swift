@@ -111,7 +111,7 @@ struct StoreLocation: Codable, Identifiable, Hashable {
         address: String = "",
         latitude: Double,
         longitude: Double,
-        radius: Double = 180,
+        radius: Double = 100,
         enabled: Bool = true
     ) {
         self.id = id

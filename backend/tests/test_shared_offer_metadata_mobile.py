@@ -1,10 +1,13 @@
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("MOBILE_API_TOKEN", "test-token")
+os.environ.setdefault("SAMSUNG_LIST_ID", "test-list")
 
 from fastapi.testclient import TestClient
 
 import app.mobile_main as mobile
+from app.samsung import SamsungFoodClient
 
 
 client = TestClient(mobile.app)
@@ -110,3 +113,59 @@ def test_offer_metadata_can_be_updated_and_removed(monkeypatch, tmp_path):
     assert remove.status_code == 200
     assert remove.json() == {"ok": True, "removed": True}
     assert client.get("/api/mobile/v1/offer-metadata", headers=AUTH).json()["metadata"] == []
+
+
+def test_item_rename_updates_samsung_payload_and_moves_offer_metadata(monkeypatch, tmp_path):
+    use_store(monkeypatch, tmp_path)
+    original = {
+        "item_name": "Gammel mælk",
+        "retailer": "365discount",
+        "price": 10.0,
+        "valid_from": "10.08.2026",
+        "valid_until": "16.08.2026",
+        "offer_id": "milk-offer",
+        "publication_id": "365-current",
+        "matched_item_name": "Gammel mælk",
+    }
+    assert client.put("/api/mobile/v1/offer-metadata", headers=AUTH, json=original).status_code == 200
+
+    def fake_init(self):
+        self.list_id = "test-list"
+
+    async def fake_find_item(self, item_id):
+        assert item_id == "item-123"
+        return SimpleNamespace(
+            name="Gammel mælk",
+            checked=True,
+            quantity=3.0,
+            unit="stk",
+        )
+
+    async def fake_post_sync_items(self, body):
+        payload = body[5:]
+        assert "Ny mælk".encode("utf-8") in payload
+        assert b"item123" in payload
+        return {"grpc_status": 0}
+
+    monkeypatch.setattr(SamsungFoodClient, "__init__", fake_init)
+    monkeypatch.setattr(SamsungFoodClient, "_find_item", fake_find_item)
+    monkeypatch.setattr(SamsungFoodClient, "_post_sync_items", fake_post_sync_items)
+
+    response = client.patch(
+        "/api/mobile/v1/items/item-123/name",
+        headers=AUTH,
+        json={"name": "  Ny   mælk  "},
+    )
+    assert response.status_code == 200
+    assert response.json()["name"] == "Ny mælk"
+    assert response.json()["old_name"] == "Gammel mælk"
+    assert response.json()["offer_metadata_migrated"] is True
+
+    records = client.get("/api/mobile/v1/offer-metadata", headers=AUTH).json()["metadata"]
+    assert records == [
+        dict(
+            original,
+            item_name="Ny mælk",
+            matched_item_name="Ny mælk",
+        )
+    ]
