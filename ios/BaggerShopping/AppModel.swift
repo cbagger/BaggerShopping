@@ -49,6 +49,7 @@ final class AppModel: ObservableObject {
             shoppingList = list
             mutatingItemIDs = mutatingItemIDs.intersection(Set(list.items.map(\.stableID)))
             ShoppingListCache.save(list)
+            await syncSharedOfferMetadata()
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -67,12 +68,52 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func syncSharedOfferMetadata() async {
+        guard tokenConfigured else { return }
+        let activeItems = shoppingList?.items ?? []
+        let activeKeys = Set(activeItems.map { offerRetailerNameKey($0.name) })
+
+        // v2 stored offer metadata used to live only in UserDefaults. Seed any
+        // still-active local records into QNAP once, but never overwrite a
+        // record that another family phone has already written there.
+        let localMigration = activeItems.compactMap { item -> OfferMetadataDTO? in
+            let key = offerRetailerNameKey(item.name)
+            guard let metadata = offerMetadata[key] else { return nil }
+            return metadata.dto(itemName: item.name)
+        }
+
+        do {
+            let response: OfferMetadataResponse
+            if localMigration.isEmpty {
+                response = try await api.fetchOfferMetadata()
+            } else {
+                response = try await api.syncOfferMetadata(localMigration)
+            }
+
+            var shared: [String: OfferItemMetadata] = [:]
+            for record in response.metadata {
+                let key = offerRetailerNameKey(record.itemName)
+                guard activeKeys.contains(key) else { continue }
+                shared[key] = OfferItemMetadata(dto: record)
+            }
+            offerMetadata = shared
+            saveOfferMetadata()
+            objectWillChange.send()
+        } catch {
+            // Keep the historic local cache usable while QNAP or the mobile API
+            // is temporarily unavailable. A later refresh retries migration.
+        }
+    }
+
     func addItem(
         _ name: String,
         retailer: String? = nil,
         offerPrice: Double? = nil,
         offerValidFrom: String? = nil,
-        offerValidUntil: String? = nil
+        offerValidUntil: String? = nil,
+        offerID: String? = nil,
+        publicationID: String? = nil,
+        matchedItemName: String? = nil
     ) async -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -91,23 +132,45 @@ final class AppModel: ObservableObject {
 
         do {
             try await api.addItem(name: trimmed)
+            var metadataSyncError: Error?
+            let metadataKey = offerRetailerNameKey(trimmed)
+
             if let retailer, !retailer.isEmpty {
-                offerMetadata[offerRetailerNameKey(trimmed)] = OfferItemMetadata(
+                let metadata = OfferItemMetadata(
                     retailer: retailer,
                     price: offerPrice,
                     validFrom: offerValidFrom,
-                    validUntil: offerValidUntil
+                    validUntil: offerValidUntil,
+                    offerID: offerID,
+                    publicationID: publicationID,
+                    matchedItemName: matchedItemName ?? trimmed
                 )
+                offerMetadata[metadataKey] = metadata
                 saveOfferMetadata()
                 objectWillChange.send()
+                do {
+                    try await api.setOfferMetadata(metadata.dto(itemName: trimmed))
+                } catch {
+                    metadataSyncError = error
+                }
             } else {
                 // Items typed in the app use the same plain Samsung Food flow
                 // as fridge-created items and must not inherit old offer data.
-                offerMetadata.removeValue(forKey: offerRetailerNameKey(trimmed))
+                offerMetadata.removeValue(forKey: metadataKey)
                 saveOfferMetadata()
                 objectWillChange.send()
+                do {
+                    try await api.removeOfferMetadata(itemName: trimmed)
+                } catch {
+                    metadataSyncError = error
+                }
             }
-            errorMessage = nil
+
+            if let metadataSyncError {
+                errorMessage = "Varen er tilføjet, men tilbudsoplysningerne kunne ikke deles endnu: \(metadataSyncError.localizedDescription)"
+            } else {
+                errorMessage = nil
+            }
             // Samsung can be eventually consistent after SyncItems. Do not
             // replace the confirmed optimistic row with a stale response a few
             // seconds later; the next ordinary refresh will reconcile it.
@@ -192,7 +255,13 @@ final class AppModel: ObservableObject {
             try await api.deleteItem(item)
             offerMetadata.removeValue(forKey: offerRetailerNameKey(item.name))
             saveOfferMetadata()
-            errorMessage = nil
+            objectWillChange.send()
+            do {
+                try await api.removeOfferMetadata(itemName: item.name)
+                errorMessage = nil
+            } catch {
+                errorMessage = "Varen er slettet, men tilbudsoplysningerne kunne ikke fjernes fra den fælles metadata endnu: \(error.localizedDescription)"
+            }
         } catch {
             shoppingList = previous
             errorMessage = error.localizedDescription
@@ -345,12 +414,49 @@ private struct OfferItemMetadata: Codable {
     let price: Double?
     let validFrom: String?
     let validUntil: String?
+    let offerID: String?
+    let publicationID: String?
+    let matchedItemName: String?
 
-    init(retailer: String, price: Double?, validFrom: String?, validUntil: String?) {
+    init(
+        retailer: String,
+        price: Double?,
+        validFrom: String?,
+        validUntil: String?,
+        offerID: String? = nil,
+        publicationID: String? = nil,
+        matchedItemName: String? = nil
+    ) {
         self.retailer = retailer
         self.price = price
         self.validFrom = validFrom
         self.validUntil = validUntil
+        self.offerID = offerID
+        self.publicationID = publicationID
+        self.matchedItemName = matchedItemName
+    }
+
+    init(dto: OfferMetadataDTO) {
+        retailer = dto.retailer
+        price = dto.price
+        validFrom = dto.validFrom
+        validUntil = dto.validUntil
+        offerID = dto.offerID
+        publicationID = dto.publicationID
+        matchedItemName = dto.matchedItemName
+    }
+
+    func dto(itemName: String) -> OfferMetadataDTO {
+        OfferMetadataDTO(
+            itemName: itemName,
+            retailer: retailer,
+            price: price,
+            validFrom: validFrom,
+            validUntil: validUntil,
+            offerID: offerID,
+            publicationID: publicationID,
+            matchedItemName: matchedItemName ?? itemName
+        )
     }
 
     init(from decoder: Decoder) throws {
@@ -359,6 +465,9 @@ private struct OfferItemMetadata: Codable {
         price = try values.decodeIfPresent(Double.self, forKey: .price)
         validFrom = try values.decodeIfPresent(String.self, forKey: .validFrom)
         validUntil = try values.decodeIfPresent(String.self, forKey: .validUntil)
+        offerID = try values.decodeIfPresent(String.self, forKey: .offerID)
+        publicationID = try values.decodeIfPresent(String.self, forKey: .publicationID)
+        matchedItemName = try values.decodeIfPresent(String.self, forKey: .matchedItemName)
     }
 }
 
