@@ -129,6 +129,9 @@ def test_item_rename_updates_samsung_payload_and_moves_offer_metadata(monkeypatc
     }
     assert client.put("/api/mobile/v1/offer-metadata", headers=AUTH, json=original).status_code == 200
 
+    def fake_init(self):
+        self.list_id = "test-list"
+
     async def fake_find_item(self, item_id):
         assert item_id == "item-123"
         return SimpleNamespace(
@@ -144,6 +147,7 @@ def test_item_rename_updates_samsung_payload_and_moves_offer_metadata(monkeypatc
         assert b"item123" in payload
         return {"grpc_status": 0}
 
+    monkeypatch.setattr(SamsungFoodClient, "__init__", fake_init)
     monkeypatch.setattr(SamsungFoodClient, "_find_item", fake_find_item)
     monkeypatch.setattr(SamsungFoodClient, "_post_sync_items", fake_post_sync_items)
 
