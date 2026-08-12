@@ -296,6 +296,13 @@ final class AppModel: ObservableObject {
         offerMetadata[offerRetailerNameKey(item.name)]?.retailer
     }
 
+    func hasApprovedOfferMatch(offerID: String, publicationID: String) -> Bool {
+        (shoppingList?.items ?? []).contains { item in
+            guard let metadata = offerMetadata[offerRetailerNameKey(item.name)] else { return false }
+            return metadata.offerID == offerID && metadata.publicationID == publicationID
+        }
+    }
+
     func offerPrice(for item: ShoppingItem) -> Double? {
         currentOfferMetadata(for: item)?.price
     }
