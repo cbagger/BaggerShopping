@@ -4,6 +4,7 @@ struct OffersView: View {
     @EnvironmentObject private var model: AppModel
     @State private var query = ""
     @State private var selectedRetailer = "MENY"
+    @State private var retailers = ["MENY"]
     @State private var offers: [GroceryOffer] = []
     @State private var hasSearched = false
     @State private var isLoading = false
@@ -13,7 +14,6 @@ struct OffersView: View {
     @FocusState private var searchIsFocused: Bool
 
     private let api = APIClient()
-    private let retailers = ["MENY"]
 
     var body: some View {
         NavigationStack {
@@ -48,10 +48,31 @@ struct OffersView: View {
                         .padding(12)
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
 
-                        Picker("Butik", selection: $selectedRetailer) {
-                            ForEach(retailers, id: \.self) { Text($0).tag($0) }
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(retailers, id: \.self) { retailer in
+                                    Button {
+                                        selectedRetailer = retailer
+                                    } label: {
+                                        Text(retailer)
+                                            .font(.subheadline.weight(selectedRetailer == retailer ? .semibold : .regular))
+                                            .foregroundStyle(selectedRetailer == retailer ? Color.white : Color.primary)
+                                            .padding(.horizontal, 13)
+                                            .padding(.vertical, 8)
+                                            .background(
+                                                selectedRetailer == retailer ? Color.accentColor : Color(uiColor: .secondarySystemGroupedBackground),
+                                                in: Capsule()
+                                            )
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
                         }
-                        .pickerStyle(.segmented)
+                        .onChange(of: selectedRetailer) {
+                            offers = []
+                            hasSearched = false
+                            errorMessage = nil
+                        }
                     }
 
                     if isLoading {
@@ -79,6 +100,7 @@ struct OffersView: View {
                 .padding()
             }
             .navigationTitle("Tilbud")
+            .task { await loadRetailers() }
             .sheet(item: $pendingOffer) { offer in
                 OfferVariantSheet(offer: offer) { variant in
                     add(variant.name, from: offer)
@@ -87,6 +109,20 @@ struct OffersView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
             }
+        }
+    }
+
+    @MainActor
+    private func loadRetailers() async {
+        guard let response = try? await api.fetchOfferPublications() else { return }
+        let available = response.publications
+            .filter { $0.status == "current" && $0.searchable }
+            .map(\.retailer)
+        retailers = available.reduce(into: []) { result, retailer in
+            if !result.contains(retailer) { result.append(retailer) }
+        }
+        if !retailers.contains(selectedRetailer), let first = retailers.first {
+            selectedRetailer = first
         }
     }
 

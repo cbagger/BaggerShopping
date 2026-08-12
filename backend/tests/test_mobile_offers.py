@@ -109,3 +109,12 @@ def test_health_rejects_material_hotspot_loss_but_not_empty_editorial_pages():
 
     problems = mobile_offers._health_problems(publication, today=date(2026, 8, 11))
     assert problems == ["kun 0/1 tilbud har markør"]
+
+
+def test_reader_accepts_complete_pages_without_structured_offer_metadata():
+    publication = parse_meny_flyer_html(
+        '<script>window.staticSettings = {"pages":[1,2],"aws":{"url":"https://cdn.test"}};</script>'
+        '<p>MENY uge 3326</p>'
+    )
+    assert mobile_offers._reader_problems(publication, today=date(2026, 8, 11)) == []
+    assert mobile_offers._publication_payload(publication)["searchable"] is False

@@ -465,7 +465,7 @@ def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> lis
         hotspot_height = max(bottoms) - hotspot_y if bottoms and hotspot_y is not None else None
         offers.append(Offer(
             id=stable,
-            retailer="MENY",
+            retailer=publication.retailer,
             publication_id=publication.id,
             publication_title=publication.title,
             valid_from=publication.valid_from,
@@ -576,7 +576,7 @@ def search_publication(publication: Publication, query: str) -> OfferSearchResul
             seen.add(stable)
             offers.append(Offer(
                 id=stable,
-                retailer="MENY",
+                retailer=publication.retailer,
                 publication_id=publication.id,
                 publication_title=publication.title,
                 valid_from=publication.valid_from,

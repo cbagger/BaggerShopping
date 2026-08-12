@@ -6,7 +6,8 @@ from datetime import date, datetime
 
 from fastapi import APIRouter, HTTPException, Query
 
-from .meny_flyer import Publication, fetch_meny_flyer, search_publication
+from .flyer_adapters import RETAILER_ORDER, fetch_all_publications
+from .meny_flyer import Publication, search_publication
 
 
 router = APIRouter(prefix="/api/mobile/v1/offers", tags=["offers"])
@@ -15,6 +16,7 @@ _CACHE_TTL_SECONDS = 15 * 60
 _publication_cache: Publication | None = None
 _publication_cache_time = 0.0
 _publication_lock = asyncio.Lock()
+_publications_cache: list[Publication] = []
 
 
 def _coverage_payload(publication: Publication) -> dict:
@@ -47,43 +49,45 @@ def _coverage_payload(publication: Publication) -> dict:
 
 
 def _publication_payload(publication: Publication) -> dict:
-    return publication.model_dump(exclude={"text", "page_texts"})
+    payload = publication.model_dump(exclude={"text", "page_texts"})
+    payload["searchable"] = not _health_problems(publication)
+    return payload
 
 
 async def _publication() -> Publication:
-    global _publication_cache, _publication_cache_time
+    publications = await _publications()
+    publication = next((item for item in publications if item.retailer.casefold() == "meny" and item.status == "current"), None)
+    if publication is None:
+        raise HTTPException(status_code=503, detail="Den aktuelle MENY-avis kunne ikke valideres")
+    return publication
+
+
+async def _publications() -> list[Publication]:
+    global _publication_cache, _publication_cache_time, _publications_cache
     now = time.monotonic()
-    if (
-        _publication_cache is not None
-        and not _health_problems(_publication_cache)
-        and now - _publication_cache_time < _CACHE_TTL_SECONDS
-    ):
-        return _publication_cache
+    if _publications_cache and now - _publication_cache_time < _CACHE_TTL_SECONDS:
+        return _publications_cache
 
     async with _publication_lock:
         now = time.monotonic()
-        if (
-            _publication_cache is not None
-            and not _health_problems(_publication_cache)
-            and now - _publication_cache_time < _CACHE_TTL_SECONDS
-        ):
-            return _publication_cache
+        if _publications_cache and now - _publication_cache_time < _CACHE_TTL_SECONDS:
+            return _publications_cache
         try:
-            candidate = await fetch_meny_flyer()
-            problems = _health_problems(candidate)
-            if problems:
-                raise ValueError("; ".join(problems))
-            _publication_cache = candidate
+            candidates = await fetch_all_publications()
+            usable = [candidate for candidate in candidates if candidate.status != "expired" and not _reader_problems(candidate)]
+            if not usable:
+                raise ValueError("ingen funktionelt gyldige aviser")
+            _publications_cache = usable
+            _publication_cache = next((item for item in usable if item.retailer == "MENY"), None)
             _publication_cache_time = now
-            return candidate
+            return usable
         except Exception as exc:
-            # A short upstream outage must not break a still-current flyer. An
-            # expired cached flyer is never served, even when MENY is down.
-            if _publication_cache is not None and not _health_problems(_publication_cache):
-                return _publication_cache
+            fallback = [item for item in _publications_cache if item.status != "expired" and not _reader_problems(item)]
+            if fallback:
+                return fallback
             raise HTTPException(
                 status_code=503,
-                detail=f"Den aktuelle MENY-avis kunne ikke valideres: {exc}",
+                detail=f"De aktuelle tilbudsaviser kunne ikke valideres: {exc}",
             ) from exc
 
 
@@ -115,27 +119,52 @@ def _health_problems(publication: Publication, *, today: date | None = None) -> 
     return problems
 
 
+def _reader_problems(publication: Publication, *, today: date | None = None) -> list[str]:
+    """Report failures that make the page-based reader unusable."""
+    today = today or date.today()
+    problems: list[str] = []
+    valid_until = _parse_validity(publication.valid_until)
+    if valid_until is not None and valid_until < today:
+        problems.append("avisen er udløbet")
+    if publication.page_count <= 0 or len(publication.page_image_urls) != publication.page_count:
+        problems.append("sidebilleder mangler")
+    return problems
+
+
 @router.get("/health")
 async def offers_health():
-    publication = await _publication()
-    coverage = _coverage_payload(publication)
+    publications = await _publications()
+    available = {publication.retailer for publication in publications}
     return {
-        "ok": True,
-        "publication_id": publication.id,
-        "title": publication.title,
-        "valid_until": publication.valid_until,
-        "status": publication.status,
-        "coverage": coverage,
+        "ok": bool(publications),
+        "degraded": any(retailer not in available for retailer in RETAILER_ORDER),
+        "retailers": {
+            retailer: [
+                {
+                    "publication_id": publication.id,
+                    "title": publication.title,
+                    "valid_until": publication.valid_until,
+                    "status": publication.status,
+                    "coverage": _coverage_payload(publication),
+                }
+                for publication in publications if publication.retailer == retailer
+            ]
+            for retailer in RETAILER_ORDER
+        },
     }
 
 
 @router.get("/publications")
 async def publications():
-    publication = await _publication()
+    items = await _publications()
     return {
         "ok": True,
-        "publications": [_publication_payload(publication)],
-        "offer_count": len(publication.structured_offers),
+        "publications": [_publication_payload(publication) for publication in items],
+        "offer_count": sum(len(publication.structured_offers) for publication in items),
+        "retailers": [
+            retailer for retailer in RETAILER_ORDER
+            if any(publication.retailer == retailer for publication in items)
+        ],
     }
 
 
@@ -144,26 +173,31 @@ async def search_offers(
     q: str = Query(min_length=1, max_length=100),
     retailer: str = Query(default="MENY", max_length=40),
 ):
-    if retailer.casefold() != "meny":
-        raise HTTPException(status_code=400, detail="Retailer is not supported yet")
-    publication = await _publication()
-    result = search_publication(publication, q)
+    items = [p for p in await _publications() if p.retailer.casefold() == retailer.casefold() and p.status == "current"]
+    if not items:
+        raise HTTPException(status_code=404, detail="Der er ingen aktuel avis for den valgte butik")
+    results = [search_publication(publication, q) for publication in items]
+    offers = [offer for result in results for offer in result.offers]
     return {
         "ok": True,
         "query": q,
-        "retailer": "MENY",
-        "publication": _publication_payload(publication),
-        "offer_count": len(result.offers),
-        "offers": [offer.model_dump() for offer in result.offers],
+        "retailer": items[0].retailer,
+        "publication": _publication_payload(items[0]),
+        "offer_count": len(offers),
+        "offers": [offer.model_dump() for offer in offers],
     }
 
 
 @router.get("/publications/{publication_id}/offers")
 async def publication_offers(publication_id: str):
-    publication = await _publication()
-    # The upstream iPaper URL can gain a different redirect/query string between
-    # requests. There is only one current publication per retailer today, so the
-    # id is a cache/version hint rather than an authorization boundary.
+    try:
+        publication = next((item for item in await _publications() if item.id == publication_id), None)
+    except HTTPException:
+        publication = None
+    if publication is None:
+        # Compatibility with builds where MENY's upstream redirect changed the
+        # derived id between the shelf request and opening the reader.
+        publication = await _publication()
     return {
         "ok": True,
         "publication": _publication_payload(publication),

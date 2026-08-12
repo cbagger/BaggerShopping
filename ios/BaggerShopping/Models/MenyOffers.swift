@@ -12,6 +12,7 @@ struct OfferPublication: Codable, Identifiable, Hashable {
     let pageImageURLs: [URL]
     let readerURL: URL?
     let readerKind: String?
+    let searchable: Bool
 
     enum CodingKeys: String, CodingKey {
         case id, retailer, title, status
@@ -22,6 +23,7 @@ struct OfferPublication: Codable, Identifiable, Hashable {
         case pageImageURLs = "page_image_urls"
         case readerURL = "reader_url"
         case readerKind = "reader_kind"
+        case searchable
     }
 
     init(from decoder: Decoder) throws {
@@ -37,6 +39,7 @@ struct OfferPublication: Codable, Identifiable, Hashable {
         pageImageURLs = try values.decodeIfPresent([URL].self, forKey: .pageImageURLs) ?? []
         readerURL = try values.decodeIfPresent(URL.self, forKey: .readerURL)
         readerKind = try values.decodeIfPresent(String.self, forKey: .readerKind)
+        searchable = try values.decodeIfPresent(Bool.self, forKey: .searchable) ?? false
     }
 }
 

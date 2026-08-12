@@ -231,7 +231,7 @@ private struct NativeFlyerReader: View {
     }
 
     @MainActor private func loadOffers() async {
-        do { offers = try await api.fetchCurrentOffers().offers }
+        do { offers = try await api.fetchOffers(publicationID: publication.id).offers }
         catch { errorMessage = error.localizedDescription }
     }
 }
