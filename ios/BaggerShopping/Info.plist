@@ -19,7 +19,7 @@
     <key>CFBundleShortVersionString</key>
     <string>0.8.4</string>
     <key>CFBundleVersion</key>
-    <string>19</string>
+    <string>20</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>Bagger Shopping bruger din placering til at registrere, når du ankommer til en valgt dagligvarebutik.</string>
     <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
