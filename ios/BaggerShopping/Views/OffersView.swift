@@ -11,6 +11,7 @@ struct OffersView: View {
     @State private var errorMessage: String?
     @State private var addedOfferID: String?
     @State private var pendingOffer: GroceryOffer?
+    @State private var filterSearchTask: Task<Void, Never>?
     @FocusState private var searchIsFocused: Bool
 
     private let api = APIClient()
@@ -70,9 +71,7 @@ struct OffersView: View {
                         Text(selectedRetailers.isEmpty ? "Søger i alle butikker" : "Søger i \(selectedRetailers.count) valgte butikker")
                             .font(.caption).foregroundStyle(.secondary)
                         .onChange(of: selectedRetailers) {
-                            offers = []
-                            hasSearched = false
-                            errorMessage = nil
+                            scheduleFilterSearch()
                         }
                     }
 
@@ -140,6 +139,7 @@ struct OffersView: View {
     @MainActor
     private func search() async {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let retailerSnapshot = selectedRetailers
         guard !term.isEmpty else { return }
         isLoading = true
         hasSearched = true
@@ -147,11 +147,31 @@ struct OffersView: View {
         addedOfferID = nil
         defer { isLoading = false }
         do {
-            offers = try await api.searchOffers(query: term, retailers: Array(selectedRetailers)).offers
+            let response = try await api.searchOffers(query: term, retailers: Array(retailerSnapshot))
+            guard term == query.trimmingCharacters(in: .whitespacesAndNewlines),
+                  retailerSnapshot == selectedRetailers else { return }
+            offers = response.offers
                 .filter { $0.variants.contains(where: \.matchesQuery) }
         } catch {
+            guard !Task.isCancelled else { return }
             offers = []
             errorMessage = error.localizedDescription
+        }
+    }
+
+    private func scheduleFilterSearch() {
+        filterSearchTask?.cancel()
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else {
+            offers = []
+            hasSearched = false
+            errorMessage = nil
+            return
+        }
+        filterSearchTask = Task {
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            await search()
         }
     }
 }

@@ -7,8 +7,16 @@ struct ShoppingListView: View {
         var id: String { category.id }
     }
 
+    private struct RetailerGroup: Identifiable {
+        let retailer: String?
+        let categories: [CategoryGroup]
+        var id: String { retailer ?? "__without-retailer__" }
+        var count: Int { categories.reduce(0) { $0 + $1.items.count } }
+    }
+
     @EnvironmentObject private var model: AppModel
     @State private var newItem = ""
+    @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
 
     private var activeItems: [ShoppingItem] {
         model.shoppingList?.items.filter { !$0.checked } ?? []
@@ -33,7 +41,23 @@ struct ShoppingListView: View {
     }
 
     private var groupedActiveItems: [CategoryGroup] {
-        let grouped = Dictionary(grouping: currentItems) { model.category(for: $0) }
+        categoryGroups(for: currentItems)
+    }
+
+    private var retailerGroups: [RetailerGroup] {
+        let grouped = Dictionary(grouping: activeItems) { model.assignedRetailer(for: $0) }
+        return grouped.map { retailer, items in
+            RetailerGroup(retailer: retailer, categories: categoryGroups(for: items))
+        }
+        .sorted { lhs, rhs in
+            if lhs.retailer == nil { return rhs.retailer != nil }
+            if rhs.retailer == nil { return false }
+            return lhs.retailer!.localizedCaseInsensitiveCompare(rhs.retailer!) == .orderedAscending
+        }
+    }
+
+    private func categoryGroups(for items: [ShoppingItem]) -> [CategoryGroup] {
+        let grouped = Dictionary(grouping: items) { model.category(for: $0) }
         return grouped
             .map {
                 CategoryGroup(
@@ -74,6 +98,28 @@ struct ShoppingListView: View {
                             }
                         }
 
+                        Section {
+                            Button {
+                                withAnimation { sortByRetailer.toggle() }
+                            } label: {
+                                Label(
+                                    "Sorter efter butik",
+                                    systemImage: sortByRetailer ? "checkmark.circle.fill" : "storefront"
+                                )
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(sortByRetailer ? Color.white : Color.primary)
+                                .padding(.horizontal, 13)
+                                .padding(.vertical, 8)
+                                .background(
+                                    sortByRetailer ? Color.accentColor : Color(uiColor: .secondarySystemGroupedBackground),
+                                    in: Capsule()
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
+                        }
+
                         if activeItems.isEmpty {
                             Section {
                                 ContentUnavailableView(
@@ -83,7 +129,34 @@ struct ShoppingListView: View {
                                 )
                             }
                         } else {
-                            if !upcomingItems.isEmpty {
+                            if sortByRetailer {
+                                ForEach(retailerGroups) { retailerGroup in
+                                    Section {
+                                        ForEach(retailerGroup.categories) { categoryGroup in
+                                            Label(
+                                                "\(categoryGroup.category.rawValue) · \(categoryGroup.items.count)",
+                                                systemImage: categoryGroup.category.icon
+                                            )
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+
+                                            ForEach(categoryGroup.items, id: \.stableID) { item in
+                                                itemRow(item, showCategory: false)
+                                            }
+                                        }
+                                    } header: {
+                                        if let retailer = retailerGroup.retailer {
+                                            Label("\(retailer) · \(retailerGroup.count)", systemImage: "storefront")
+                                        } else {
+                                            Label("Uden butik · \(retailerGroup.count)", systemImage: "tray")
+                                        }
+                                    } footer: {
+                                        if retailerGroup.retailer != nil {
+                                            Text("Husk varer øverst der ikke er dedikeret til én butik")
+                                        }
+                                    }
+                                }
+                            } else if !upcomingItems.isEmpty {
                                 Section {
                                     ForEach(upcomingItems, id: \.stableID) { item in
                                         itemRow(item, showCategory: false)
@@ -95,13 +168,15 @@ struct ShoppingListView: View {
                                 }
                             }
 
-                            ForEach(groupedActiveItems) { group in
-                                Section {
-                                    ForEach(group.items, id: \.stableID) { item in
-                                        itemRow(item, showCategory: false)
+                            if !sortByRetailer {
+                                ForEach(groupedActiveItems) { group in
+                                    Section {
+                                        ForEach(group.items, id: \.stableID) { item in
+                                            itemRow(item, showCategory: false)
+                                        }
+                                    } header: {
+                                        Label("\(group.category.rawValue) · \(group.items.count)", systemImage: group.category.icon)
                                     }
-                                } header: {
-                                    Label("\(group.category.rawValue) · \(group.items.count)", systemImage: group.category.icon)
                                 }
                             }
                         }

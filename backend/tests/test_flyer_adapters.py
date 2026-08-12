@@ -254,6 +254,27 @@ def test_restores_shared_compound_in_tjek_variants():
     ]
 
 
+def test_restores_product_root_for_leading_hyphen_alternative():
+    publication = Publication(
+        id="lidl-week", retailer="Lidl", title="Uge 34",
+        source_url="https://lidl.test", page_count=1,
+        page_image_urls=["https://images.test/page.webp"],
+    )
+    rows = [{
+        "type": "offer",
+        "locations": {"1": [[0.1, 0.1], [0.4, 0.1], [0.4, 0.4]]},
+        "offer": {
+            "id": "turkey",
+            "heading": "Kalkunoverlår eller -schnitzel af brystfilet",
+            "pricing": {"price": 47.95},
+        },
+    }]
+    offers = parse_tjek_hotspots(publication, rows)
+    assert [variant.name for variant in offers[0].variants] == [
+        "Kalkunoverlår", "Kalkunschnitzel af brystfilet"
+    ]
+
+
 def test_fetches_complete_lidl_flyer_from_schwarz_api():
     source = RetailerSource("Lidl", "https://lidl.test/aviser", ("lidl.test",))
     flyer_id = "019fb848-75bf-75c9-95d5-477c1069ddaf"

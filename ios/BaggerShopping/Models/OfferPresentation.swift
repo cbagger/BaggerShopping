@@ -37,7 +37,7 @@ extension GroceryOffer {
 
     var hasUnresolvedVariantLanguage: Bool {
         let value = "\(productName) \(rawText)".lowercased()
-        return ["frit valg", "flere varianter", "udvalgte varianter", "assorteret"]
+        return ["frit valg", "flere varianter", "udvalgte varianter", "assorteret", " eller "]
             .contains(where: value.contains)
     }
 
@@ -76,11 +76,26 @@ extension GroceryOffer {
     private func composedSharedAlternative(base: String, variant: String) -> String? {
         let foldedBase = base.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
         let foldedVariant = variant.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+        if let relative = composedLeadingHyphenAlternative(base: base, variant: variant) {
+            return relative
+        }
         guard foldedBase.contains("kyllingeover-") && foldedBase.contains("underlar"),
               foldedVariant == "underlar" else { return nil }
         let prefix = base.components(separatedBy: "kyllingeover-").first?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return [prefix, "kyllingeunderlår"].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    private func composedLeadingHyphenAlternative(base: String, variant: String) -> String? {
+        let cleaned = variant.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleaned.hasPrefix("-") else { return nil }
+        let suffix = cleaned.drop(while: { $0 == "-" || $0.isWhitespace })
+        guard !suffix.isEmpty else { return nil }
+        let folded = base.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+        let roots = ["kalkun", "kylling", "svine", "okse", "lamme", "kalve"]
+        guard let root = roots.first(where: { folded.hasPrefix($0) }) else { return nil }
+        let originalRoot = String(base.prefix(root.count))
+        return originalRoot + suffix
     }
 
     private func composedPropertyVariant(base: String, variant: String) -> String? {

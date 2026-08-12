@@ -292,6 +292,19 @@ def _tjek_variants(identity: str, heading: str, description: str | None, quantit
         if len(described) > 1:
             names = described
     names = [name for name in names if len(name) >= 2]
+    # Danish offer headings often omit a repeated product root after "eller",
+    # for example "Kalkunoverlår eller -schnitzel". Restore the root before
+    # exposing the alternatives to every client.
+    if len(names) > 1:
+        folded_first = names[0].casefold()
+        roots = ("kalkun", "kylling", "svine", "okse", "lamme", "kalve")
+        root = next((value for value in roots if folded_first.startswith(value)), None)
+        if root:
+            original_root = names[0][:len(root)]
+            names = [
+                original_root + name.lstrip("-–— ") if name.startswith(("-", "–", "—")) else name
+                for name in names
+            ]
     # A trailing alternative is frequently written as a relative fragment,
     # e.g. "Tulip bacon i skiver eller i tern".  Keep it as a selectable
     # variant and restore the shared product identity.

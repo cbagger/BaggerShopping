@@ -98,6 +98,27 @@ final class OfferPresentationTests: XCTestCase {
         XCTAssertEqual(cheese.shoppingItemName(variant: "Mild 45+"), "Klovborg Mild 45+ skæreost")
     }
 
+    func testLeadingHyphenAlternativeKeepsSharedProductRoot() throws {
+        let turkey = try decodeOffer(
+            productName: "Kalkunoverlår eller -schnitzel af brystfilet",
+            rawText: "Kalkunoverlår eller -schnitzel af brystfilet",
+            variants: ["Kalkunoverlår", "-schnitzel af brystfilet"]
+        )
+        XCTAssertEqual(
+            turkey.shoppingItemName(variant: "-schnitzel af brystfilet"),
+            "Kalkunschnitzel af brystfilet"
+        )
+    }
+
+    func testSingleDetectedChoiceStillOpensPickerWhenTitleHasAlternatives() throws {
+        let juice = try decodeOffer(
+            productName: "Valsølille Dansk Juice, Drik eller Smoothie",
+            rawText: "Valsølille Dansk Juice, Drik eller Smoothie",
+            variants: ["Valsølille Dansk Juice"]
+        )
+        XCTAssertEqual(juice.choiceState, .unspecified)
+    }
+
     private func decodeOffer(productName: String, rawText: String, variants: [String]) throws -> GroceryOffer {
         let payload: [String: Any] = [
             "id": "offer", "retailer": "365discount", "publication_id": "paper",

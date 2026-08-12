@@ -133,6 +133,8 @@ class SamsungFoodClient:
         """Extract an explicit final x/stk quantity without product rules."""
         value = " ".join(name.split())
         patterns = (
+            r"^(?P<count>\d+(?:[.,]\d+)?)\s*[x×]\s*(?P<name>.+)$",
+            r"^(?P<count>\d+(?:[.,]\d+)?)\s*(?:stk\.?|styk(?:ker)?)\s+(?P<name>.+)$",
             r"^(?P<name>.+?)\s+[x×]\s*(?P<count>\d+(?:[.,]\d+)?)$",
             r"^(?P<name>.+?)\s+(?P<count>\d+(?:[.,]\d+)?)\s*[x×]$",
             r"^(?P<name>.+?)\s+(?P<count>\d+(?:[.,]\d+)?)\s*(?:stk\.?|styk(?:ker)?)$",

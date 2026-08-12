@@ -212,6 +212,10 @@ final class AppModel: ObservableObject {
         currentOfferMetadata(for: item)?.retailer
     }
 
+    func assignedRetailer(for item: ShoppingItem) -> String? {
+        offerMetadata[offerRetailerNameKey(item.name)]?.retailer
+    }
+
     func offerPrice(for item: ShoppingItem) -> Double? {
         currentOfferMetadata(for: item)?.price
     }
