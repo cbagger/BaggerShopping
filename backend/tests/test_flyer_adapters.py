@@ -159,8 +159,10 @@ def test_fetches_tjek_catalogs_for_365_rema_and_netto():
                     "offer": {"id": "offer1", "heading": "Kaffe", "pricing": {"price": 30}},
                 }])
             if request.url.host == "api.etilbudsavis.dk" and request.url.path == "/v2/offers":
-                assert request.url.params.get("dealer_id") == dealer
-                assert request.url.params.get("catalog_id") is None
+                assert request.url.params.get("catalog_id") == "catalog1"
+                assert request.url.params.get("limit") == "100"
+                assert request.url.params.get("offset") == "0"
+                assert request.url.params.get("dealer_id") is None
                 return httpx.Response(200, json=[{
                     "id": "offer1", "heading": "Kaffe", "description": "400 g. Frit valg.",
                     "pricing": {"price": 30, "pre_price": 45},
@@ -180,6 +182,56 @@ def test_fetches_tjek_catalogs_for_365_rema_and_netto():
         assert publications[0].page_count == 2
         assert publications[0].structured_offers[0].normal_price == 45
         assert publications[0].structured_offers[0].image_url == "https://images.test/coffee.webp"
+
+
+def test_paginates_tjek_offer_details_beyond_api_limit():
+    source = RetailerSource(
+        "365discount", "https://365.test/avis", ("365.test",),
+        tjek_dealer_id="DWZE1w",
+    )
+    requested_offsets: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == source.landing_url:
+            return httpx.Response(200, text="<h1>Ugens avis</h1>")
+        if request.url.path == "/v2/catalogs" and request.url.params.get("dealer_id") == "DWZE1w":
+            return httpx.Response(200, json=[{"id": "catalog-large"}])
+        if request.url.path == "/v2/catalogs/catalog-large":
+            return httpx.Response(200, json={"id": "catalog-large", "label": "Uge 33"})
+        if request.url.path == "/v2/catalogs/catalog-large/pages":
+            return httpx.Response(200, json=[{"view": "https://images.test/page.webp"}])
+        if request.url.path == "/v2/catalogs/catalog-large/hotspots":
+            return httpx.Response(200, json=[{
+                "type": "offer",
+                "locations": {"1": [[0.1, 0.2], [0.4, 0.2], [0.4, 0.6]]},
+                "offer": {"id": "offer149", "heading": "Tun", "pricing": {"price": 10}},
+            }])
+        if request.url.host == "api.etilbudsavis.dk" and request.url.path == "/v2/offers":
+            assert request.url.params.get("catalog_id") == "catalog-large"
+            assert request.url.params.get("limit") == "100"
+            offset = int(request.url.params["offset"])
+            requested_offsets.append(offset)
+            rows = [
+                {"id": f"offer{index}", "heading": f"Vare {index}"}
+                for index in range(offset, min(offset + 100, 150))
+            ]
+            if rows:
+                rows[-1].update({
+                    "description": "Tun i vand eller olie. Frit valg.",
+                    "pricing": {"price": 10, "pre_price": 15},
+                    "images": {"view": "https://images.test/tun.webp"},
+                })
+            return httpx.Response(200, json=rows)
+        return httpx.Response(404)
+
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_retailer_publications(source, client=client)
+
+    publications = asyncio.run(fetch())
+    assert requested_offsets == [0, 100]
+    assert publications[0].structured_offers[0].normal_price == 15
+    assert publications[0].structured_offers[0].image_url == "https://images.test/tun.webp"
 
 
 def test_fetches_complete_lidl_flyer_from_schwarz_api():

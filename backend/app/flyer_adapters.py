@@ -281,6 +281,31 @@ def _offers_by_id(rows: object) -> dict[str, dict]:
     }
 
 
+async def _fetch_tjek_offer_rows(
+    client: httpx.AsyncClient, catalog_id: str
+) -> list[dict]:
+    """Fetch every detailed offer for one catalogue within Tjek's page cap."""
+    rows: list[dict] = []
+    limit = 100
+    for offset in range(0, 10_000, limit):
+        response = await client.get(
+            "https://api.etilbudsavis.dk/v2/offers",
+            params={
+                "catalog_id": catalog_id,
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ValueError("Tjek offers response must be a list")
+        rows.extend(row for row in payload if isinstance(row, dict))
+        if len(payload) < limit:
+            return rows
+    raise ValueError("Tjek offers pagination exceeded safety limit")
+
+
 def parse_tjek_hotspots(
     publication: Publication,
     rows: object,
@@ -540,17 +565,10 @@ async def fetch_retailer_publications(
             pass
     for catalog_id in dict.fromkeys(tjek_ids):
         try:
-            metadata_response, pages_response, hotspots_response, offers_response = await asyncio.gather(
+            metadata_response, pages_response, hotspots_response = await asyncio.gather(
                 client.get(f"https://squid-api.tjek.com/v2/catalogs/{catalog_id}"),
                 client.get(f"https://squid-api.tjek.com/v2/catalogs/{catalog_id}/pages?w=700"),
                 client.get(f"https://squid-api.tjek.com/v2/catalogs/{catalog_id}/hotspots"),
-                client.get(
-                    "https://api.etilbudsavis.dk/v2/offers",
-                    # The public offers endpoint filters by dealer, not by
-                    # catalogue. Offer IDs are globally stable and are joined
-                    # to this catalogue's hotspots below.
-                    params={"dealer_id": source.tjek_dealer_id, "limit": 1000},
-                ),
             )
             metadata_response.raise_for_status()
             pages_response.raise_for_status()
@@ -558,7 +576,7 @@ async def fetch_retailer_publications(
                 metadata_response.json(), pages_response.json(), source, landing_url
             )
             if hotspots_response.is_success:
-                detailed_rows = offers_response.json() if offers_response.is_success else []
+                detailed_rows = await _fetch_tjek_offer_rows(client, catalog_id)
                 publication.structured_offers = parse_tjek_hotspots(
                     publication, hotspots_response.json(), detailed_rows
                 )
