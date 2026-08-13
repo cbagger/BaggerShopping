@@ -110,7 +110,7 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     func sendSimpleTestNotification() async throws {
         let content = UNMutableNotificationContent()
-        content.title = "Bagger Shopping test"
+        content.title = "Kurv test"
         content.body = "Lokale notifikationer virker på denne iPhone."
         content.sound = .default
 
