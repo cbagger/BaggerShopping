@@ -6,6 +6,9 @@ data/
 **/data/
 chromium-profile/
 **/chromium-profile/
+secrets/
+**/secrets/
+*.p8
 
 # Python
 __pycache__/

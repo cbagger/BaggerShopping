@@ -9,6 +9,7 @@ Private family shopping-list companion for Samsung Food, backed by a QNAP servic
 - Samsung Food read/add/check/uncheck/delete verified end-to-end
 - Store search via MapKit verified
 - Geofence entry + live shopping-list notification verified on a physical iPhone
+- Server-driven APNs notifications for new flyers, filtered per iPhone and retailer
 
 ## Repository layout
 
@@ -19,4 +20,5 @@ Private family shopping-list companion for Samsung Food, backed by a QNAP servic
 ## Secrets
 
 Never commit `.env`, Samsung tokens/cookies, browser profiles, mobile API tokens, or Keychain exports.
+Never commit Apple APNs `.p8` keys; see `backend/APNS-SETUP.md`.
 Use `backend/.env.example` as a template only.

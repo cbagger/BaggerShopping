@@ -88,3 +88,8 @@ Public mobile endpoints:
 
 - `PATCH /api/mobile/v1/items/{id}/checked` with `{"checked": true|false}`
 - `DELETE /api/mobile/v1/items/{id}`
+
+## Push ved nye aviser
+
+`flyer-push-worker` kontrollerer de validerede avisfeeds planlagt på QNAP og
+sender APNs-push til hver iPhone efter dens egne butikvalg. Se `APNS-SETUP.md`.

@@ -66,6 +66,11 @@ struct CategoryOverridesResponse: Codable {
     let overrides: [CategoryOverrideDTO]
 }
 
+struct FlyerNotificationRetailersResponse: Codable {
+    let ok: Bool
+    let retailers: [String]
+}
+
 struct OfferMetadataDTO: Codable, Hashable {
     let itemName: String
     let retailer: String
