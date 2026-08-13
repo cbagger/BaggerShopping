@@ -8,6 +8,7 @@ final class SmartOfferMatchService: ObservableObject {
     @Published var errorMessage: String?
 
     private let api = APIClient()
+    private var deferredWarning: String?
 
     private enum ApprovalError: LocalizedError {
         case samsungItemStillSyncing
@@ -91,13 +92,12 @@ final class SmartOfferMatchService: ObservableObject {
         let needsRename = ShoppingCategoryService.normalize(oldName)
             != ShoppingCategoryService.normalize(selectedName)
 
+        deferredWarning = nil
+
         do {
             // The shopping-list sheet can outlive the optimistic ShoppingItem
-            // that opened it. A newly added Samsung item therefore sometimes
-            // still has id == nil in this snapshot even though Samsung assigns
-            // the real ID moments later. Resolve the newest persisted item
-            // before any in-place rename instead of surfacing a technical ID
-            // error to the user.
+            // that opened it. Resolve the newest persisted Samsung item before
+            // any in-place rename instead of trusting the old sheet snapshot.
             let persistedItem: ShoppingItem
             if needsRename {
                 persistedItem = try await resolvePersistedItem(item, model: model)
@@ -119,8 +119,7 @@ final class SmartOfferMatchService: ObservableObject {
 
             // Persist the selected offer against the existing item first. The
             // existing in-place Samsung rename endpoint moves this metadata to
-            // the new item name in the same server operation, preserving item
-            // ID, quantity and checked state.
+            // the new item name in the same server operation.
             let metadata = OfferMetadataDTO(
                 itemName: persistedItem.name,
                 retailer: offer.retailer,
@@ -134,7 +133,6 @@ final class SmartOfferMatchService: ObservableObject {
 
             try await api.setOfferMetadata(metadata)
 
-            var renameWarning: String?
             if needsRename {
                 let categoryOverride = model.hasCategoryOverride(for: persistedItem)
                     ? model.category(for: persistedItem)
@@ -145,7 +143,7 @@ final class SmartOfferMatchService: ObservableObject {
                         to: selectedName,
                         categoryOverride: categoryOverride
                     )
-                    renameWarning = result.warning
+                    deferredWarning = result.warning
                 } catch {
                     // The offer was written under the old item name immediately
                     // before rename. If rename did not complete, remove that
@@ -156,14 +154,13 @@ final class SmartOfferMatchService: ObservableObject {
                 }
             }
 
-            await model.refresh()
-            await model.syncSharedCategories()
-            await model.syncSharedOfferMetadata()
+            // Do not refresh AppModel while SmartOfferMatchesView is presented.
+            // ShoppingListView owns a global model.errorMessage alert; refreshing
+            // under nested sheets can make UIKit attempt to present an alert on
+            // the wrong controller. The view performs reconciliation after all
+            // Smart Matching sheets have been dismissed.
             matchesByItem.removeValue(forKey: key(item.name))
             errorMessage = nil
-            if let renameWarning {
-                model.errorMessage = renameWarning
-            }
             return true
         } catch {
             errorMessage = "Tilbuddet kunne ikke bruges endnu: \(error.localizedDescription)"
@@ -171,12 +168,15 @@ final class SmartOfferMatchService: ObservableObject {
         }
     }
 
+    func takeDeferredWarning() -> String? {
+        defer { deferredWarning = nil }
+        return deferredWarning
+    }
+
     private func resolvePersistedItem(
         _ snapshot: ShoppingItem,
         model: AppModel
     ) async throws -> ShoppingItem {
-        // If this snapshot already has a Samsung ID, prefer the freshest copy
-        // from the current model but do not force another network round-trip.
         if let snapshotID = snapshot.id {
             return model.shoppingList?.items.first(where: { $0.id == snapshotID }) ?? snapshot
         }
@@ -246,6 +246,18 @@ struct SmartOfferMatchesView: View {
                     )
                 } else {
                     List {
+                        if let errorMessage = service.errorMessage {
+                            Section {
+                                Label {
+                                    Text(errorMessage)
+                                } icon: {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                }
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                            }
+                        }
+
                         Section {
                             Text("Vælg et tilbud til “\(item.name)”. Hvis tilbuddet har flere varianter, vælger du den konkrete vare først. Når du bruger tilbuddet, omdøbes varen på indkøbslisten til den valgte tilbudsvariant, mens antal og købt-status bevares.")
                                 .font(.caption)
@@ -270,21 +282,13 @@ struct SmartOfferMatchesView: View {
             }
             .sheet(item: $pendingVariantOffer) { offer in
                 SmartOfferVariantSheet(offer: offer) { selectedName in
-                    Task { await apply(offer, selectedItemName: selectedName) }
+                    selectVariant(
+                        offer,
+                        selectedItemName: selectedName
+                    )
                 }
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
-            }
-            .alert(
-                "Kunne ikke bruge tilbud",
-                isPresented: Binding(
-                    get: { service.errorMessage != nil },
-                    set: { if !$0 { service.errorMessage = nil } }
-                )
-            ) {
-                Button("OK", role: .cancel) { service.errorMessage = nil }
-            } message: {
-                Text(service.errorMessage ?? "")
             }
         }
     }
@@ -348,10 +352,13 @@ struct SmartOfferMatchesView: View {
     }
 
     private func choose(_ offer: GroceryOffer) {
+        guard applyingOfferID == nil else { return }
+        service.errorMessage = nil
+
         switch offer.choiceState {
         case .direct(let variant):
             Task {
-                await apply(
+                await beginApply(
                     offer,
                     selectedItemName: offer.shoppingItemName(variant: variant)
                 )
@@ -362,9 +369,58 @@ struct SmartOfferMatchesView: View {
     }
 
     @MainActor
-    private func apply(_ offer: GroceryOffer, selectedItemName: String) async {
+    private func selectVariant(
+        _ offer: GroceryOffer,
+        selectedItemName: String
+    ) {
+        guard applyingOfferID == nil else { return }
+
+        // Dismiss the variant sheet completely before performing async work.
+        // Presenting/dismissing an alert or the parent sheet while this nested
+        // sheet is still active can crash UIKit's contained-alert lookup.
+        applyingOfferID = offer.id
+        pendingVariantOffer = nil
+        service.errorMessage = nil
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(450))
+            guard !Task.isCancelled else {
+                applyingOfferID = nil
+                return
+            }
+            await performApply(
+                offer,
+                selectedItemName: selectedItemName,
+                offerWasMarkedApplying: true
+            )
+        }
+    }
+
+    @MainActor
+    private func beginApply(
+        _ offer: GroceryOffer,
+        selectedItemName: String
+    ) async {
         guard applyingOfferID == nil else { return }
         applyingOfferID = offer.id
+        await performApply(
+            offer,
+            selectedItemName: selectedItemName,
+            offerWasMarkedApplying: true
+        )
+    }
+
+    @MainActor
+    private func performApply(
+        _ offer: GroceryOffer,
+        selectedItemName: String,
+        offerWasMarkedApplying: Bool
+    ) async {
+        if !offerWasMarkedApplying {
+            guard applyingOfferID == nil else { return }
+            applyingOfferID = offer.id
+        }
+
         let success = await service.approve(
             offer,
             selectedItemName: selectedItemName,
@@ -372,17 +428,32 @@ struct SmartOfferMatchesView: View {
             model: model
         )
         applyingOfferID = nil
-        if success {
-            pendingVariantOffer = nil
-            dismiss()
+
+        guard success else { return }
+
+        let warning = service.takeDeferredWarning()
+        dismiss()
+
+        // Wait until SmartOfferMatchesView itself has left the presentation
+        // stack before refreshing AppModel. ShoppingListView owns a global
+        // error alert, so this ordering prevents UIKit from presenting that
+        // alert underneath an active sheet hierarchy.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            await model.refresh()
+            await model.syncSharedCategories()
+            await model.syncSharedOfferMetadata()
+            if let warning {
+                model.errorMessage = warning
+            }
         }
     }
 }
 
 /// Smart Matching intentionally mirrors the established offer variant picker
 /// used in the Tilbud tab. Search responses may contain several matching
-/// variants (for example ordinary butter and spreadable butter), so approving
-/// the campaign alone is not enough to identify what should be put on the list.
+/// variants, so approving the campaign alone is not enough to identify what
+/// should be put on the list.
 private struct SmartOfferVariantSheet: View {
     let offer: GroceryOffer
     let select: (String) -> Void
