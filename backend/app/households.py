@@ -1,0 +1,217 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import secrets
+import time
+import uuid
+from contextvars import ContextVar
+from pathlib import Path
+from typing import Any, Literal
+
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from pydantic import BaseModel, Field
+
+router = APIRouter(prefix="/api/mobile/v1/households", tags=["households"])
+LOCK = asyncio.Lock()
+LEGACY_HOUSEHOLD_ID = "family-bagger"
+
+
+class HouseholdContext(BaseModel):
+    household_id: str
+    household_name: str
+    member_name: str
+    role: Literal["owner", "member"]
+    list_backend: Literal["samsung", "local"]
+
+
+CURRENT_HOUSEHOLD: ContextVar[HouseholdContext | None] = ContextVar("current_household", default=None)
+
+
+class CreateHouseholdRequest(BaseModel):
+    household_name: str = Field(min_length=1, max_length=80)
+    member_name: str = Field(min_length=1, max_length=80)
+
+
+class JoinHouseholdRequest(BaseModel):
+    invite_code: str = Field(min_length=6, max_length=20)
+    member_name: str = Field(min_length=1, max_length=80)
+
+
+class InviteRequest(BaseModel):
+    expires_in_days: int = Field(default=7, ge=1, le=30)
+
+
+def store_path() -> Path:
+    return Path(os.getenv("HOUSEHOLD_STORE_PATH", "/data/households.json"))
+
+
+def _hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _new_token() -> str:
+    return "kurv_" + secrets.token_urlsafe(32)
+
+
+def _new_code() -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return "".join(secrets.choice(alphabet) for _ in range(8))
+
+
+def load_store() -> dict[str, Any]:
+    try:
+        raw = json.loads(store_path().read_text("utf-8"))
+        return raw if isinstance(raw, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_store(store: dict[str, Any]) -> None:
+    path = store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(store, ensure_ascii=False, indent=2, sort_keys=True), "utf-8")
+    temporary.replace(path)
+
+
+def ensure_legacy_household(store: dict[str, Any]) -> dict[str, Any]:
+    households = store.setdefault("households", {})
+    household = households.setdefault(LEGACY_HOUSEHOLD_ID, {
+        "id": LEGACY_HOUSEHOLD_ID,
+        "name": os.getenv("DEFAULT_HOUSEHOLD_NAME", "Familien Bagger"),
+        "list_backend": "samsung",
+        "created_at": int(time.time()),
+        "members": {},
+        "items": [],
+        "offer_metadata": {},
+    })
+    return household
+
+
+def context_from_record(household: dict[str, Any], member: dict[str, Any]) -> HouseholdContext:
+    return HouseholdContext(
+        household_id=household["id"], household_name=household["name"],
+        member_name=member.get("name", "Familiemedlem"), role=member.get("role", "member"),
+        list_backend=household.get("list_backend", "local"),
+    )
+
+
+def set_current(context: HouseholdContext) -> HouseholdContext:
+    CURRENT_HOUSEHOLD.set(context)
+    return context
+
+
+def current_household() -> HouseholdContext:
+    context = CURRENT_HOUSEHOLD.get()
+    if context is None:
+        raise HTTPException(status_code=401, detail="Familiekontekst mangler")
+    return context
+
+
+async def require_household(
+    authorization: str | None = Header(default=None),
+) -> HouseholdContext:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token", headers={"WWW-Authenticate": "Bearer"})
+    supplied = authorization.removeprefix("Bearer ").strip()
+    if not supplied:
+        raise HTTPException(status_code=401, detail="Invalid bearer token")
+
+    async with LOCK:
+        store = load_store()
+        legacy = ensure_legacy_household(store)
+        expected = os.getenv("MOBILE_API_TOKEN", "")
+        if expected and secrets.compare_digest(supplied, expected):
+            return set_current(HouseholdContext(
+                household_id=legacy["id"], household_name=legacy["name"],
+                member_name="Christoffer", role="owner", list_backend="samsung",
+            ))
+        token_hash = _hash(supplied)
+        for household in store.get("households", {}).values():
+            member = household.get("members", {}).get(token_hash)
+            if member:
+                return set_current(context_from_record(household, member))
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bearer token")
+
+
+@router.get("/me")
+async def household_me(context: HouseholdContext = Depends(require_household)) -> dict[str, Any]:
+    return {"ok": True, **context.model_dump()}
+
+
+@router.post("/create")
+async def create_household(request: CreateHouseholdRequest) -> dict[str, Any]:
+    household_id = str(uuid.uuid4())
+    token = _new_token()
+    household = {
+        "id": household_id, "name": request.household_name.strip(), "list_backend": "local",
+        "created_at": int(time.time()), "items": [], "offer_metadata": {},
+        "members": {_hash(token): {"name": request.member_name.strip(), "role": "owner", "created_at": int(time.time())}},
+    }
+    async with LOCK:
+        store = load_store()
+        ensure_legacy_household(store)
+        store.setdefault("households", {})[household_id] = household
+        save_store(store)
+    return {"ok": True, "access_token": token, **context_from_record(household, next(iter(household["members"].values()))).model_dump()}
+
+
+@router.post("/invite")
+async def create_invite(
+    request: InviteRequest,
+    context: HouseholdContext = Depends(require_household),
+) -> dict[str, Any]:
+    code = _new_code()
+    async with LOCK:
+        store = load_store()
+        ensure_legacy_household(store)
+        store.setdefault("invites", {})[_hash(code)] = {
+            "household_id": context.household_id,
+            "expires_at": int(time.time()) + request.expires_in_days * 86400,
+        }
+        save_store(store)
+    return {"ok": True, "invite_code": code, "expires_in_days": request.expires_in_days}
+
+
+@router.post("/join")
+async def join_household(request: JoinHouseholdRequest) -> dict[str, Any]:
+    code = "".join(request.invite_code.upper().split())
+    token = _new_token()
+    async with LOCK:
+        store = load_store()
+        ensure_legacy_household(store)
+        invite = store.setdefault("invites", {}).pop(_hash(code), None)
+        if not invite or invite.get("expires_at", 0) < int(time.time()):
+            raise HTTPException(status_code=404, detail="Invitationskoden er ugyldig eller udløbet")
+        household = store["households"].get(invite["household_id"])
+        if not household:
+            raise HTTPException(status_code=404, detail="Familien findes ikke")
+        member = {"name": request.member_name.strip(), "role": "member", "created_at": int(time.time())}
+        household.setdefault("members", {})[_hash(token)] = member
+        save_store(store)
+    return {"ok": True, "access_token": token, **context_from_record(household, member).model_dump()}
+
+
+async def read_household(context: HouseholdContext) -> dict[str, Any]:
+    async with LOCK:
+        store = load_store()
+        ensure_legacy_household(store)
+        household = store.get("households", {}).get(context.household_id)
+        if not household:
+            raise HTTPException(status_code=404, detail="Familien findes ikke")
+        return json.loads(json.dumps(household))
+
+
+async def update_household(context: HouseholdContext, mutation) -> Any:
+    async with LOCK:
+        store = load_store()
+        ensure_legacy_household(store)
+        household = store.get("households", {}).get(context.household_id)
+        if not household:
+            raise HTTPException(status_code=404, detail="Familien findes ikke")
+        result = mutation(household)
+        save_store(store)
+        return result
