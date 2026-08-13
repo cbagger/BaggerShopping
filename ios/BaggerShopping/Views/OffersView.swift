@@ -121,23 +121,16 @@ struct OffersView: View {
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
-            .alert("Billigere tilbud fundet", isPresented: Binding(
-                get: { pendingCheaperAddition != nil },
-                set: { if !$0 { pendingCheaperAddition = nil } }
-            )) {
-                Button("Tilføj billigere tilbud") {
-                    guard let pending = pendingCheaperAddition else { return }
-                    addWithoutPriceCheck(pending.itemName, from: pending.cheaperOffer)
+            .sheet(item: $pendingCheaperAddition) { pending in
+                CheaperOffersSheet(pending: pending) { offer in
+                    addWithoutPriceCheck(pending.itemName, from: offer)
                     pendingCheaperAddition = nil
-                }
-                Button("Ignorer og tilføj alligevel") {
-                    guard let pending = pendingCheaperAddition else { return }
+                } ignore: {
                     addWithoutPriceCheck(pending.itemName, from: pending.selectedOffer)
                     pendingCheaperAddition = nil
                 }
-                Button("Annuller", role: .cancel) {}
-            } message: {
-                Text(pendingCheaperAddition.map(priceGuardMessage) ?? "")
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
             }
         }
     }
@@ -156,11 +149,12 @@ struct OffersView: View {
 
     private func add(_ itemName: String, from offer: GroceryOffer) {
         Task {
-            if let cheaper = await OfferPriceGuard().cheaperOffer(for: itemName, than: offer) {
+            let cheaper = await OfferPriceGuard().cheaperOffers(for: itemName, than: offer)
+            if !cheaper.isEmpty {
                 pendingCheaperAddition = PendingOfferAddition(
                     itemName: itemName,
                     selectedOffer: offer,
-                    cheaperOffer: cheaper
+                    cheaperOffers: cheaper
                 )
                 return
             }
@@ -183,11 +177,6 @@ struct OffersView: View {
                 withAnimation { addedOfferID = offer.id }
             }
         }
-    }
-
-    private func priceGuardMessage(_ pending: PendingOfferAddition) -> String {
-        let price = pending.cheaperOffer.price?.formatted(.currency(code: "DKK")) ?? "en lavere pris"
-        return "Obs: \(pending.itemName) er på tilbud til \(price) i \(pending.cheaperOffer.retailer)."
     }
 
     @MainActor
