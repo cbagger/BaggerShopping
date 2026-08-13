@@ -56,11 +56,11 @@ def test_new_publication_only_pushes_to_selected_retailer(tmp_path, monkeypatch)
     })
     async def publications(): return [publication("old"), publication("new")]
     sent = []
-    async def send(token, environment, title, body, publication_id):
-        sent.append((token, body, publication_id)); return True
+    async def send(token, environment, title, body, publication_id, retailer):
+        sent.append((token, body, publication_id, retailer)); return True
     monkeypatch.setattr(flyer_push, "fetch_all_publications", publications)
     monkeypatch.setattr(flyer_push, "_send", send)
     result = asyncio.run(flyer_push.check_and_send())
     assert result == {"new": 1, "sent": 1, "failed": 0}
-    assert sent == [("aa" * 32, "MENY Uge 34 er nu tilgængelig", "new")]
+    assert sent == [("aa" * 32, "MENY Uge 34 er nu tilgængelig", "new", "MENY")]
     assert "new" in flyer_push._load()["seen_publications"]

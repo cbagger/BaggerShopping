@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct FlyersView: View {
+    @EnvironmentObject private var navigation: AppNavigation
     @State private var publications: [OfferPublication] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -38,6 +39,9 @@ struct FlyersView: View {
             }
             .navigationTitle("Aviser")
             .task { await load() }
+            .onChange(of: navigation.flyerRoute?.id) { _, _ in
+                openRequestedFlyerIfAvailable()
+            }
             .fullScreenCover(item: $selectedPublication) { NativeFlyerReader(publication: $0) }
         }
     }
@@ -49,8 +53,23 @@ struct FlyersView: View {
         do {
             let fetched = try await api.fetchOfferPublications().publications
             publications = fetched
+            openRequestedFlyerIfAvailable()
         }
         catch { errorMessage = error.localizedDescription }
+    }
+
+    @MainActor private func openRequestedFlyerIfAvailable() {
+        guard let route = navigation.flyerRoute else { return }
+        if let exact = publications.first(where: { $0.id == route.publicationID }) {
+            selectedPublication = exact
+            return
+        }
+        if let retailer = route.retailer,
+           let latest = publications.first(where: {
+               $0.retailer.caseInsensitiveCompare(retailer) == .orderedSame && $0.status != "expired"
+           }) {
+            selectedPublication = latest
+        }
     }
 }
 

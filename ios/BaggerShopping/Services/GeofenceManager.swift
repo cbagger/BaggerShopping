@@ -130,9 +130,11 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         saveMetadataCache(metadata)
         ShoppingListCache.save(list)
         let retailer = storeNamesByIdentifier.values.sorted().first ?? "valgte butik"
-        let items = Self.items(for: retailer, in: list, metadata: metadata)
+        let storeItems = Self.items(for: retailer, in: list, metadata: metadata)
+        let unassignedItems = Self.unassignedItems(in: list, metadata: metadata)
         try await scheduleShoppingNotification(
-            items: items,
+            storeItems: storeItems,
+            unassignedItems: unassignedItems,
             retailer: retailer,
             cached: false
         )
@@ -258,9 +260,19 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         didReceive response: UNNotificationResponse
     ) async {
         let userInfo = response.notification.request.content.userInfo
-        guard userInfo["route"] as? String == "shopping-list",
-              let retailer = userInfo["retailer"] as? String else { return }
-        NotificationCenter.default.post(name: .openShoppingListRetailer, object: retailer)
+        if userInfo["route"] as? String == "shopping-list",
+           let retailer = userInfo["retailer"] as? String {
+            NotificationCenter.default.post(name: .openShoppingListRetailer, object: retailer)
+            return
+        }
+
+        // publication_id existed in the first APNs release. Accept it without
+        // an explicit route so notifications already queued by APNs still work.
+        if let publicationID = userInfo["publication_id"] as? String {
+            var payload = ["publication_id": publicationID]
+            if let retailer = userInfo["retailer"] as? String { payload["retailer"] = retailer }
+            NotificationCenter.default.post(name: .openFlyerPublication, object: payload)
+        }
     }
 
     private func handleStoreEntry(regionIdentifier: String) async {
@@ -306,16 +318,18 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
             lastListFetchResult = fetchResult
             UserDefaults.standard.set(fetchResult, forKey: "geofence-last-list-fetch-result")
 
-            let remaining = Self.items(for: storeName, in: list, metadata: metadata)
-            guard !remaining.isEmpty else {
-                let result = "INGEN NOTIFIKATION: ingen varer til \(storeName) – \(Self.timestamp())"
+            let storeItems = Self.items(for: storeName, in: list, metadata: metadata)
+            let unassignedItems = Self.unassignedItems(in: list, metadata: metadata)
+            guard !storeItems.isEmpty || !unassignedItems.isEmpty else {
+                let result = "INGEN NOTIFIKATION: ingen relevante varer – \(Self.timestamp())"
                 lastNotificationResult = result
                 UserDefaults.standard.set(result, forKey: "geofence-last-notification-result")
                 return
             }
 
             try await scheduleShoppingNotification(
-                items: remaining,
+                storeItems: storeItems,
+                unassignedItems: unassignedItems,
                 retailer: storeName,
                 cached: false
             )
@@ -332,16 +346,18 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
 
             if let cached = ShoppingListCache.load(), let metadata = loadMetadataCache() {
                 do {
-                    let remaining = Self.items(for: storeName, in: cached.list, metadata: metadata)
-                    guard !remaining.isEmpty else {
-                        let result = "INGEN NOTIFIKATION: cache har ingen varer til \(storeName) – \(Self.timestamp())"
+                    let storeItems = Self.items(for: storeName, in: cached.list, metadata: metadata)
+                    let unassignedItems = Self.unassignedItems(in: cached.list, metadata: metadata)
+                    guard !storeItems.isEmpty || !unassignedItems.isEmpty else {
+                        let result = "INGEN NOTIFIKATION: cache har ingen relevante varer – \(Self.timestamp())"
                         lastNotificationResult = result
                         UserDefaults.standard.set(result, forKey: "geofence-last-notification-result")
                         return
                     }
 
                     try await scheduleShoppingNotification(
-                        items: remaining,
+                        storeItems: storeItems,
+                        unassignedItems: unassignedItems,
                         retailer: storeName,
                         cached: true
                     )
@@ -364,20 +380,23 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     private func scheduleShoppingNotification(
-        items remaining: [ShoppingItem],
+        storeItems: [ShoppingItem],
+        unassignedItems: [ShoppingItem],
         retailer: String,
         cached: Bool
     ) async throws {
         let content = UNMutableNotificationContent()
         content.title = "Du er ved \(retailer)"
 
-        if remaining.isEmpty {
-            content.body = "Din indkøbsliste er tom."
+        if storeItems.isEmpty {
+            let noun = unassignedItems.count == 1 ? "vare" : "varer"
+            content.body = "Ingen varer er knyttet til \(retailer), men du har \(unassignedItems.count) \(noun) uden butik på listen."
         } else {
-            let categorySummary = Self.categorySummary(for: remaining)
+            let categorySummary = Self.categorySummary(for: storeItems)
             let cacheSuffix = cached ? " · senest synkroniserede liste" : ""
-            let noun = remaining.count == 1 ? "vare" : "varer"
-            content.body = "Du har \(remaining.count) \(noun) her · \(categorySummary)\(cacheSuffix)"
+            let noun = storeItems.count == 1 ? "vare" : "varer"
+            let unassignedSuffix = unassignedItems.isEmpty ? "" : " · \(unassignedItems.count) uden butik"
+            content.body = "Du har \(storeItems.count) \(noun) her · \(categorySummary)\(unassignedSuffix)\(cacheSuffix)"
         }
 
         content.sound = .default
@@ -390,6 +409,14 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
                 trigger: nil
             )
         )
+    }
+
+    nonisolated static func unassignedItems(
+        in list: ShoppingListResponse,
+        metadata: [OfferMetadataDTO]
+    ) -> [ShoppingItem] {
+        let assignedKeys = Set(metadata.map { normalizedKey($0.itemName) })
+        return list.items.filter { !$0.checked && !assignedKeys.contains(normalizedKey($0.name)) }
     }
 
     nonisolated static func items(
