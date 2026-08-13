@@ -13,11 +13,12 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dk.chewbagger.BaggerShopping
-        PRODUCT_NAME: Bagger Shopping
+        PRODUCT_NAME: Kurv
         SWIFT_VERSION: 5.0
         INFOPLIST_FILE: BaggerShopping/Info.plist
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: YES
         CODE_SIGN_ENTITLEMENTS: BaggerShopping/BaggerShopping.entitlements
     capabilities:
       location:
