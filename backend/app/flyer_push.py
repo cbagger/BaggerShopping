@@ -16,6 +16,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from .flyer_adapters import RETAILER_ORDER, fetch_all_publications
+from .households import current_household
 
 router = APIRouter(prefix="/api/mobile/v1/flyer-notifications", tags=["flyer-notifications"])
 STORE_LOCK = asyncio.Lock()
@@ -65,6 +66,7 @@ async def put_device(request: DevicePreferences) -> dict[str, Any]:
         store = _load()
         devices = store.setdefault("devices", {})
         devices[request.device_id] = {
+            "household_id": current_household().household_id,
             "device_token": request.device_token.lower(),
             "retailers": selected,
             "enabled": request.enabled,
