@@ -5,7 +5,6 @@ struct FlyersView: View {
     @State private var publications: [OfferPublication] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
-    @State private var pendingCheaperAddition: PendingOfferAddition?
     @State private var selectedPublication: OfferPublication?
     private let api = APIClient()
 
@@ -195,6 +194,7 @@ private struct NativeFlyerReader: View {
     @State private var pendingOffer: GroceryOffer?
     @State private var addedName: String?
     @State private var errorMessage: String?
+    @State private var pendingCheaperAddition: PendingOfferAddition?
     private let api = APIClient()
 
     var body: some View {
@@ -253,13 +253,16 @@ private struct NativeFlyerReader: View {
                 }
                 Button("Annuller", role: .cancel) {}
             } message: {
-                if let pending = pendingCheaperAddition {
-                let price = pending.cheaperOffer.price?.formatted(.currency(code: "DKK")) ?? "en lavere pris"
-                Text("Obs: \(pending.itemName) er på tilbud til \(price) i \(pending.cheaperOffer.retailer).")
-                }
+                Text(cheaperOfferMessage)
             }
         }
         .preferredColorScheme(.light)
+    }
+
+    private var cheaperOfferMessage: String {
+        guard let pending = pendingCheaperAddition else { return "" }
+        let price = pending.cheaperOffer.price?.formatted(.currency(code: "DKK")) ?? "en lavere pris"
+        return "Obs: \(pending.itemName) er på tilbud til \(price) i \(pending.cheaperOffer.retailer)."
     }
 
     private func choose(_ offer: GroceryOffer) {
