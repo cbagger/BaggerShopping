@@ -23,7 +23,6 @@ private struct SettingsContent: View {
     @State private var token = ""
     @State private var saved = false
     @State private var showingTechnical = false
-    @State private var showingCategoryReset = false
 
     private var authorizationText: String {
         switch geofence.authorizationStatus {
@@ -67,13 +66,7 @@ private struct SettingsContent: View {
                 Section("Kategorier") {
                     LabeledContent("Fælles lærte rettelser", value: "\(categories.learnedCount)")
 
-                    if categories.learnedCount > 0 {
-                        Button("Nulstil lærte kategorier", role: .destructive) {
-                            showingCategoryReset = true
-                        }
-                    }
-
-                    Text("Når en vare flyttes til en anden kategori, deles rettelsen via Kurv-serveren og bruges på familiens iPhones.")
+                    Text("Når en vare flyttes til en anden kategori, gemmes rettelsen på Kurv-serveren og bruges automatisk af alle appens brugere. Fælles læring kan ikke nulstilles fra appen.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -157,18 +150,6 @@ private struct SettingsContent: View {
             .navigationTitle("Indstillinger")
             .task {
                 await geofence.refreshNotificationAuthorization()
-            }
-            .confirmationDialog(
-                "Nulstil alle lærte kategorier?",
-                isPresented: $showingCategoryReset,
-                titleVisibility: .visible
-            ) {
-                Button("Nulstil", role: .destructive) {
-                    model.clearLearnedCategories()
-                }
-                Button("Annuller", role: .cancel) {}
-            } message: {
-                Text("Varerne vil igen bruge den automatiske kategorisering på familiens enheder.")
             }
         }
     }

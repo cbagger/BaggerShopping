@@ -5,6 +5,7 @@ struct FlyersView: View {
     @State private var publications: [OfferPublication] = []
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var pendingCheaperAddition: PendingOfferAddition?
     @State private var selectedPublication: OfferPublication?
     private let api = APIClient()
 
@@ -236,6 +237,18 @@ private struct NativeFlyerReader: View {
             .alert("Kunne ikke hente avisens varer", isPresented: Binding(
                 get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
             )) { Button("OK") { errorMessage = nil } } message: { Text(errorMessage ?? "") }
+            .alert("Billigere tilbud fundet", item: $pendingCheaperAddition) { pending in
+                Button("Tilføj billigere tilbud") {
+                    addWithoutPriceCheck(pending.itemName, from: pending.cheaperOffer)
+                }
+                Button("Ignorer og tilføj alligevel") {
+                    addWithoutPriceCheck(pending.itemName, from: pending.selectedOffer)
+                }
+                Button("Annuller", role: .cancel) {}
+            } message: { pending in
+                let price = pending.cheaperOffer.price?.formatted(.currency(code: "DKK")) ?? "en lavere pris"
+                Text("Obs: \(pending.itemName) er på tilbud til \(price) i \(pending.cheaperOffer.retailer).")
+            }
         }
         .preferredColorScheme(.light)
     }
@@ -249,15 +262,30 @@ private struct NativeFlyerReader: View {
 
     private func add(_ name: String, from selectedOffer: GroceryOffer? = nil) {
         let offer = selectedOffer ?? pendingOffer ?? offers.first { $0.variants.contains(where: { $0.name == name }) }
+        guard let offer else { return }
+        Task {
+            if let cheaper = await OfferPriceGuard().cheaperOffer(for: name, than: offer) {
+                pendingCheaperAddition = PendingOfferAddition(
+                    itemName: name,
+                    selectedOffer: offer,
+                    cheaperOffer: cheaper
+                )
+                return
+            }
+            addWithoutPriceCheck(name, from: offer)
+        }
+    }
+
+    private func addWithoutPriceCheck(_ name: String, from offer: GroceryOffer) {
         Task {
             if await model.addItem(
                 name,
-                retailer: publication.retailer,
-                offerPrice: offer?.price,
-                offerValidFrom: offer?.validFrom ?? publication.validFrom,
-                offerValidUntil: offer?.validUntil ?? publication.validUntil,
-                offerID: offer?.id,
-                publicationID: offer?.publicationID ?? publication.id,
+                retailer: offer.retailer,
+                offerPrice: offer.price,
+                offerValidFrom: offer.validFrom,
+                offerValidUntil: offer.validUntil,
+                offerID: offer.id,
+                publicationID: offer.publicationID,
                 matchedItemName: name
             ) { addedName = name }
         }
