@@ -97,7 +97,18 @@ def ensure_legacy_household(store: dict[str, Any]) -> dict[str, Any]:
         "offer_metadata": {},
     })
     household.setdefault("owner", {"id": "legacy-owner", "name": "Christoffer", "role": "owner"})
+    migrate_member_ids(household)
     return household
+
+
+def migrate_member_ids(household: dict[str, Any]) -> bool:
+    """Give pre-v2 members stable IDs without changing their token hash."""
+    changed = False
+    for member in household.setdefault("members", {}).values():
+        if not isinstance(member.get("id"), str) or not member["id"]:
+            member["id"] = _member_id()
+            changed = True
+    return changed
 
 
 def context_from_record(household: dict[str, Any], member: dict[str, Any]) -> HouseholdContext:
@@ -227,6 +238,8 @@ async def list_members(context: HouseholdContext = Depends(require_household)) -
         household = ensure_legacy_household(store) if context.household_id == LEGACY_HOUSEHOLD_ID else store.get("households", {}).get(context.household_id)
         if not household:
             raise HTTPException(status_code=404, detail="Familien findes ikke")
+        if migrate_member_ids(household):
+            save_store(store)
         members = []
         if context.household_id == LEGACY_HOUSEHOLD_ID:
             members.append(household["owner"])
