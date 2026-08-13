@@ -5,6 +5,11 @@ private struct ShoppingItemRenameTarget: Identifiable {
     let item: ShoppingItem
 }
 
+private struct ShoppingItemOfferTarget: Identifiable {
+    let id = UUID()
+    let item: ShoppingItem
+}
+
 struct ShoppingListView: View {
     private struct CategoryGroup: Identifiable {
         let category: ShoppingCategory
@@ -20,9 +25,11 @@ struct ShoppingListView: View {
     }
 
     @EnvironmentObject private var model: AppModel
+    @StateObject private var smartOffers = SmartOfferMatchService()
     @State private var newItem = ""
     @State private var selectedRetailerFilters: Set<String> = []
     @State private var renameTarget: ShoppingItemRenameTarget?
+    @State private var offerTarget: ShoppingItemOfferTarget?
     @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
 
     private let retailerFilterOptions = [
@@ -36,6 +43,16 @@ struct ShoppingListView: View {
 
     private var checkedItems: [ShoppingItem] {
         model.shoppingList?.items.filter(\.checked) ?? []
+    }
+
+    private var offerMatchSignature: String {
+        activeItems
+            .map { item in
+                let normalized = ShoppingCategoryService.normalize(item.name)
+                return "\(normalized)|\(model.offerRetailer(for: item) ?? "-")"
+            }
+            .sorted()
+            .joined(separator: "||")
     }
 
     private var upcomingItems: [ShoppingItem] {
@@ -249,6 +266,7 @@ struct ShoppingListView: View {
                     .refreshable {
                         await model.refresh()
                         await model.syncSharedCategories()
+                        await smartOffers.refresh(items: activeItems, model: model)
                     }
                 } else {
                     ContentUnavailableView(
@@ -265,6 +283,7 @@ struct ShoppingListView: View {
                         Task {
                             await model.refresh()
                             await model.syncSharedCategories()
+                            await smartOffers.refresh(items: activeItems, model: model)
                         }
                     } label: {
                         Image(systemName: "arrow.clockwise")
@@ -275,6 +294,14 @@ struct ShoppingListView: View {
             .sheet(item: $renameTarget) { target in
                 RenameShoppingItemView(item: target.item)
                     .environmentObject(model)
+            }
+            .sheet(item: $offerTarget) { target in
+                SmartOfferMatchesView(service: smartOffers, item: target.item)
+                    .environmentObject(model)
+            }
+            .task(id: offerMatchSignature) {
+                guard model.tokenConfigured else { return }
+                await smartOffers.refresh(items: activeItems, model: model)
             }
             .alert(
                 "Fejl",
@@ -367,6 +394,23 @@ struct ShoppingListView: View {
                     }
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.red)
+                }
+
+                if !item.checked, model.offerRetailer(for: item) == nil {
+                    let matches = smartOffers.matches(for: item)
+                    if !matches.isEmpty {
+                        Button {
+                            offerTarget = ShoppingItemOfferTarget(item: item)
+                        } label: {
+                            Label(
+                                matches.count == 1 ? "1 tilbud fundet" : "\(matches.count) tilbud fundet",
+                                systemImage: "tag"
+                            )
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
 
                 if showCategory {
