@@ -33,3 +33,10 @@ def test_midnight_cleanup_isolated_local_households(tmp_path, monkeypatch):
     store = load_store()
     assert [item["name"] for item in store["households"]["a"]["items"]] == ["Aktiv A"]
     assert store["households"]["b"]["items"] == []
+
+
+def test_legacy_worker_context_selects_samsung_family():
+    from app.households import current_household, legacy_worker_context
+    legacy_worker_context()
+    assert current_household().household_id == "family-bagger"
+    assert current_household().list_backend == "samsung"

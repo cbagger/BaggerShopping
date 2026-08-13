@@ -111,6 +111,16 @@ def current_household() -> HouseholdContext:
     return context
 
 
+def legacy_worker_context() -> HouseholdContext:
+    return set_current(HouseholdContext(
+        household_id=LEGACY_HOUSEHOLD_ID,
+        household_name=os.getenv("DEFAULT_HOUSEHOLD_NAME", "Familien Bagger"),
+        member_name="QNAP worker",
+        role="owner",
+        list_backend="samsung",
+    ))
+
+
 async def require_household(
     authorization: str | None = Header(default=None),
 ) -> HouseholdContext:
