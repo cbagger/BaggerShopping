@@ -194,6 +194,7 @@ private struct NativeFlyerReader: View {
     @State private var pendingOffer: GroceryOffer?
     @State private var addedName: String?
     @State private var errorMessage: String?
+    @State private var pendingCheaperAddition: PendingOfferAddition?
     private let api = APIClient()
 
     var body: some View {
@@ -236,8 +237,32 @@ private struct NativeFlyerReader: View {
             .alert("Kunne ikke hente avisens varer", isPresented: Binding(
                 get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
             )) { Button("OK") { errorMessage = nil } } message: { Text(errorMessage ?? "") }
+            .alert("Billigere tilbud fundet", isPresented: Binding(
+                get: { pendingCheaperAddition != nil },
+                set: { if !$0 { pendingCheaperAddition = nil } }
+            )) {
+                Button("Tilføj billigere tilbud") {
+                    guard let pending = pendingCheaperAddition else { return }
+                    addWithoutPriceCheck(pending.itemName, from: pending.cheaperOffer)
+                    pendingCheaperAddition = nil
+                }
+                Button("Ignorer og tilføj alligevel") {
+                    guard let pending = pendingCheaperAddition else { return }
+                    addWithoutPriceCheck(pending.itemName, from: pending.selectedOffer)
+                    pendingCheaperAddition = nil
+                }
+                Button("Annuller", role: .cancel) {}
+            } message: {
+                Text(cheaperOfferMessage)
+            }
         }
         .preferredColorScheme(.light)
+    }
+
+    private var cheaperOfferMessage: String {
+        guard let pending = pendingCheaperAddition else { return "" }
+        let price = pending.cheaperOffer.price?.formatted(.currency(code: "DKK")) ?? "en lavere pris"
+        return "Obs: \(pending.itemName) er på tilbud til \(price) i \(pending.cheaperOffer.retailer)."
     }
 
     private func choose(_ offer: GroceryOffer) {
@@ -249,15 +274,30 @@ private struct NativeFlyerReader: View {
 
     private func add(_ name: String, from selectedOffer: GroceryOffer? = nil) {
         let offer = selectedOffer ?? pendingOffer ?? offers.first { $0.variants.contains(where: { $0.name == name }) }
+        guard let offer else { return }
+        Task {
+            if let cheaper = await OfferPriceGuard().cheaperOffer(for: name, than: offer) {
+                pendingCheaperAddition = PendingOfferAddition(
+                    itemName: name,
+                    selectedOffer: offer,
+                    cheaperOffer: cheaper
+                )
+                return
+            }
+            addWithoutPriceCheck(name, from: offer)
+        }
+    }
+
+    private func addWithoutPriceCheck(_ name: String, from offer: GroceryOffer) {
         Task {
             if await model.addItem(
                 name,
-                retailer: publication.retailer,
-                offerPrice: offer?.price,
-                offerValidFrom: offer?.validFrom ?? publication.validFrom,
-                offerValidUntil: offer?.validUntil ?? publication.validUntil,
-                offerID: offer?.id,
-                publicationID: offer?.publicationID ?? publication.id,
+                retailer: offer.retailer,
+                offerPrice: offer.price,
+                offerValidFrom: offer.validFrom,
+                offerValidUntil: offer.validUntil,
+                offerID: offer.id,
+                publicationID: offer.publicationID,
                 matchedItemName: name
             ) { addedName = name }
         }

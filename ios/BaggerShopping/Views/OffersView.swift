@@ -12,6 +12,7 @@ struct OffersView: View {
     @State private var addedOfferID: String?
     @State private var pendingOffer: GroceryOffer?
     @State private var previewOffer: GroceryOffer?
+    @State private var pendingCheaperAddition: PendingOfferAddition?
     @State private var filterSearchTask: Task<Void, Never>?
     @FocusState private var searchIsFocused: Bool
 
@@ -120,6 +121,24 @@ struct OffersView: View {
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
+            .alert("Billigere tilbud fundet", isPresented: Binding(
+                get: { pendingCheaperAddition != nil },
+                set: { if !$0 { pendingCheaperAddition = nil } }
+            )) {
+                Button("Tilføj billigere tilbud") {
+                    guard let pending = pendingCheaperAddition else { return }
+                    addWithoutPriceCheck(pending.itemName, from: pending.cheaperOffer)
+                    pendingCheaperAddition = nil
+                }
+                Button("Ignorer og tilføj alligevel") {
+                    guard let pending = pendingCheaperAddition else { return }
+                    addWithoutPriceCheck(pending.itemName, from: pending.selectedOffer)
+                    pendingCheaperAddition = nil
+                }
+                Button("Annuller", role: .cancel) {}
+            } message: {
+                Text(pendingCheaperAddition.map(priceGuardMessage) ?? "")
+            }
         }
     }
 
@@ -137,6 +156,20 @@ struct OffersView: View {
 
     private func add(_ itemName: String, from offer: GroceryOffer) {
         Task {
+            if let cheaper = await OfferPriceGuard().cheaperOffer(for: itemName, than: offer) {
+                pendingCheaperAddition = PendingOfferAddition(
+                    itemName: itemName,
+                    selectedOffer: offer,
+                    cheaperOffer: cheaper
+                )
+                return
+            }
+            addWithoutPriceCheck(itemName, from: offer)
+        }
+    }
+
+    private func addWithoutPriceCheck(_ itemName: String, from offer: GroceryOffer) {
+        Task {
             if await model.addItem(
                 itemName,
                 retailer: offer.retailer,
@@ -150,6 +183,11 @@ struct OffersView: View {
                 withAnimation { addedOfferID = offer.id }
             }
         }
+    }
+
+    private func priceGuardMessage(_ pending: PendingOfferAddition) -> String {
+        let price = pending.cheaperOffer.price?.formatted(.currency(code: "DKK")) ?? "en lavere pris"
+        return "Obs: \(pending.itemName) er på tilbud til \(price) i \(pending.cheaperOffer.retailer)."
     }
 
     @MainActor
