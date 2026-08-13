@@ -99,9 +99,21 @@ def _provider_token() -> str:
     return f"{header}.{claims}.{_b64(r.to_bytes(32, 'big') + s.to_bytes(32, 'big'))}"
 
 
-async def _send(device_token: str, environment: str, title: str, body: str, publication_id: str) -> bool:
+async def _send(
+    device_token: str,
+    environment: str,
+    title: str,
+    body: str,
+    publication_id: str,
+    retailer: str,
+) -> bool:
     host = "api.sandbox.push.apple.com" if environment == "sandbox" else "api.push.apple.com"
-    payload = {"aps": {"alert": {"title": title, "body": body}, "sound": "default"}, "publication_id": publication_id}
+    payload = {
+        "aps": {"alert": {"title": title, "body": body}, "sound": "default"},
+        "route": "flyer",
+        "publication_id": publication_id,
+        "retailer": retailer,
+    }
     headers = {
         "authorization": f"bearer {_provider_token()}",
         "apns-topic": os.getenv("APNS_BUNDLE_ID", "dk.chewbagger.BaggerShopping"),
@@ -148,6 +160,7 @@ async def check_and_send() -> dict[str, int]:
                 device["device_token"], device.get("environment", "production"),
                 "Ny tilbudsavis", f"{_notification_name(publication)} er nu tilgængelig",
                 publication.id,
+                publication.retailer,
             )
             sent += int(ok)
             failed += int(not ok)
