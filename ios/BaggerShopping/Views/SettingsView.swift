@@ -53,6 +53,11 @@ private struct SettingsContent: View {
                         Button("Invitér familiemedlem") {
                             Task { inviteCode = await model.createInvite() }
                         }
+                        if profile.role == "owner" {
+                            NavigationLink("Administrér familiemedlemmer") {
+                                HouseholdMembersView(model: model)
+                            }
+                        }
                         if let inviteCode {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text("Invitationskode").font(.caption).foregroundStyle(.secondary)
@@ -179,6 +184,69 @@ private struct SettingsContent: View {
                 HouseholdSetupView(model: model)
             }
         }
+    }
+}
+
+private struct HouseholdMembersView: View {
+    @ObservedObject var model: AppModel
+    @State private var members: [HouseholdMember] = []
+    @State private var editing: HouseholdMember?
+    @State private var editedName = ""
+    @State private var removing: HouseholdMember?
+
+    var body: some View {
+        List {
+            ForEach(members) { member in
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(member.name)
+                        Text(member.role == "owner" ? "Administrator" : "Familiemedlem")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Menu {
+                        Button("Redigér navn", systemImage: "pencil") {
+                            editedName = member.name
+                            editing = member
+                        }
+                        if member.role != "owner" {
+                            Button("Fjern fra familien", systemImage: "person.badge.minus", role: .destructive) {
+                                removing = member
+                            }
+                        }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                }
+            }
+        }
+        .navigationTitle("Familiemedlemmer")
+        .task { await reload() }
+        .alert("Redigér navn", isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
+            TextField("Navn", text: $editedName)
+            Button("Gem") {
+                guard let member = editing else { return }
+                Task {
+                    if await model.updateHouseholdMember(id: member.id, name: editedName) { await reload() }
+                    editing = nil
+                }
+            }
+            Button("Annuller", role: .cancel) { editing = nil }
+        }
+        .confirmationDialog("Fjern \(removing?.name ?? "familiemedlem")?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
+            Button("Fjern fra familien", role: .destructive) {
+                guard let member = removing else { return }
+                Task {
+                    if await model.removeHouseholdMember(id: member.id) { await reload() }
+                    removing = nil
+                }
+            }
+            Button("Annuller", role: .cancel) { removing = nil }
+        } message: {
+            Text("Medlemmets adgang fjernes med det samme. Familiens indkøbsliste påvirkes ikke.")
+        }
+    }
+
+    @MainActor private func reload() async {
+        if let loaded = await model.householdMembers() { members = loaded }
     }
 }
 

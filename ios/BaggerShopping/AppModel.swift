@@ -427,6 +427,21 @@ final class AppModel: ObservableObject {
         catch { errorMessage = error.localizedDescription; return nil }
     }
 
+    func householdMembers() async -> [HouseholdMember]? {
+        do { return try await api.fetchHouseholdMembers() }
+        catch { errorMessage = error.localizedDescription; return nil }
+    }
+
+    func updateHouseholdMember(id: String, name: String) async -> Bool {
+        do { try await api.updateHouseholdMember(id: id, name: name); return true }
+        catch { errorMessage = error.localizedDescription; return false }
+    }
+
+    func removeHouseholdMember(id: String) async -> Bool {
+        do { try await api.removeHouseholdMember(id: id); return true }
+        catch { errorMessage = error.localizedDescription; return false }
+    }
+
     func syncGeofences() { geofence.sync(stores: stores.stores) }
 
     private func updateLocalItem(_ stableID: String, mutate: (inout ShoppingItem) -> Void) {

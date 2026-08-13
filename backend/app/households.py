@@ -44,6 +44,14 @@ class InviteRequest(BaseModel):
     expires_in_days: int = Field(default=7, ge=1, le=30)
 
 
+class UpdateMemberRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+def _member_id() -> str:
+    return str(uuid.uuid4())
+
+
 def store_path() -> Path:
     return Path(os.getenv("HOUSEHOLD_STORE_PATH", "/data/households.json"))
 
@@ -88,6 +96,7 @@ def ensure_legacy_household(store: dict[str, Any]) -> dict[str, Any]:
         "items": [],
         "offer_metadata": {},
     })
+    household.setdefault("owner", {"id": "legacy-owner", "name": "Christoffer", "role": "owner"})
     return household
 
 
@@ -159,7 +168,7 @@ async def create_household(request: CreateHouseholdRequest) -> dict[str, Any]:
     household = {
         "id": household_id, "name": request.household_name.strip(), "list_backend": "local",
         "created_at": int(time.time()), "items": [], "offer_metadata": {},
-        "members": {_hash(token): {"name": request.member_name.strip(), "role": "owner", "created_at": int(time.time())}},
+        "members": {_hash(token): {"id": _member_id(), "name": request.member_name.strip(), "role": "owner", "created_at": int(time.time())}},
     }
     async with LOCK:
         store = load_store()
@@ -199,10 +208,78 @@ async def join_household(request: JoinHouseholdRequest) -> dict[str, Any]:
         household = store["households"].get(invite["household_id"])
         if not household:
             raise HTTPException(status_code=404, detail="Familien findes ikke")
-        member = {"name": request.member_name.strip(), "role": "member", "created_at": int(time.time())}
+        member = {"id": _member_id(), "name": request.member_name.strip(), "role": "member", "created_at": int(time.time())}
         household.setdefault("members", {})[_hash(token)] = member
         save_store(store)
     return {"ok": True, "access_token": token, **context_from_record(household, member).model_dump()}
+
+
+def require_owner(context: HouseholdContext) -> None:
+    if context.role != "owner":
+        raise HTTPException(status_code=403, detail="Kun familiens administrator kan administrere medlemmer")
+
+
+@router.get("/members")
+async def list_members(context: HouseholdContext = Depends(require_household)) -> dict[str, Any]:
+    require_owner(context)
+    async with LOCK:
+        store = load_store()
+        household = ensure_legacy_household(store) if context.household_id == LEGACY_HOUSEHOLD_ID else store.get("households", {}).get(context.household_id)
+        if not household:
+            raise HTTPException(status_code=404, detail="Familien findes ikke")
+        members = []
+        if context.household_id == LEGACY_HOUSEHOLD_ID:
+            members.append(household["owner"])
+        members.extend({"id": member.get("id"), "name": member.get("name"), "role": member.get("role", "member")} for member in household.get("members", {}).values())
+    return {"ok": True, "members": members}
+
+
+@router.patch("/members/{member_id}")
+async def update_member(
+    member_id: str,
+    request: UpdateMemberRequest,
+    context: HouseholdContext = Depends(require_household),
+) -> dict[str, Any]:
+    require_owner(context)
+    name = request.name.strip()
+    async with LOCK:
+        store = load_store()
+        household = ensure_legacy_household(store) if context.household_id == LEGACY_HOUSEHOLD_ID else store.get("households", {}).get(context.household_id)
+        if not household:
+            raise HTTPException(status_code=404, detail="Familien findes ikke")
+        if member_id == "legacy-owner":
+            household["owner"]["name"] = name
+        else:
+            member = next((value for value in household.get("members", {}).values() if value.get("id") == member_id), None)
+            if not member:
+                raise HTTPException(status_code=404, detail="Familiemedlemmet findes ikke")
+            member["name"] = name
+        save_store(store)
+    return {"ok": True, "member_id": member_id, "name": name}
+
+
+@router.delete("/members/{member_id}")
+async def remove_member(
+    member_id: str,
+    context: HouseholdContext = Depends(require_household),
+) -> dict[str, Any]:
+    require_owner(context)
+    if member_id == "legacy-owner":
+        raise HTTPException(status_code=409, detail="Familiens administrator kan ikke slettes")
+    async with LOCK:
+        store = load_store()
+        household = ensure_legacy_household(store) if context.household_id == LEGACY_HOUSEHOLD_ID else store.get("households", {}).get(context.household_id)
+        if not household:
+            raise HTTPException(status_code=404, detail="Familien findes ikke")
+        token_hash = next((key for key, value in household.get("members", {}).items() if value.get("id") == member_id), None)
+        if token_hash is None:
+            raise HTTPException(status_code=404, detail="Familiemedlemmet findes ikke")
+        member = household["members"][token_hash]
+        if member.get("role") == "owner":
+            raise HTTPException(status_code=409, detail="Familiens administrator kan ikke slettes")
+        del household["members"][token_hash]
+        save_store(store)
+    return {"ok": True, "removed": True}
 
 
 async def read_household(context: HouseholdContext) -> dict[str, Any]:
