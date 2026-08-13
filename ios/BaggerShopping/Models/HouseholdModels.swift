@@ -43,3 +43,13 @@ struct HouseholdInviteResponse: Codable {
         case expiresInDays = "expires_in_days"
     }
 }
+
+struct HouseholdMember: Codable, Identifiable {
+    let id: String
+    var name: String
+    let role: String
+}
+
+struct HouseholdMembersResponse: Codable {
+    let members: [HouseholdMember]
+}
