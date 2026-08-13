@@ -49,3 +49,29 @@ def test_legacy_token_maps_to_existing_samsung_household(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.json()["household_id"] == households.LEGACY_HOUSEHOLD_ID
     assert response.json()["list_backend"] == "samsung"
+
+
+def test_owner_can_list_rename_and_revoke_member(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOUSEHOLD_STORE_PATH", str(tmp_path / "households.json"))
+    owner = client.post("/api/mobile/v1/households/create", json={"household_name": "Familien", "member_name": "Ejer"}).json()
+    invite = client.post("/api/mobile/v1/households/invite", headers=auth(owner["access_token"]), json={"expires_in_days": 7}).json()
+    joined = client.post("/api/mobile/v1/households/join", json={"invite_code": invite["invite_code"], "member_name": "Partner"}).json()
+
+    listed = client.get("/api/mobile/v1/households/members", headers=auth(owner["access_token"]))
+    assert listed.status_code == 200
+    partner = next(member for member in listed.json()["members"] if member["role"] == "member")
+    assert client.patch(f"/api/mobile/v1/households/members/{partner['id']}", headers=auth(owner["access_token"]), json={"name": "Nyt navn"}).status_code == 200
+    assert client.delete(f"/api/mobile/v1/households/members/{partner['id']}", headers=auth(owner["access_token"])).status_code == 200
+    assert client.get("/api/mobile/v1/households/me", headers=auth(joined["access_token"])).status_code == 401
+
+
+def test_member_cannot_administer_and_owner_cannot_be_removed(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOUSEHOLD_STORE_PATH", str(tmp_path / "households.json"))
+    owner = client.post("/api/mobile/v1/households/create", json={"household_name": "Familien", "member_name": "Ejer"}).json()
+    invite = client.post("/api/mobile/v1/households/invite", headers=auth(owner["access_token"]), json={"expires_in_days": 7}).json()
+    member = client.post("/api/mobile/v1/households/join", json={"invite_code": invite["invite_code"], "member_name": "Medlem"}).json()
+
+    assert client.get("/api/mobile/v1/households/members", headers=auth(member["access_token"])).status_code == 403
+    listed = client.get("/api/mobile/v1/households/members", headers=auth(owner["access_token"])).json()["members"]
+    owner_record = next(record for record in listed if record["role"] == "owner")
+    assert client.delete(f"/api/mobile/v1/households/members/{owner_record['id']}", headers=auth(owner["access_token"])).status_code == 409
