@@ -292,6 +292,20 @@ struct APIClient {
         return try JSONDecoder().decode(HouseholdInviteResponse.self, from: data)
     }
 
+    func fetchHouseholdMembers() async throws -> [HouseholdMember] {
+        let data = try await perform(request(path: "/api/mobile/v1/households/members"))
+        return try JSONDecoder().decode(HouseholdMembersResponse.self, from: data).members
+    }
+
+    func updateHouseholdMember(id: String, name: String) async throws {
+        let body = try JSONEncoder().encode(["name": name])
+        _ = try await perform(request(path: "/api/mobile/v1/households/members/\(id)", method: "PATCH", body: body))
+    }
+
+    func removeHouseholdMember(id: String) async throws {
+        _ = try await perform(request(path: "/api/mobile/v1/households/members/\(id)", method: "DELETE"))
+    }
+
     private func performPublic(path: String, body: Data) async throws -> Data {
         let url = baseURL.appending(path: path)
         var request = URLRequest(url: url)
