@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .mobile_offer_metadata import router as offer_metadata_router
 from .mobile_offers import router as offers_router
+from .households import HouseholdContext, read_household, require_household, router as households_router, update_household
 from .flyer_push import router as flyer_push_router
 
 
@@ -95,25 +98,14 @@ class CategoryOverrideRemoveRequest(BaseModel):
     item_name: str = Field(min_length=1, max_length=200)
 
 
-def require_mobile_token(
+async def require_mobile_token(
     authorization: str | None = Header(default=None),
-) -> None:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing bearer token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+) -> HouseholdContext:
+    return await require_household(authorization)
 
-    supplied = authorization.removeprefix("Bearer ").strip()
-    expected = settings.mobile_api_token
 
-    if not supplied or not secrets.compare_digest(supplied, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid bearer token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+async def household_context(authorization: str | None = Header(default=None)) -> HouseholdContext:
+    return await require_mobile_token(authorization)
 
 
 def category_key(item_name: str) -> str:
@@ -173,7 +165,9 @@ async def core_delete(path: str) -> httpx.Response:
 
 
 @app.get("/api/mobile/v1/health")
-async def mobile_health(_: None = Depends(require_mobile_token)) -> dict[str, Any]:
+async def mobile_health(context: HouseholdContext = Depends(household_context)) -> dict[str, Any]:
+    if context.list_backend == "local":
+        return {"ok": True, "service": "bagger-shopping-mobile", "core_status": "ok", "samsung_auth": "not_used", "requires_interaction": False}
     try:
         response = await core_get("/api/health")
     except Exception as exc:
@@ -191,7 +185,11 @@ async def mobile_health(_: None = Depends(require_mobile_token)) -> dict[str, An
 
 
 @app.get("/api/mobile/v1/list", response_model=MobileListResponse)
-async def get_mobile_list(_: None = Depends(require_mobile_token)) -> MobileListResponse:
+async def get_mobile_list(context: HouseholdContext = Depends(household_context)) -> MobileListResponse:
+    if context.list_backend == "local":
+        household = await read_household(context)
+        items = [MobileItem.model_validate(item) for item in household.get("items", [])]
+        return MobileListResponse(name=household["name"], count=len(items), has_items=bool(items), items=items)
     try:
         response = await core_get("/api/shopping")
     except Exception as exc:
@@ -269,11 +267,17 @@ async def clear_category_overrides(_: None = Depends(require_mobile_token)) -> d
 @app.post("/api/mobile/v1/items", response_model=AddItemResponse)
 async def add_mobile_item(
     request: AddItemRequest,
-    _: None = Depends(require_mobile_token),
+    context: HouseholdContext = Depends(household_context),
 ) -> AddItemResponse:
     name = request.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="Item name cannot be empty")
+    if context.list_backend == "local":
+        await update_household(context, lambda household: household.setdefault("items", []).append({
+            "id": str(uuid.uuid4()), "name": name, "checked": False, "quantity": None, "unit": None,
+            "created_at": int(time.time()),
+        }))
+        return AddItemResponse(ok=True, name=name)
     try:
         response = await core_post("/api/shopping/items", {"name": name})
     except Exception as exc:
@@ -287,8 +291,16 @@ async def add_mobile_item(
 async def set_mobile_item_checked(
     item_id: str,
     request: SetCheckedRequest,
-    _: None = Depends(require_mobile_token),
+    context: HouseholdContext = Depends(household_context),
 ) -> dict[str, Any]:
+    if context.list_backend == "local":
+        def mutate(household):
+            for item in household.setdefault("items", []):
+                if item.get("id") == item_id:
+                    item["checked"] = request.checked
+                    return {"ok": True, "item_id": item_id}
+            raise HTTPException(status_code=404, detail="Varen findes ikke i familien")
+        return await update_household(context, mutate)
     try:
         response = await core_patch(f"/api/shopping/items/{item_id}/checked", {"checked": request.checked})
     except Exception as exc:
@@ -302,8 +314,16 @@ async def set_mobile_item_checked(
 async def set_mobile_item_quantity(
     item_id: str,
     request: SetQuantityRequest,
-    _: None = Depends(require_mobile_token),
+    context: HouseholdContext = Depends(household_context),
 ) -> dict[str, Any]:
+    if context.list_backend == "local":
+        def mutate(household):
+            for item in household.setdefault("items", []):
+                if item.get("id") == item_id:
+                    item.update(quantity=request.quantity, unit=request.unit)
+                    return {"ok": True, "item_id": item_id}
+            raise HTTPException(status_code=404, detail="Varen findes ikke i familien")
+        return await update_household(context, mutate)
     try:
         response = await core_patch(
             f"/api/shopping/items/{item_id}/quantity",
@@ -319,8 +339,17 @@ async def set_mobile_item_quantity(
 @app.delete("/api/mobile/v1/items/{item_id}")
 async def delete_mobile_item(
     item_id: str,
-    _: None = Depends(require_mobile_token),
+    context: HouseholdContext = Depends(household_context),
 ) -> dict[str, Any]:
+    if context.list_backend == "local":
+        def mutate(household):
+            items = household.setdefault("items", [])
+            before = len(items)
+            household["items"] = [item for item in items if item.get("id") != item_id]
+            if len(household["items"]) == before:
+                raise HTTPException(status_code=404, detail="Varen findes ikke i familien")
+            return {"ok": True, "item_id": item_id}
+        return await update_household(context, mutate)
     try:
         response = await core_delete(f"/api/shopping/items/{item_id}")
     except Exception as exc:
@@ -332,8 +361,15 @@ async def delete_mobile_item(
 
 @app.delete("/api/mobile/v1/actions/clear-checked")
 async def delete_all_checked_mobile_items(
-    _: None = Depends(require_mobile_token),
+    context: HouseholdContext = Depends(household_context),
 ) -> dict[str, Any]:
+    if context.list_backend == "local":
+        def mutate(household):
+            items = household.setdefault("items", [])
+            deleted = [item.get("id") for item in items if item.get("checked")]
+            household["items"] = [item for item in items if not item.get("checked")]
+            return {"ok": True, "deleted_count": len(deleted), "deleted_item_ids": deleted}
+        return await update_household(context, mutate)
     try:
         response = await core_delete("/api/shopping/actions/clear-checked")
     except Exception as exc:
@@ -343,6 +379,7 @@ async def delete_all_checked_mobile_items(
     return response.json()
 
 
-app.include_router(offer_metadata_router, dependencies=[Depends(require_mobile_token)])
-app.include_router(offers_router, dependencies=[Depends(require_mobile_token)])
-app.include_router(flyer_push_router, dependencies=[Depends(require_mobile_token)])
+app.include_router(offer_metadata_router, dependencies=[Depends(household_context)])
+app.include_router(households_router)
+app.include_router(offers_router, dependencies=[Depends(household_context)])
+app.include_router(flyer_push_router, dependencies=[Depends(household_context)])
