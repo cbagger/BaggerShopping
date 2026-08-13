@@ -31,6 +31,7 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     private let manager = CLLocationManager()
     private let api = APIClient()
     private let cooldownSeconds: TimeInterval = 2 * 60 * 60
+    private let metadataCacheKey = "geofence-offer-metadata-cache-v1"
     private var storeNamesByIdentifier: [String: String] = [:]
     private var latestLocation: CLLocation?
 
@@ -125,10 +126,14 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     func sendShoppingListTestNotification() async throws {
         let list = try await api.fetchList()
+        let metadata = try await api.fetchOfferMetadata().metadata
+        saveMetadataCache(metadata)
         ShoppingListCache.save(list)
+        let retailer = storeNamesByIdentifier.values.sorted().first ?? "valgte butik"
+        let items = Self.items(for: retailer, in: list, metadata: metadata)
         try await scheduleShoppingNotification(
-            list: list,
-            title: "Indkøbsliste – test",
+            items: items,
+            retailer: retailer,
             cached: false
         )
     }
@@ -248,6 +253,16 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         [.banner, .list, .sound]
     }
 
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        let userInfo = response.notification.request.content.userInfo
+        guard userInfo["route"] as? String == "shopping-list",
+              let retailer = userInfo["retailer"] as? String else { return }
+        NotificationCenter.default.post(name: .openShoppingListRetailer, object: retailer)
+    }
+
     private func handleStoreEntry(regionIdentifier: String) async {
         let storeName = displayName(for: regionIdentifier)
         let attempt = "\(storeName) – \(Self.timestamp())"
@@ -283,23 +298,25 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
 
         do {
             let list = try await api.fetchList()
+            let metadata = try await api.fetchOfferMetadata().metadata
+            saveMetadataCache(metadata)
             ShoppingListCache.save(list)
 
             let fetchResult = "LIVE OK: \(list.items.filter { !$0.checked }.count) varer – \(Self.timestamp())"
             lastListFetchResult = fetchResult
             UserDefaults.standard.set(fetchResult, forKey: "geofence-last-list-fetch-result")
 
-            let remaining = list.items.filter { !$0.checked }
+            let remaining = Self.items(for: storeName, in: list, metadata: metadata)
             guard !remaining.isEmpty else {
-                let result = "INGEN NOTIFIKATION: listen er tom – \(Self.timestamp())"
+                let result = "INGEN NOTIFIKATION: ingen varer til \(storeName) – \(Self.timestamp())"
                 lastNotificationResult = result
                 UserDefaults.standard.set(result, forKey: "geofence-last-notification-result")
                 return
             }
 
             try await scheduleShoppingNotification(
-                list: list,
-                title: "Indkøbsliste – \(storeName)",
+                items: remaining,
+                retailer: storeName,
                 cached: false
             )
 
@@ -313,19 +330,19 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
             lastListFetchResult = fetchResult
             UserDefaults.standard.set(fetchResult, forKey: "geofence-last-list-fetch-result")
 
-            if let cached = ShoppingListCache.load() {
+            if let cached = ShoppingListCache.load(), let metadata = loadMetadataCache() {
                 do {
-                    let remaining = cached.list.items.filter { !$0.checked }
+                    let remaining = Self.items(for: storeName, in: cached.list, metadata: metadata)
                     guard !remaining.isEmpty else {
-                        let result = "INGEN NOTIFIKATION: cache-listen er tom – \(Self.timestamp())"
+                        let result = "INGEN NOTIFIKATION: cache har ingen varer til \(storeName) – \(Self.timestamp())"
                         lastNotificationResult = result
                         UserDefaults.standard.set(result, forKey: "geofence-last-notification-result")
                         return
                     }
 
                     try await scheduleShoppingNotification(
-                        list: cached.list,
-                        title: "Indkøbsliste – \(storeName)",
+                        items: remaining,
+                        retailer: storeName,
                         cached: true
                     )
 
@@ -347,24 +364,24 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     private func scheduleShoppingNotification(
-        list: ShoppingListResponse,
-        title: String,
+        items remaining: [ShoppingItem],
+        retailer: String,
         cached: Bool
     ) async throws {
-        let remaining = list.items.filter { !$0.checked }
-
         let content = UNMutableNotificationContent()
-        content.title = title
+        content.title = "Du er ved \(retailer)"
 
         if remaining.isEmpty {
             content.body = "Din indkøbsliste er tom."
         } else {
             let categorySummary = Self.categorySummary(for: remaining)
             let cacheSuffix = cached ? " · senest synkroniserede liste" : ""
-            content.body = "\(remaining.count) varer · \(categorySummary)\(cacheSuffix)"
+            let noun = remaining.count == 1 ? "vare" : "varer"
+            content.body = "Du har \(remaining.count) \(noun) her · \(categorySummary)\(cacheSuffix)"
         }
 
         content.sound = .default
+        content.userInfo = ["route": "shopping-list", "retailer": retailer]
 
         try await UNUserNotificationCenter.current().add(
             UNNotificationRequest(
@@ -373,6 +390,38 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
                 trigger: nil
             )
         )
+    }
+
+    nonisolated static func items(
+        for retailer: String,
+        in list: ShoppingListResponse,
+        metadata: [OfferMetadataDTO]
+    ) -> [ShoppingItem] {
+        let retailerKey = normalizedKey(retailer)
+        let retailerByItem = metadata.reduce(into: [String: String]()) { result, record in
+            result[normalizedKey(record.itemName)] = normalizedKey(record.retailer)
+        }
+        return list.items.filter { item in
+            !item.checked && retailerByItem[normalizedKey(item.name)] == retailerKey
+        }
+    }
+
+    nonisolated private static func normalizedKey(_ value: String) -> String {
+        value
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+    }
+
+    private func saveMetadataCache(_ metadata: [OfferMetadataDTO]) {
+        guard let data = try? JSONEncoder().encode(metadata) else { return }
+        UserDefaults.standard.set(data, forKey: metadataCacheKey)
+    }
+
+    private func loadMetadataCache() -> [OfferMetadataDTO]? {
+        guard let data = UserDefaults.standard.data(forKey: metadataCacheKey) else { return nil }
+        return try? JSONDecoder().decode([OfferMetadataDTO].self, from: data)
     }
 
     nonisolated private static func categorySummary(for items: [ShoppingItem]) -> String {

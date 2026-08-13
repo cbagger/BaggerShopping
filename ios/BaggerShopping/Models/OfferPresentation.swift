@@ -20,8 +20,7 @@ extension GroceryOffer {
     }
 
     var choiceState: OfferChoiceState {
-        let names = variants
-            .map(\.name)
+        let names = resolvedVariantNames
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .reduce(into: [String]()) { result, name in
@@ -33,6 +32,32 @@ extension GroceryOffer {
         if names.count > 1 { return .variants(names) }
         if names.count == 1, !hasUnresolvedVariantLanguage { return .direct(names[0]) }
         return .unspecified
+    }
+
+    /// Structured flyer hotspots remain authoritative. When a retailer only
+    /// supplies a campaign heading, derive a conservative set of alternatives
+    /// from explicit Danish choice language instead of forcing manual entry.
+    var resolvedVariantNames: [String] {
+        let structured = variants.map(\.name).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if !structured.isEmpty { return structured }
+
+        let source = productName
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard source.range(of: #"\s+(?:eller|/)\s+"#, options: [.regularExpression, .caseInsensitive]) != nil else {
+            return []
+        }
+
+        let pieces = source.components(separatedBy: VariantChoiceSeparator.regex)
+            .map { $0.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",.;"))) }
+            .filter { candidate in
+                let words = candidate.split(whereSeparator: \.isWhitespace)
+                return !candidate.isEmpty && words.count <= 9
+                    && candidate.range(of: #"\d+(?:[.,]\d+)?\s*(?:kr|,-)"#, options: [.regularExpression, .caseInsensitive]) == nil
+            }
+
+        guard (2...5).contains(pieces.count) else { return [] }
+        return pieces
     }
 
     var hasUnresolvedVariantLanguage: Bool {
@@ -164,6 +189,10 @@ extension GroceryOffer {
 
 private enum RegexChoiceSeparator {
     static let regex = try! NSRegularExpression(pattern: #"\s+(?:eller|/|,)\s+"#, options: [.caseInsensitive])
+}
+
+private enum VariantChoiceSeparator {
+    static let regex = try! NSRegularExpression(pattern: #"\s+(?:eller|/)\s+|\s*,\s*"#, options: [.caseInsensitive])
 }
 
 private extension String {
