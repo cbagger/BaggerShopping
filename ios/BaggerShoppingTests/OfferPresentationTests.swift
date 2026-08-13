@@ -98,6 +98,32 @@ final class OfferPresentationTests: XCTestCase {
         XCTAssertEqual(cheese.shoppingItemName(variant: "Mild 45+"), "Klovborg Mild 45+ skæreost")
     }
 
+    func testInfersExplicitAlternativesWhenRetailerHasNoStructuredVariants() throws {
+        let turkey = try decodeOffer(
+            productName: "Kalkunoverlår eller -schnitzel af brystfilet",
+            rawText: "500-1000 g",
+            variants: []
+        )
+
+        XCTAssertEqual(
+            turkey.choiceState,
+            .variants(["Kalkunoverlår", "-schnitzel af brystfilet"])
+        )
+        XCTAssertEqual(
+            turkey.shoppingItemName(variant: "-schnitzel af brystfilet"),
+            "Kalkunschnitzel af brystfilet"
+        )
+    }
+
+    func testDoesNotInventVariantsWithoutExplicitChoiceLanguage() throws {
+        let juice = try decodeOffer(
+            productName: "Valsølille Dansk Juice",
+            rawText: "Flere varianter",
+            variants: []
+        )
+        XCTAssertEqual(juice.choiceState, .unspecified)
+    }
+
     func testLeadingHyphenAlternativeKeepsSharedProductRoot() throws {
         let turkey = try decodeOffer(
             productName: "Kalkunoverlår eller -schnitzel af brystfilet",

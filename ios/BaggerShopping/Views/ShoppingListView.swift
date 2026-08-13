@@ -25,6 +25,7 @@ struct ShoppingListView: View {
     }
 
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var navigation: AppNavigation
     @StateObject private var smartOffers = SmartOfferMatchService()
     @State private var newItem = ""
     @State private var selectedRetailerFilters: Set<String> = []
@@ -302,6 +303,11 @@ struct ShoppingListView: View {
             .task(id: offerMatchSignature) {
                 guard model.tokenConfigured else { return }
                 await smartOffers.refresh(items: activeItems, model: model)
+            }
+            .onChange(of: navigation.shoppingListRoute?.id) { _, _ in
+                guard let route = navigation.shoppingListRoute else { return }
+                sortByRetailer = true
+                selectedRetailerFilters = [route.retailer]
             }
             .alert(
                 "Fejl",
