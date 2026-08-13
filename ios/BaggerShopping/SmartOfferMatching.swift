@@ -230,6 +230,7 @@ struct SmartOfferMatchesView: View {
 
     @State private var applyingOfferID: String?
     @State private var pendingVariantOffer: GroceryOffer?
+    @State private var previewOffer: GroceryOffer?
 
     private var offers: [GroceryOffer] {
         service.matches(for: item)
@@ -290,6 +291,11 @@ struct SmartOfferMatchesView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
             }
+            .sheet(item: $previewOffer) { offer in
+                OfferPreviewSheet(offer: offer)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
         }
     }
 
@@ -315,6 +321,16 @@ struct SmartOfferMatchesView: View {
             Text(offer.conciseProductName)
                 .font(.subheadline)
                 .foregroundStyle(.primary)
+
+            if offer.imageURL != nil {
+                Button {
+                    previewOffer = offer
+                } label: {
+                    Label("Se udsnit fra avisen", systemImage: "photo.on.rectangle.angled")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.borderless)
+            }
 
             let variants = offer.variants.filter(\.matchesQuery).map(\.name)
             if !variants.isEmpty {

@@ -200,14 +200,17 @@ struct ShoppingListView: View {
                                     Section {
                                         ForEach(retailerGroup.categories) { categoryGroup in
                                             Label(
-                                                "\(categoryGroup.category.rawValue) · \(categoryGroup.items.count)",
+                                                categoryGroup.category.rawValue,
                                                 systemImage: categoryGroup.category.icon
                                             )
-                                            .font(.caption.weight(.semibold))
+                                            .font(.caption2.weight(.semibold))
                                             .foregroundStyle(.secondary)
+                                            .listRowInsets(EdgeInsets(top: 5, leading: 20, bottom: 0, trailing: 16))
+                                            .listRowSeparator(.hidden)
 
                                             ForEach(categoryGroup.items, id: \.stableID) { item in
                                                 itemRow(item, showCategory: false)
+                                                    .listRowInsets(EdgeInsets(top: 2, leading: 20, bottom: 2, trailing: 16))
                                             }
                                         }
                                     } header: {

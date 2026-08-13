@@ -62,6 +62,20 @@ services:
       - ./secrets:/run/secrets:ro
     shm_size: "256mb"
 
+  shopping-cleanup-worker:
+    build: .
+    container_name: bagger-shopping-cleanup
+    restart: unless-stopped
+    env_file:
+      - .env
+    command:
+      - python
+      - -m
+      - app.shopping_cleanup
+    volumes:
+      - ./data:/data
+    shm_size: "256mb"
+
   login-ui:
     image: lscr.io/linuxserver/chromium:latest
     container_name: bagger-shopping-login-ui

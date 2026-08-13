@@ -202,3 +202,27 @@ async def delete_shopping_item(item_id: str) -> ItemMutationResponse:
         )
     except SamsungFoodError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.delete("/api/shopping/actions/clear-checked")
+async def delete_all_checked_shopping_items() -> dict[str, object]:
+    client = SamsungFoodClient()
+    try:
+        current = await client.get_list()
+        checked = [item for item in current.items if item.checked is True and item.id]
+        deleted: list[str] = []
+        failures: list[dict[str, str]] = []
+        for item in checked:
+            try:
+                await client.delete_item(item.id)
+                deleted.append(item.id)
+            except SamsungFoodError as exc:
+                failures.append({"item_id": item.id, "detail": str(exc)})
+        if failures:
+            raise HTTPException(
+                status_code=502,
+                detail={"message": "Nogle købte varer kunne ikke slettes", "deleted": deleted, "failures": failures},
+            )
+        return {"ok": True, "deleted_count": len(deleted), "deleted_item_ids": deleted}
+    except SamsungFoodError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

@@ -274,8 +274,23 @@ final class AppModel: ObservableObject {
     }
 
     func clearChecked() async {
-        guard let items = shoppingList?.items.filter(\.checked) else { return }
-        for item in items { await deleteItem(item) }
+        guard let checked = shoppingList?.items.filter(\.checked), !checked.isEmpty else { return }
+        let previous = shoppingList
+        if let list = shoppingList {
+            shoppingList = replacingItems(in: list, with: list.items.filter { !$0.checked })
+        }
+        do {
+            try await api.deleteAllCheckedItems()
+            for item in checked {
+                offerMetadata.removeValue(forKey: offerRetailerNameKey(item.name))
+                try? await api.removeOfferMetadata(itemName: item.name)
+            }
+            saveOfferMetadata()
+            errorMessage = nil
+        } catch {
+            shoppingList = previous
+            errorMessage = error.localizedDescription
+        }
     }
 
     func category(for item: ShoppingItem) -> ShoppingCategory {
