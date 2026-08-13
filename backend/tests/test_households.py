@@ -75,3 +75,23 @@ def test_member_cannot_administer_and_owner_cannot_be_removed(tmp_path, monkeypa
     listed = client.get("/api/mobile/v1/households/members", headers=auth(owner["access_token"])).json()["members"]
     owner_record = next(record for record in listed if record["role"] == "owner")
     assert client.delete(f"/api/mobile/v1/households/members/{owner_record['id']}", headers=auth(owner["access_token"])).status_code == 409
+
+
+def test_existing_member_without_id_is_migrated_without_changing_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOUSEHOLD_STORE_PATH", str(tmp_path / "households.json"))
+    member_token = "old-marielle-token"
+    households.save_store({"households": {
+        households.LEGACY_HOUSEHOLD_ID: {
+            "id": households.LEGACY_HOUSEHOLD_ID,
+            "name": "Familien Bagger",
+            "list_backend": "samsung",
+            "members": {households._hash(member_token): {"name": "Marielle", "role": "member"}},
+            "items": [],
+        }
+    }})
+
+    listed = client.get("/api/mobile/v1/households/members", headers=auth("test-token"))
+    assert listed.status_code == 200
+    marielle = next(member for member in listed.json()["members"] if member["name"] == "Marielle")
+    assert marielle["id"]
+    assert client.get("/api/mobile/v1/households/me", headers=auth(member_token)).status_code == 200
