@@ -121,16 +121,23 @@ struct OffersView: View {
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
-            .alert("Billigere tilbud fundet", item: $pendingCheaperAddition) { pending in
+            .alert("Billigere tilbud fundet", isPresented: Binding(
+                get: { pendingCheaperAddition != nil },
+                set: { if !$0 { pendingCheaperAddition = nil } }
+            )) {
                 Button("Tilføj billigere tilbud") {
+                    guard let pending = pendingCheaperAddition else { return }
                     addWithoutPriceCheck(pending.itemName, from: pending.cheaperOffer)
+                    pendingCheaperAddition = nil
                 }
                 Button("Ignorer og tilføj alligevel") {
+                    guard let pending = pendingCheaperAddition else { return }
                     addWithoutPriceCheck(pending.itemName, from: pending.selectedOffer)
+                    pendingCheaperAddition = nil
                 }
                 Button("Annuller", role: .cancel) {}
-            } message: { pending in
-                Text(priceGuardMessage(pending))
+            } message: {
+                Text(pendingCheaperAddition.map(priceGuardMessage) ?? "")
             }
         }
     }

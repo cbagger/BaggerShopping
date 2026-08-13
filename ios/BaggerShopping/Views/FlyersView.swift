@@ -237,17 +237,26 @@ private struct NativeFlyerReader: View {
             .alert("Kunne ikke hente avisens varer", isPresented: Binding(
                 get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
             )) { Button("OK") { errorMessage = nil } } message: { Text(errorMessage ?? "") }
-            .alert("Billigere tilbud fundet", item: $pendingCheaperAddition) { pending in
+            .alert("Billigere tilbud fundet", isPresented: Binding(
+                get: { pendingCheaperAddition != nil },
+                set: { if !$0 { pendingCheaperAddition = nil } }
+            )) {
                 Button("Tilføj billigere tilbud") {
+                    guard let pending = pendingCheaperAddition else { return }
                     addWithoutPriceCheck(pending.itemName, from: pending.cheaperOffer)
+                    pendingCheaperAddition = nil
                 }
                 Button("Ignorer og tilføj alligevel") {
+                    guard let pending = pendingCheaperAddition else { return }
                     addWithoutPriceCheck(pending.itemName, from: pending.selectedOffer)
+                    pendingCheaperAddition = nil
                 }
                 Button("Annuller", role: .cancel) {}
-            } message: { pending in
+            } message: {
+                if let pending = pendingCheaperAddition {
                 let price = pending.cheaperOffer.price?.formatted(.currency(code: "DKK")) ?? "en lavere pris"
                 Text("Obs: \(pending.itemName) er på tilbud til \(price) i \(pending.cheaperOffer.retailer).")
+                }
             }
         }
         .preferredColorScheme(.light)
