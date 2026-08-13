@@ -7,6 +7,7 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var tokenConfigured = KeychainStore.loadToken() != nil
     @Published var mutatingItemIDs: Set<String> = []
+    @Published var householdProfile: HouseholdProfile?
 
     let stores = StoreRepository()
     let geofence = GeofenceManager()
@@ -30,6 +31,7 @@ final class AppModel: ObservableObject {
     func bootstrap() async {
         geofence.sync(stores: stores.stores)
         if tokenConfigured {
+            householdProfile = try? await api.fetchHouseholdProfile()
             await refresh()
             await syncSharedCategories()
         }
@@ -390,6 +392,39 @@ final class AppModel: ObservableObject {
     func saveToken(_ token: String) throws {
         try KeychainStore.saveToken(token.trimmingCharacters(in: .whitespacesAndNewlines))
         tokenConfigured = true
+    }
+
+    func createHousehold(name: String, memberName: String) async -> Bool {
+        do {
+            let response = try await api.createHousehold(name: name, memberName: memberName)
+            try KeychainStore.saveToken(response.accessToken)
+            tokenConfigured = true
+            householdProfile = HouseholdProfile(
+                householdID: response.householdID, householdName: response.householdName,
+                memberName: response.memberName, role: response.role, listBackend: response.listBackend
+            )
+            await refresh()
+            return true
+        } catch { errorMessage = error.localizedDescription; return false }
+    }
+
+    func joinHousehold(code: String, memberName: String) async -> Bool {
+        do {
+            let response = try await api.joinHousehold(code: code, memberName: memberName)
+            try KeychainStore.saveToken(response.accessToken)
+            tokenConfigured = true
+            householdProfile = HouseholdProfile(
+                householdID: response.householdID, householdName: response.householdName,
+                memberName: response.memberName, role: response.role, listBackend: response.listBackend
+            )
+            await refresh()
+            return true
+        } catch { errorMessage = error.localizedDescription; return false }
+    }
+
+    func createInvite() async -> String? {
+        do { return try await api.createHouseholdInvite().inviteCode }
+        catch { errorMessage = error.localizedDescription; return nil }
     }
 
     func syncGeofences() { geofence.sync(stores: stores.stores) }

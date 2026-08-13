@@ -9,6 +9,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from .households import LEGACY_HOUSEHOLD_ID, current_household
+
 
 router = APIRouter(prefix="/api/mobile/v1", tags=["mobile-offer-metadata"])
 offer_metadata_store_lock = asyncio.Lock()
@@ -47,7 +49,11 @@ def offer_metadata_key(item_name: str) -> str:
 
 
 def offer_metadata_store_path() -> Path:
-    return Path(os.environ.get("OFFER_METADATA_STORE_PATH", "/data/offer-metadata.json"))
+    base = Path(os.environ.get("OFFER_METADATA_STORE_PATH", "/data/offer-metadata.json"))
+    household_id = current_household().household_id
+    if household_id == LEGACY_HOUSEHOLD_ID:
+        return base
+    return base.with_name(f"{base.stem}-{household_id}{base.suffix}")
 
 
 def load_offer_metadata_store() -> dict[str, dict[str, object]]:
@@ -158,6 +164,35 @@ async def rename_shopping_item(
     request: RenameShoppingItemRequest,
 ) -> dict[str, object]:
     """Rename one Samsung item in place and move its shared offer metadata."""
+    context = current_household()
+    if context.list_backend == "local":
+        from .households import update_household
+
+        new_name = " ".join(request.name.strip().split())
+        if not new_name:
+            raise HTTPException(status_code=422, detail="Item name cannot be empty")
+
+        old_name: str | None = None
+        def mutate(household):
+            nonlocal old_name
+            for item in household.setdefault("items", []):
+                if item.get("id") == item_id:
+                    old_name = item.get("name")
+                    item["name"] = new_name
+                    return
+            raise HTTPException(status_code=404, detail="Varen findes ikke i familien")
+        await update_household(context, mutate)
+        metadata_migrated = False
+        async with offer_metadata_store_lock:
+            store = load_offer_metadata_store()
+            raw_record = store.pop(offer_metadata_key(old_name or ""), None)
+            if raw_record is not None:
+                moved = OfferMetadataRecord.model_validate(raw_record).model_copy(update={"item_name": new_name})
+                store[offer_metadata_key(new_name)] = moved.model_dump()
+                save_offer_metadata_store(store)
+                metadata_migrated = True
+        return {"ok": True, "item_id": item_id, "old_name": old_name, "name": new_name, "offer_metadata_migrated": metadata_migrated}
+
     # Keep Samsung/config imports lazy: metadata-only mobile API routes and their
     # unit tests must not require SAMSUNG_LIST_ID just to import this router.
     from .grpc_web import _build_sync_items_update_request

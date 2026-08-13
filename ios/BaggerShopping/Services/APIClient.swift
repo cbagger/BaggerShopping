@@ -268,4 +268,40 @@ struct APIClient {
             throw APIError.server(http.statusCode, String(data: data, encoding: .utf8) ?? "Ukendt fejl")
         }
     }
+
+    func fetchHouseholdProfile() async throws -> HouseholdProfile {
+        let data = try await perform(request(path: "/api/mobile/v1/households/me"))
+        return try JSONDecoder().decode(HouseholdProfile.self, from: data)
+    }
+
+    func createHousehold(name: String, memberName: String) async throws -> HouseholdAuthResponse {
+        let body = try JSONSerialization.data(withJSONObject: ["household_name": name, "member_name": memberName])
+        let data = try await performPublic(path: "/api/mobile/v1/households/create", body: body)
+        return try JSONDecoder().decode(HouseholdAuthResponse.self, from: data)
+    }
+
+    func joinHousehold(code: String, memberName: String) async throws -> HouseholdAuthResponse {
+        let body = try JSONSerialization.data(withJSONObject: ["invite_code": code, "member_name": memberName])
+        let data = try await performPublic(path: "/api/mobile/v1/households/join", body: body)
+        return try JSONDecoder().decode(HouseholdAuthResponse.self, from: data)
+    }
+
+    func createHouseholdInvite() async throws -> HouseholdInviteResponse {
+        let body = try JSONSerialization.data(withJSONObject: ["expires_in_days": 7])
+        let data = try await perform(request(path: "/api/mobile/v1/households/invite", method: "POST", body: body))
+        return try JSONDecoder().decode(HouseholdInviteResponse.self, from: data)
+    }
+
+    private func performPublic(path: String, body: Data) async throws -> Data {
+        let url = baseURL.appending(path: path)
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+        request.httpBody = body
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(response: response, data: data)
+        return data
+    }
 }

@@ -23,6 +23,8 @@ private struct SettingsContent: View {
     @State private var token = ""
     @State private var saved = false
     @State private var showingTechnical = false
+    @State private var inviteCode: String?
+    @State private var showingHouseholdSetup = false
 
     private var authorizationText: String {
         switch geofence.authorizationStatus {
@@ -44,6 +46,28 @@ private struct SettingsContent: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("Familie") {
+                    if let profile = model.householdProfile {
+                        LabeledContent("Familie", value: profile.householdName)
+                        LabeledContent("Medlem", value: profile.memberName)
+                        Button("Invitér familiemedlem") {
+                            Task { inviteCode = await model.createInvite() }
+                        }
+                        if let inviteCode {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("Invitationskode").font(.caption).foregroundStyle(.secondary)
+                                Text(inviteCode).font(.title2.monospaced().bold()).textSelection(.enabled)
+                                Text("Koden kan bruges én gang og udløber efter 7 dage.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    } else {
+                        Button("Opret eller tilslut familie") { showingHouseholdSetup = true }
+                        Text("Hver familie har sin egen private indkøbsliste og egne tilbudsoplysninger.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
                 Section("Geofencing") {
                     LabeledContent("Placering", value: authorizationText)
                     LabeledContent("Notifikationer", value: geofence.notificationAuthorizationText)
@@ -151,6 +175,50 @@ private struct SettingsContent: View {
             .task {
                 await geofence.refreshNotificationAuthorization()
             }
+            .sheet(isPresented: $showingHouseholdSetup) {
+                HouseholdSetupView(model: model)
+            }
+        }
+    }
+}
+
+private struct HouseholdSetupView: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var mode = 0
+    @State private var memberName = ""
+    @State private var householdName = ""
+    @State private var inviteCode = ""
+    @State private var working = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Picker("Handling", selection: $mode) {
+                    Text("Tilslut familie").tag(0)
+                    Text("Opret familie").tag(1)
+                }.pickerStyle(.segmented)
+                TextField("Dit navn", text: $memberName)
+                if mode == 0 {
+                    TextField("Invitationskode", text: $inviteCode)
+                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                } else {
+                    TextField("Familiens navn", text: $householdName)
+                }
+                Button(working ? "Arbejder …" : mode == 0 ? "Tilslut familie" : "Opret familie") {
+                    working = true
+                    Task {
+                        let ok = mode == 0
+                            ? await model.joinHousehold(code: inviteCode, memberName: memberName)
+                            : await model.createHousehold(name: householdName, memberName: memberName)
+                        working = false
+                        if ok { dismiss() }
+                    }
+                }
+                .disabled(working || memberName.trimmingCharacters(in: .whitespaces).isEmpty || (mode == 0 ? inviteCode.isEmpty : householdName.isEmpty))
+            }
+            .navigationTitle("Familie")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuller") { dismiss() } } }
         }
     }
 }
