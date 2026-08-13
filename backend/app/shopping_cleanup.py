@@ -10,13 +10,14 @@ from .mobile_offer_metadata import (
     offer_metadata_key,
     save_offer_metadata_store,
 )
-from .households import LEGACY_HOUSEHOLD_ID, load_store as load_households, save_store as save_households
+from .households import LEGACY_HOUSEHOLD_ID, legacy_worker_context, load_store as load_households, save_store as save_households
 
 
 TIMEZONE = ZoneInfo("Europe/Copenhagen")
 
 
 async def delete_checked_items() -> dict[str, int]:
+    legacy_worker_context()
     client = SamsungFoodClient()
     current = await client.get_list()
     checked = [item for item in current.items if item.checked is True and item.id]
