@@ -96,6 +96,10 @@ struct APIClient {
         _ = try await perform(request(path: "/api/mobile/v1/items/\(id)", method: "DELETE"))
     }
 
+    func deleteAllCheckedItems() async throws {
+        _ = try await perform(request(path: "/api/mobile/v1/actions/clear-checked", method: "DELETE"))
+    }
+
     func fetchCategoryOverrides() async throws -> CategoryOverridesResponse {
         let data = try await perform(request(path: "/api/mobile/v1/category-overrides"))
         return try JSONDecoder().decode(CategoryOverridesResponse.self, from: data)

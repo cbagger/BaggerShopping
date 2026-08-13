@@ -11,6 +11,7 @@ struct OffersView: View {
     @State private var errorMessage: String?
     @State private var addedOfferID: String?
     @State private var pendingOffer: GroceryOffer?
+    @State private var previewOffer: GroceryOffer?
     @State private var filterSearchTask: Task<Void, Never>?
     @FocusState private var searchIsFocused: Bool
 
@@ -89,7 +90,8 @@ struct OffersView: View {
                                 wasAdded: addedOfferID == offer.id || model.hasApprovedOfferMatch(
                                     offerID: offer.id,
                                     publicationID: offer.publicationID
-                                )
+                                ),
+                                preview: { previewOffer = offer }
                             ) {
                                 switch offer.choiceState {
                                 case .direct(let variant):
@@ -112,6 +114,11 @@ struct OffersView: View {
                 }
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
+            }
+            .sheet(item: $previewOffer) { offer in
+                OfferPreviewSheet(offer: offer)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
             }
         }
     }
@@ -212,6 +219,7 @@ private struct FlowLayout: Layout {
 private struct OfferCard: View {
     let offer: GroceryOffer
     let wasAdded: Bool
+    let preview: () -> Void
     let add: () -> Void
 
     var body: some View {
@@ -219,10 +227,20 @@ private struct OfferCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 12) {
                 if offer.imageURL != nil {
-                    OfferCropView(offer: offer)
-                        .frame(width: 92, height: 92)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .allowsHitTesting(false)
+                    Button(action: preview) {
+                        OfferCropView(offer: offer)
+                            .frame(width: 92, height: 92)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .overlay(alignment: .bottomTrailing) {
+                                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                    .font(.caption.bold())
+                                    .padding(5)
+                                    .background(.ultraThinMaterial, in: Circle())
+                                    .padding(4)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Forstør tilbudsbillede")
                 }
 
                 VStack(alignment: .leading, spacing: 6) {

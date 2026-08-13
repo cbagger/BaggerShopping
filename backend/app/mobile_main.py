@@ -330,6 +330,19 @@ async def delete_mobile_item(
     return response.json()
 
 
+@app.delete("/api/mobile/v1/actions/clear-checked")
+async def delete_all_checked_mobile_items(
+    _: None = Depends(require_mobile_token),
+) -> dict[str, Any]:
+    try:
+        response = await core_delete("/api/shopping/actions/clear-checked")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Core service unavailable: {exc}") from exc
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Core clear-checked request failed: {response.text[:500]}")
+    return response.json()
+
+
 app.include_router(offer_metadata_router, dependencies=[Depends(require_mobile_token)])
 app.include_router(offers_router, dependencies=[Depends(require_mobile_token)])
 app.include_router(flyer_push_router, dependencies=[Depends(require_mobile_token)])
