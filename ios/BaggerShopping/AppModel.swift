@@ -11,6 +11,7 @@ final class AppModel: ObservableObject {
     let stores = StoreRepository()
     let geofence = GeofenceManager()
     let categories = ShoppingCategoryService()
+    let flyerPush = FlyerPushManager()
     private let api = APIClient()
     private let offerMetadataKey = "bagger-shopping-offer-metadata-v2"
     private let offerMetadataMigrationKey = "bagger-shopping-offer-metadata-qnap-migrated-v1"
@@ -31,14 +32,7 @@ final class AppModel: ObservableObject {
         if tokenConfigured {
             await refresh()
             await syncSharedCategories()
-            await checkForNewFlyers()
         }
-    }
-
-    func checkForNewFlyers() async {
-        guard tokenConfigured,
-              let publications = try? await api.fetchOfferPublications().publications else { return }
-        await NewFlyerNotifier.process(publications)
     }
 
     func refresh() async {

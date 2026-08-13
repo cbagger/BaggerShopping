@@ -13,6 +13,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .mobile_offer_metadata import router as offer_metadata_router
 from .mobile_offers import router as offers_router
+from .flyer_push import router as flyer_push_router
 
 
 class MobileSettings(BaseSettings):
@@ -331,3 +332,4 @@ async def delete_mobile_item(
 
 app.include_router(offer_metadata_router, dependencies=[Depends(require_mobile_token)])
 app.include_router(offers_router, dependencies=[Depends(require_mobile_token)])
+app.include_router(flyer_push_router, dependencies=[Depends(require_mobile_token)])

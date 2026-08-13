@@ -8,7 +8,8 @@ struct SettingsView: View {
         SettingsContent(
             model: model,
             geofence: model.geofence,
-            categories: model.categories
+            categories: model.categories,
+            flyerPush: model.flyerPush
         )
     }
 }
@@ -17,6 +18,7 @@ private struct SettingsContent: View {
     @ObservedObject var model: AppModel
     @ObservedObject var geofence: GeofenceManager
     @ObservedObject var categories: ShoppingCategoryService
+    @ObservedObject var flyerPush: FlyerPushManager
 
     @State private var token = ""
     @State private var saved = false
@@ -74,6 +76,33 @@ private struct SettingsContent: View {
                     Text("Når en vare flyttes til en anden kategori, deles rettelsen via Kurv-serveren og bruges på familiens iPhones.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                Section("Notifikation om ny avis") {
+                    Toggle("Send push ved nye aviser", isOn: Binding(
+                        get: { flyerPush.enabled },
+                        set: { value in Task { await flyerPush.setEnabled(value) } }
+                    ))
+
+                    if flyerPush.enabled {
+                        ForEach(flyerPush.availableRetailers, id: \.self) { retailer in
+                            Toggle(retailer, isOn: Binding(
+                                get: { flyerPush.selectedRetailers.contains(retailer) },
+                                set: { selected in
+                                    Task { await flyerPush.updateRetailer(retailer, selected: selected) }
+                                }
+                            ))
+                        }
+                    }
+
+                    LabeledContent("Push-tilladelse", value: flyerPush.authorizationText)
+                    Text("Valgene gælder kun denne iPhone. QNAP kontrollerer aviserne og sender push, også når Kurv er lukket.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if let error = flyerPush.errorMessage {
+                        Text(error).font(.caption).foregroundStyle(.red)
+                    }
                 }
 
                 Section("Om") {

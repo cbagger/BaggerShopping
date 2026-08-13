@@ -204,6 +204,32 @@ struct APIClient {
         return try JSONDecoder().decode(PublicationsResponse.self, from: data)
     }
 
+    func fetchFlyerNotificationRetailers() async throws -> FlyerNotificationRetailersResponse {
+        let data = try await perform(request(path: "/api/mobile/v1/flyer-notifications/retailers"))
+        return try JSONDecoder().decode(FlyerNotificationRetailersResponse.self, from: data)
+    }
+
+    func setFlyerNotificationDevice(
+        deviceID: String,
+        deviceToken: String,
+        retailers: [String],
+        enabled: Bool
+    ) async throws {
+        #if DEBUG
+        let environment = "sandbox"
+        #else
+        let environment = "production"
+        #endif
+        let body = try JSONSerialization.data(withJSONObject: [
+            "device_id": deviceID,
+            "device_token": deviceToken,
+            "retailers": retailers,
+            "enabled": enabled,
+            "environment": environment
+        ])
+        _ = try await perform(request(path: "/api/mobile/v1/flyer-notifications/device", method: "PUT", body: body))
+    }
+
     func searchOffers(query: String, retailers: [String] = []) async throws -> OfferSearchResponse {
         var queryItems = [URLQueryItem(name: "q", value: query)]
         if !retailers.isEmpty {

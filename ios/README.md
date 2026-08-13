@@ -71,6 +71,11 @@ open BaggerShopping.xcodeproj
 
 Choose the Apple Developer Team if Xcode asks, select the physical iPhone, then Product -> Clean Build Folder and Run.
 
+Push Notifications-capability er med i projektet. Under **Indstillinger →
+Notifikation om ny avis** kan hver iPhone aktivere funktionen og vælge butikker.
+QNAP sender via APNs, også når Kurv er lukket. Backend/APNs skal være sat op som
+beskrevet i `backend/APNS-SETUP.md`.
+
 ## Backend requirement
 
 v0.3.0 now requires the matching Bagger Shopping backend v0.6.0 because shared category learning and Samsung quantity mutations add new mobile/core API endpoints. Deploy backend before final device testing of those features.

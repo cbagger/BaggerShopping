@@ -1,5 +1,4 @@
 import SwiftUI
-import UserNotifications
 
 struct FlyersView: View {
     @State private var publications: [OfferPublication] = []
@@ -49,50 +48,9 @@ struct FlyersView: View {
         defer { isLoading = false }
         do {
             let fetched = try await api.fetchOfferPublications().publications
-            await NewFlyerNotifier.process(fetched)
             publications = fetched
         }
         catch { errorMessage = error.localizedDescription }
-    }
-}
-
-enum NewFlyerNotifier {
-    private static let key = "bagger-shopping-seen-publications-v1"
-
-    static func process(_ publications: [OfferPublication]) async {
-        let active = publications.filter { $0.status != "expired" }
-        let current = Set(active.map(\.id))
-        let defaults = UserDefaults.standard
-        guard let stored = defaults.array(forKey: key) as? [String] else {
-            defaults.set(Array(current), forKey: key)
-            return
-        }
-        let seen = Set(stored)
-        let unseen = active.filter { !seen.contains($0.id) }
-        defaults.set(Array(current), forKey: key)
-        guard !unseen.isEmpty else { return }
-
-        let center = UNUserNotificationCenter.current()
-        let settings = await center.notificationSettings()
-        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
-        for publication in unseen {
-            let content = UNMutableNotificationContent()
-            content.title = "Ny tilbudsavis"
-            content.body = "\(notificationTitle(for: publication)) er nu tilgængelig!"
-            content.sound = .default
-            let request = UNNotificationRequest(
-                identifier: "flyer-\(publication.id)",
-                content: content,
-                trigger: UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
-            )
-            try? await center.add(request)
-        }
-    }
-
-    private static func notificationTitle(for publication: OfferPublication) -> String {
-        let title = publication.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        if title.localizedCaseInsensitiveContains(publication.retailer) { return title }
-        return title.isEmpty ? publication.retailer : "\(publication.retailer) \(title)"
     }
 }
 
