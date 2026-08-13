@@ -57,7 +57,7 @@ private struct SettingsContent: View {
                         }
                     }
 
-                    Text("Bagger Shopping bruger kun geofencing til at registrere ankomst til de butikker, du selv har aktiveret.")
+                    Text("Kurv bruger kun geofencing til at registrere ankomst til de butikker, du selv har aktiveret.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -71,7 +71,7 @@ private struct SettingsContent: View {
                         }
                     }
 
-                    Text("Når en vare flyttes til en anden kategori, deles rettelsen via Bagger Shopping-serveren og bruges på familiens iPhones.")
+                    Text("Når en vare flyttes til en anden kategori, deles rettelsen via Kurv-serveren og bruges på familiens iPhones.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
