@@ -1,0 +1,249 @@
+from __future__ import annotations
+
+import asyncio
+import html
+import json
+import os
+import re
+import secrets
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from urllib.parse import urlparse
+
+import httpx
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from playwright.async_api import BrowserContext, Playwright, async_playwright
+
+MOBILE_API = os.getenv("MOBILE_API_INTERNAL_BASE", "http://mobile-api:8081").rstrip("/")
+BROKER_KEY = os.getenv("SAMSUNG_LOGIN_BROKER_KEY", "")
+SESSION_TIMEOUT = 15 * 60
+NOVNC_ROOT = Path(os.getenv("NOVNC_ROOT", "/usr/share/novnc"))
+TOKEN_COOKIE = "kurv_samsung_login"
+
+
+@dataclass
+class ActiveLogin:
+    session_id: str
+    household_id: str
+    secret: str
+    expires_at: int
+    auth_state: Path
+    context: BrowserContext
+    discovered_lists: dict[str, str]
+
+
+app = FastAPI(title="Kurv Samsung Login Broker", docs_url=None, redoc_url=None, openapi_url=None)
+if NOVNC_ROOT.exists():
+    app.mount("/novnc", StaticFiles(directory=NOVNC_ROOT), name="novnc")
+
+LOCK = asyncio.Lock()
+ACTIVE: ActiveLogin | None = None
+PLAYWRIGHT: Playwright | None = None
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    global PLAYWRIGHT
+    if not BROKER_KEY:
+        raise RuntimeError("SAMSUNG_LOGIN_BROKER_KEY mangler")
+    PLAYWRIGHT = await async_playwright().start()
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    global ACTIVE, PLAYWRIGHT
+    if ACTIVE:
+        await ACTIVE.context.close()
+        ACTIVE = None
+    if PLAYWRIGHT:
+        await PLAYWRIGHT.stop()
+        PLAYWRIGHT = None
+
+
+async def _claim(login_token: str) -> dict:
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            f"{MOBILE_API}/api/mobile/v1/integrations/samsung-food/broker/session/{login_token}"
+        )
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail="Login-linket er brugt eller udløbet")
+    return response.json()
+
+
+def _current(request: Request, session_id: str) -> ActiveLogin:
+    if not ACTIVE or ACTIVE.session_id != session_id or ACTIVE.expires_at <= int(time.time()):
+        raise HTTPException(status_code=404, detail="Login-sessionen er udløbet")
+    supplied = request.cookies.get(TOKEN_COOKIE, "")
+    if not supplied or not secrets.compare_digest(supplied, ACTIVE.secret):
+        raise HTTPException(status_code=401, detail="Login-sessionen tilhører ikke denne browser")
+    return ACTIVE
+
+
+def _page(session_id: str) -> str:
+    safe_id = html.escape(session_id, quote=True)
+    return f"""<!doctype html>
+<html lang="da"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kurv · Samsung Food</title><style>
+html,body{{margin:0;height:100%;background:#071b12;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif}}
+header{{display:flex;gap:12px;align-items:center;padding:12px 16px;background:#0d3423}}
+header strong{{flex:1}}button{{border:0;border-radius:12px;padding:11px 16px;font-weight:700;background:#fff;color:#0d3423}}
+#screen{{height:calc(100% - 64px)}}#status{{font-size:13px;color:#cce8da}}
+</style></head><body><header><strong>Kurv · Samsung Food-login</strong><span id="status">Logger ind direkte hos Samsung</span>
+<button id="done">Jeg er færdig</button></header><div id="screen"></div>
+<script type="module">import RFB from '/novnc/core/rfb.js';
+const scheme=location.protocol==='https:'?'wss':'ws';
+const rfb=new RFB(document.getElementById('screen'),`${{scheme}}://${{location.host}}/ws/{safe_id}`);
+rfb.scaleViewport=true;rfb.resizeSession=true;
+document.getElementById('done').onclick=async()=>{{
+ const b=document.getElementById('done');b.disabled=true;document.getElementById('status').textContent='Kontrollerer Samsung-session og lister …';
+ const r=await fetch('/session/{safe_id}/complete',{{method:'POST'}});const j=await r.json().catch(()=>({{}}));
+ document.getElementById('status').textContent=r.ok?'Login færdigt – gå tilbage til Kurv':(j.detail||'Login kunne ikke færdiggøres');
+ if(!r.ok)b.disabled=false;
+}};</script></body></html>"""
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"ok": True, "active_session": ACTIVE.session_id if ACTIVE else None}
+
+
+@app.get("/session/{login_token}", response_class=HTMLResponse)
+async def open_session(login_token: str) -> HTMLResponse:
+    global ACTIVE
+    async with LOCK:
+        if ACTIVE and ACTIVE.expires_at > int(time.time()):
+            raise HTTPException(status_code=409, detail="En anden familie er ved at logge ind. Prøv igen om få minutter.")
+        if ACTIVE:
+            await ACTIVE.context.close()
+            ACTIVE = None
+        claim = await _claim(login_token)
+        profile = Path(claim["browser_profile"])
+        auth_state = Path(claim["auth_state"])
+        profile.mkdir(parents=True, exist_ok=True)
+        auth_state.parent.mkdir(parents=True, exist_ok=True)
+        if PLAYWRIGHT is None:
+            raise HTTPException(status_code=503, detail="Browseren er ikke klar")
+        context = await PLAYWRIGHT.chromium.launch_persistent_context(
+            user_data_dir=str(profile), headless=False,
+            viewport={"width": 1280, "height": 820},
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--start-maximized"],
+        )
+        secret = secrets.token_urlsafe(32)
+        ACTIVE = ActiveLogin(
+            session_id=claim["session_id"], household_id=claim["household_id"],
+            secret=secret, expires_at=claim["expires_at"], auth_state=auth_state, context=context,
+            discovered_lists={},
+        )
+        page = context.pages[0] if context.pages else await context.new_page()
+
+        async def inspect_response(response) -> None:
+            if "list" not in response.url.casefold():
+                return
+            try:
+                payload = await response.json()
+            except Exception:
+                return
+
+            def walk(value) -> None:
+                if isinstance(value, dict):
+                    identifier = value.get("id") or value.get("list_id")
+                    name = value.get("name") or value.get("title")
+                    if isinstance(identifier, str) and len(identifier) >= 6 and isinstance(name, str) and name.strip():
+                        ACTIVE and ACTIVE.discovered_lists.setdefault(identifier, name.strip()[:200])
+                    for nested in value.values():
+                        walk(nested)
+                elif isinstance(value, list):
+                    for nested in value:
+                        walk(nested)
+            walk(payload)
+
+        page.on("response", inspect_response)
+        await page.goto(claim["start_url"], wait_until="domcontentloaded", timeout=90_000)
+        response = HTMLResponse(_page(ACTIVE.session_id))
+        response.set_cookie(TOKEN_COOKIE, secret, httponly=True, secure=True, samesite="strict", max_age=SESSION_TIMEOUT)
+        return response
+
+
+async def _list_choices(active: ActiveLogin) -> list[dict[str, str]]:
+    choices = dict(active.discovered_lists)
+    for page in active.context.pages:
+        for anchor in await page.locator("a[href]").all():
+            try:
+                href = await anchor.get_attribute("href") or ""
+                text = " ".join((await anchor.inner_text()).split())
+            except Exception:
+                continue
+            match = re.search(r"/(?:list|lists|shopping-list)/([A-Za-z0-9_-]{6,})", urlparse(href).path)
+            if match and text:
+                choices[match.group(1)] = text[:200]
+        current = urlparse(page.url)
+        match = re.search(r"/(?:list|lists|shopping-list)/([A-Za-z0-9_-]{6,})", current.path)
+        if match:
+            title = " ".join((await page.title()).split()) or "Samsung Food-liste"
+            choices.setdefault(match.group(1), title[:200])
+    return [{"id": key, "name": value} for key, value in choices.items()]
+
+
+@app.post("/session/{session_id}/complete")
+async def complete_session(session_id: str, request: Request) -> dict:
+    global ACTIVE
+    async with LOCK:
+        active = _current(request, session_id)
+        cookies = await active.context.cookies()
+        token = next((item.get("value") for item in cookies if item.get("name") == "whisk.USER_TOKEN"), None)
+        if not token:
+            raise HTTPException(status_code=409, detail="Samsung-login er ikke færdigt endnu")
+        lists = await _list_choices(active)
+        if not lists:
+            raise HTTPException(status_code=409, detail="Åbn Lister i Samsung Food og vælg mindst én indkøbsliste")
+        temporary = active.auth_state.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"token": token, "updated_at": time.time(), "source": "interactive-broker"}, indent=2), "utf-8")
+        temporary.replace(active.auth_state)
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(
+                f"{MOBILE_API}/api/mobile/v1/integrations/samsung-food/broker/session/{session_id}/complete",
+                headers={"X-Kurv-Broker-Key": BROKER_KEY}, json={"lists": lists},
+            )
+        if response.status_code != 200:
+            raise HTTPException(status_code=502, detail="QNAP kunne ikke afslutte login-sessionen")
+        await active.context.close()
+        ACTIVE = None
+        return {"ok": True, "list_count": len(lists)}
+
+
+@app.websocket("/ws/{session_id}")
+async def vnc_proxy(websocket: WebSocket, session_id: str) -> None:
+    if not ACTIVE or ACTIVE.session_id != session_id or websocket.cookies.get(TOKEN_COOKIE) != ACTIVE.secret:
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", 5900)
+    except OSError:
+        await websocket.close(code=1011)
+        return
+
+    async def browser_to_user() -> None:
+        while data := await reader.read(65536):
+            await websocket.send_bytes(data)
+
+    async def user_to_browser() -> None:
+        while True:
+            message = await websocket.receive()
+            if message.get("bytes") is not None:
+                writer.write(message["bytes"])
+                await writer.drain()
+
+    tasks = [asyncio.create_task(browser_to_user()), asyncio.create_task(user_to_browser())]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        for task in tasks:
+            task.cancel()
+        writer.close()
+        await writer.wait_closed()

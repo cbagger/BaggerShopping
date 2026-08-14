@@ -1,0 +1,17 @@
+FROM mcr.microsoft.com/playwright/python:v1.55.0-noble
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DISPLAY=:99 NOVNC_ROOT=/usr/share/novnc
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xvfb x11vnc novnc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY app ./app
+COPY start-login-broker.sh /usr/local/bin/start-login-broker
+RUN chmod 755 /usr/local/bin/start-login-broker
+
+EXPOSE 8090
+CMD ["start-login-broker"]
