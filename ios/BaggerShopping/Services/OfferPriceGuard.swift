@@ -11,10 +11,27 @@ struct OfferPriceGuard {
     private let api = APIClient()
 
     func cheaperOffers(for itemName: String, than selected: GroceryOffer) async -> [GroceryOffer] {
-        guard selected.price != nil else { return [] }
+        guard let selectedPrice = selected.price else { return [] }
         guard let response = try? await api.searchOffers(query: itemName) else { return [] }
-
-        return cheaperOffers(from: response.offers, for: itemName, than: selected)
+        let candidates = response.offers.filter {
+            $0.id != selected.id
+                && $0.publicationID != selected.publicationID
+                && $0.price.map { $0 < selectedPrice } == true
+                && $0.identityMatch?.level == "same_item"
+        }
+        var verified: [GroceryOffer] = []
+        for candidate in candidates {
+            guard let comparison = try? await api.compareProducts(
+                left: selected.productName,
+                leftQuantity: selected.quantity,
+                leftUnit: selected.unit,
+                right: candidate.productName,
+                rightQuantity: candidate.quantity,
+                rightUnit: candidate.unit
+            ), comparison.level == "same_item", comparison.directPriceComparison else { continue }
+            verified.append(candidate)
+        }
+        return sortedUnique(verified)
     }
 
     func cheaperOffers(
@@ -24,14 +41,18 @@ struct OfferPriceGuard {
     ) -> [GroceryOffer] {
         guard let selectedPrice = selected.price else { return [] }
 
-        return offers
+        return sortedUnique(offers
             .filter { candidate in
                 candidate.id != selected.id
                     && candidate.publicationID != selected.publicationID
                     && candidate.price.map { $0 < selectedPrice } == true
                     && candidate.exactlyMatchesSelectedItem(itemName)
             }
-            .reduce(into: [String: GroceryOffer]()) { result, offer in
+        )
+    }
+
+    private func sortedUnique(_ offers: [GroceryOffer]) -> [GroceryOffer] {
+        offers.reduce(into: [String: GroceryOffer]()) { result, offer in
                 let key = "\(offer.id)|\(offer.publicationID)"
                 result[key] = offer
             }

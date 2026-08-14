@@ -48,16 +48,13 @@ final class SmartOfferMatchService: ObservableObject {
         var refreshed: [String: [GroceryOffer]] = [:]
         var firstError: Error?
 
-        // Deliberately use the exact same search path and the same
-        // matchesQuery filter as OffersView. Smart matching must never grow a
-        // second, subtly different product-search engine.
+        // The search response is already ranked and classified by the shared
+        // QNAP product-identity engine. Do not reproduce match rules here.
         for name in names {
             guard !Task.isCancelled else { return }
             do {
                 let response = try await api.searchOffers(query: name)
-                let offers = response.offers.filter {
-                    $0.variants.contains(where: \.matchesQuery)
-                }
+                let offers = response.offers.filter { $0.identityMatch?.level != "not_same" }
                 if !offers.isEmpty {
                     refreshed[key(name)] = offers
                 }
@@ -154,6 +151,15 @@ final class SmartOfferMatchService: ObservableObject {
                     throw error
                 }
             }
+
+            let learnedDecision = offer.identityMatch?.level == "same_item"
+                ? "same_item"
+                : "compatible_variant"
+            try? await api.submitProductMatchFeedback(
+                left: item.name,
+                right: selectedName,
+                decision: learnedDecision
+            )
 
             // Do not refresh AppModel while SmartOfferMatchesView is presented.
             // ShoppingListView owns a global model.errorMessage alert; refreshing

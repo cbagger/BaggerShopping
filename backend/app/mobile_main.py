@@ -15,6 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .mobile_offer_metadata import router as offer_metadata_router
 from .mobile_offers import router as offers_router
+from .product_identity import router as product_identity_router
 from .households import HouseholdContext, read_household, require_household, require_owner, router as households_router, update_household
 from .flyer_push import router as flyer_push_router
 
@@ -520,4 +521,5 @@ async def disconnect_samsung_integration(
 app.include_router(offer_metadata_router, dependencies=[Depends(household_context)])
 app.include_router(households_router)
 app.include_router(offers_router, dependencies=[Depends(household_context)])
+app.include_router(product_identity_router, dependencies=[Depends(household_context)])
 app.include_router(flyer_push_router, dependencies=[Depends(household_context)])

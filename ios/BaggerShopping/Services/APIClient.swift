@@ -246,15 +246,34 @@ struct APIClient {
             )
         )
         let response = try JSONDecoder().decode(OfferSearchResponse.self, from: data)
-        let rankedOffers = OfferSearchRanker.rank(response.offers, for: query)
-        return OfferSearchResponse(
-            ok: response.ok,
-            query: response.query,
-            retailer: response.retailer,
-            publication: response.publication,
-            offerCount: response.offerCount,
-            offers: rankedOffers
-        )
+        return response
+    }
+
+    func compareProducts(
+        left: String,
+        leftQuantity: Double?,
+        leftUnit: String?,
+        right: String,
+        rightQuantity: Double?,
+        rightUnit: String?
+    ) async throws -> ProductIdentityCompareResponse {
+        var payload: [String: Any] = ["left": left, "right": right]
+        if let leftQuantity { payload["left_quantity"] = leftQuantity }
+        if let leftUnit { payload["left_unit"] = leftUnit }
+        if let rightQuantity { payload["right_quantity"] = rightQuantity }
+        if let rightUnit { payload["right_unit"] = rightUnit }
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let data = try await perform(request(path: "/api/mobile/v1/product-identity/compare", method: "POST", body: body))
+        return try JSONDecoder().decode(ProductIdentityCompareResponse.self, from: data)
+    }
+
+    func submitProductMatchFeedback(left: String, right: String, decision: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "left": left,
+            "right": right,
+            "decision": decision
+        ])
+        _ = try await perform(request(path: "/api/mobile/v1/product-identity/feedback", method: "POST", body: body))
     }
 
     func fetchOffers(publicationID: String) async throws -> PublicationOffersResponse {

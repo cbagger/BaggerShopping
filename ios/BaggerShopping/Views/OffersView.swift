@@ -194,8 +194,7 @@ struct OffersView: View {
             let response = try await api.searchOffers(query: term, retailers: Array(retailerSnapshot))
             guard term == query.trimmingCharacters(in: .whitespacesAndNewlines),
                   retailerSnapshot == selectedRetailers else { return }
-            offers = response.offers
-                .filter { $0.variants.contains(where: \.matchesQuery) }
+            offers = response.offers.filter { $0.identityMatch?.level != "not_same" }
         } catch {
             guard !Task.isCancelled else { return }
             offers = []
@@ -305,6 +304,12 @@ private struct OfferCard: View {
                      : "\(offer.variants.count) varianter – vælg den rigtige")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            if let match = offer.identityMatch, match.level != "same_item" {
+                Label(match.explanation, systemImage: match.level == "compatible_variant" ? "arrow.left.arrow.right" : "questionmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(match.level == "compatible_variant" ? .orange : .secondary)
             }
 
             if offer.safeToAdd {
