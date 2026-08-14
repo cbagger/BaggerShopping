@@ -109,7 +109,7 @@ struct OffersView: View {
             .navigationTitle("Tilbud")
             .task { await loadRetailers() }
             .sheet(item: $pendingOffer) { offer in
-                OfferVariantSheet(offer: offer) { name in
+                StructuredVariantPickerView(offer: offer, selectionVerb: "Tilføj") { name in
                     add(name, from: offer)
                     pendingOffer = nil
                 }
@@ -219,7 +219,7 @@ struct OffersView: View {
     }
 }
 
-private struct FlowLayout: Layout {
+struct FlowLayout: Layout {
     let spacing: CGFloat
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         layout(proposal: proposal, subviews: subviews).size
@@ -294,6 +294,11 @@ private struct OfferCard: View {
                         Text("Gyldig \(from)–\(until)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                    }
+                    if let unitPrice = offer.productIdentity?.unitPrice,
+                       let unit = offer.productIdentity?.unitPriceUnit {
+                        Text("\(unitPrice.formatted(.currency(code: "DKK").precision(.fractionLength(2)))) pr. \(unit)")
+                            .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -387,75 +392,5 @@ struct OfferCropView: View {
         .clipped()
         .allowsHitTesting(false)
         .accessibilityLabel("Udsnit fra tilbudsavisen for \(offer.productName)")
-    }
-}
-
-private struct OfferVariantSheet: View {
-    let offer: GroceryOffer
-    let select: (String) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var customName = ""
-
-    private var names: [String] {
-        guard case .variants(let available) = offer.choiceState else { return [] }
-        let matching = offer.variants.filter(\.matchesQuery).map(\.name)
-        return (matching.isEmpty ? available : matching)
-            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                if let imageURL = offer.imageURL {
-                    AsyncImage(url: imageURL) { image in image.resizable().scaledToFit() }
-                        placeholder: { ProgressView() }
-                        .frame(maxWidth: .infinity, minHeight: 100, maxHeight: 180)
-                        .listRowInsets(EdgeInsets())
-                }
-                Section {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(offer.conciseProductName).font(.headline)
-                        HStack(spacing: 6) {
-                            Text(offer.retailer)
-                            if let price = offer.price {
-                                Text("·")
-                                Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
-                            }
-                        }
-                        .font(.subheadline).foregroundStyle(.secondary)
-                    }
-                }
-                ForEach(names, id: \.self) { name in
-                    Button { select(offer.shoppingItemName(variant: name)) } label: {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(name).font(.headline).foregroundStyle(.primary)
-                            HStack(spacing: 8) {
-                                if let quantity = offer.quantity, let unit = offer.unit {
-                                    Text("\(quantity.formatted(.number.precision(.fractionLength(0...2)))) \(unit)")
-                                }
-                                if let price = offer.price {
-                                    Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
-                                }
-                            }
-                            .font(.subheadline).foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-                Section(names.isEmpty ? "Varianten kan ikke identificeres sikkert" : "Et andet valg") {
-                    Button("Tilføj uden bestemt variant") {
-                        select(offer.shoppingItemName(variant: nil))
-                    }
-                    TextField("Skriv den konkrete vare", text: $customName)
-                    Button("Tilføj skrevet variant") {
-                        select(offer.shoppingItemName(customVariant: customName))
-                    }
-                        .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-            .navigationTitle("Vælg vare")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuller") { dismiss() } } }
-        }
     }
 }

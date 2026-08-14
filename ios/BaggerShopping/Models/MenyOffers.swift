@@ -69,6 +69,7 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
     let safeToAdd: Bool
     let variants: [OfferVariant]
     let identityMatch: ProductIdentityMatch?
+    let productIdentity: ProductIdentityAnalysis?
 
     enum CodingKeys: String, CodingKey {
         case id, retailer, brand, price, quantity, unit
@@ -91,6 +92,7 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         case safeToAdd = "safe_to_add"
         case variants
         case identityMatch = "identity_match"
+        case productIdentity = "product_identity"
     }
 
     init(from decoder: Decoder) throws {
@@ -120,6 +122,7 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         safeToAdd = try values.decodeIfPresent(Bool.self, forKey: .safeToAdd) ?? false
         variants = try values.decodeIfPresent([OfferVariant].self, forKey: .variants) ?? []
         identityMatch = try values.decodeIfPresent(ProductIdentityMatch.self, forKey: .identityMatch)
+        productIdentity = try values.decodeIfPresent(ProductIdentityAnalysis.self, forKey: .productIdentity)
     }
 }
 
@@ -140,10 +143,36 @@ struct ProductIdentityCompareResponse: Codable {
     let confidence: Double
     let explanation: String
     let directPriceComparison: Bool
+    let left: ProductIdentityAnalysis
+    let right: ProductIdentityAnalysis
 
     enum CodingKeys: String, CodingKey {
-        case level, confidence, explanation
+        case level, confidence, explanation, left, right
         case directPriceComparison = "direct_price_comparison"
+    }
+}
+
+struct ProductIdentityAnalysis: Codable, Hashable {
+    let brand: String?
+    let product: String
+    let variant: String?
+    let flavours: [String]
+    let types: [String]
+    let packCount: Int
+    let amountText: String?
+    let unitPrice: Double?
+    let unitPriceMin: Double?
+    let unitPriceMax: Double?
+    let unitPriceUnit: String?
+
+    enum CodingKeys: String, CodingKey {
+        case brand, product, variant, flavours, types
+        case packCount = "pack_count"
+        case amountText = "amount_text"
+        case unitPrice = "unit_price"
+        case unitPriceMin = "unit_price_min"
+        case unitPriceMax = "unit_price_max"
+        case unitPriceUnit = "unit_price_unit"
     }
 }
 
@@ -154,10 +183,12 @@ struct OfferVariant: Codable, Identifiable, Hashable {
     let quantity: Double?
     let unit: String?
     let matchesQuery: Bool
+    let identity: ProductIdentityAnalysis?
 
     enum CodingKeys: String, CodingKey {
         case id, name, description, quantity, unit
         case matchesQuery = "matches_query"
+        case identity
     }
 
     init(from decoder: Decoder) throws {
@@ -168,6 +199,7 @@ struct OfferVariant: Codable, Identifiable, Hashable {
         quantity = try values.decodeIfPresent(Double.self, forKey: .quantity)
         unit = try values.decodeIfPresent(String.self, forKey: .unit)
         matchesQuery = try values.decodeIfPresent(Bool.self, forKey: .matchesQuery) ?? false
+        identity = try values.decodeIfPresent(ProductIdentityAnalysis.self, forKey: .identity)
     }
 }
 

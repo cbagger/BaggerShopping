@@ -253,15 +253,19 @@ struct APIClient {
         left: String,
         leftQuantity: Double?,
         leftUnit: String?,
+        leftPrice: Double?,
         right: String,
         rightQuantity: Double?,
-        rightUnit: String?
+        rightUnit: String?,
+        rightPrice: Double?
     ) async throws -> ProductIdentityCompareResponse {
         var payload: [String: Any] = ["left": left, "right": right]
         if let leftQuantity { payload["left_quantity"] = leftQuantity }
         if let leftUnit { payload["left_unit"] = leftUnit }
+        if let leftPrice { payload["left_price"] = leftPrice }
         if let rightQuantity { payload["right_quantity"] = rightQuantity }
         if let rightUnit { payload["right_unit"] = rightUnit }
+        if let rightPrice { payload["right_price"] = rightPrice }
         let body = try JSONSerialization.data(withJSONObject: payload)
         let data = try await perform(request(path: "/api/mobile/v1/product-identity/compare", method: "POST", body: body))
         return try JSONDecoder().decode(ProductIdentityCompareResponse.self, from: data)
@@ -274,6 +278,24 @@ struct APIClient {
             "decision": decision
         ])
         _ = try await perform(request(path: "/api/mobile/v1/product-identity/feedback", method: "POST", body: body))
+    }
+
+    func fetchFamilyProductPreferences() async throws -> [FamilyProductPreference] {
+        let data = try await perform(request(path: "/api/mobile/v1/product-identity/preferences"))
+        return try JSONDecoder().decode(FamilyProductPreferencesResponse.self, from: data).preferences
+    }
+
+    func saveFamilyProductPreference(itemName: String, preferredName: String, mode: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "item_name": itemName,
+            "preferred_name": preferredName,
+            "mode": mode
+        ])
+        _ = try await perform(request(path: "/api/mobile/v1/product-identity/preferences", method: "PUT", body: body))
+    }
+
+    func removeFamilyProductPreference(itemName: String) async throws {
+        _ = try await perform(request(path: "/api/mobile/v1/product-identity/preferences/\(itemName)", method: "DELETE"))
     }
 
     func fetchOffers(publicationID: String) async throws -> PublicationOffersResponse {

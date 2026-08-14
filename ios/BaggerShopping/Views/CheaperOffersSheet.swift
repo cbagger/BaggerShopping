@@ -11,7 +11,7 @@ struct CheaperOffersSheet: View {
         NavigationStack {
             List {
                 Section {
-                    Text("\(pending.itemName) findes billigere. Vælg det tilbud, der passer bedst til din indkøbstur.")
+                    Text("\(pending.itemName) findes billigere samlet eller pr. enhed. Vælg det tilbud, der passer bedst til din indkøbstur.")
                         .foregroundStyle(.secondary)
                 }
 
@@ -47,6 +47,16 @@ struct CheaperOffersSheet: View {
                                     Text("Gyldig til \(until)")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
+                                }
+                                if let unitPrice = offer.productIdentity?.unitPrice,
+                                   let unit = offer.productIdentity?.unitPriceUnit {
+                                    Text("\(unitPrice.formatted(.currency(code: "DKK").precision(.fractionLength(2)))) pr. \(unit)")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                } else if let minimum = offer.productIdentity?.unitPriceMin,
+                                          let maximum = offer.productIdentity?.unitPriceMax,
+                                          let unit = offer.productIdentity?.unitPriceUnit {
+                                    Text("\(minimum.formatted(.currency(code: "DKK").precision(.fractionLength(2))))–\(maximum.formatted(.currency(code: "DKK").precision(.fractionLength(2)))) pr. \(unit)")
+                                        .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Button("Tilføj dette tilbud") {
                                     select(offer)

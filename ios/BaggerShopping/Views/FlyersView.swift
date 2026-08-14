@@ -227,7 +227,7 @@ private struct NativeFlyerReader: View {
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Luk", systemImage: "xmark") { dismiss() } } }
             .task { await loadOffers() }
             .sheet(item: $pendingOffer) { offer in
-                OfferPicker(offer: offer) { name in add(name, from: offer); pendingOffer = nil }
+                StructuredVariantPickerView(offer: offer, selectionVerb: "Tilføj") { name in add(name, from: offer); pendingOffer = nil }
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
@@ -345,71 +345,5 @@ private struct FlyerPage: View {
             }
         }
         .frame(width: container.width, height: container.height, alignment: .topLeading)
-    }
-}
-
-private struct OfferPicker: View {
-    let offer: GroceryOffer
-    let select: (String) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var customName = ""
-
-    private var names: [String] {
-        if case .variants(let names) = offer.choiceState { return names }
-        return []
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                if let imageURL = offer.imageURL {
-                    AsyncImage(url: imageURL) { image in
-                        image.resizable().scaledToFit()
-                    } placeholder: { ProgressView() }
-                    .frame(maxWidth: .infinity, minHeight: 100, maxHeight: 180)
-                    .listRowInsets(EdgeInsets())
-                }
-
-                Section {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(offer.conciseProductName).font(.headline)
-                        HStack(spacing: 6) {
-                            Text(offer.retailer)
-                            if let price = offer.price {
-                                Text("·")
-                                Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
-                            }
-                        }
-                        .font(.subheadline).foregroundStyle(.secondary)
-                    }
-                }
-
-                ForEach(names, id: \.self) { name in
-                    Button { select(offer.shoppingItemName(variant: name)) } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(name).font(.headline)
-                            if let quantity = offer.quantity, let unit = offer.unit {
-                                Text("\(quantity.formatted(.number.precision(.fractionLength(0...2)))) \(unit)")
-                                    .font(.subheadline).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-
-                Section(names.isEmpty ? "Varianten kan ikke identificeres sikkert" : "Et andet valg") {
-                    Button("Tilføj uden bestemt variant") {
-                        select(offer.shoppingItemName(variant: nil))
-                    }
-                    TextField("Skriv den konkrete vare", text: $customName)
-                    Button("Tilføj skrevet variant") {
-                        select(offer.shoppingItemName(customVariant: customName))
-                    }
-                        .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-            .navigationTitle("Vælg vare")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuller") { dismiss() } } }
-        }
     }
 }
