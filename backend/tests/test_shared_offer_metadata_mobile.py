@@ -37,6 +37,11 @@ def test_offer_metadata_round_trips_all_shared_fields(monkeypatch, tmp_path):
         "offer_id": "offer-123",
         "publication_id": "meny-uge-33",
         "matched_item_name": "Letmælk",
+        "offer_snapshot": {
+            "id": "offer-123",
+            "product_name": "Letmælk",
+            "image_url": "https://example.test/offer.jpg",
+        },
     }
 
     put = client.put("/api/mobile/v1/offer-metadata", headers=AUTH, json=payload)
@@ -59,6 +64,7 @@ def test_migration_sync_adds_missing_local_metadata_but_server_wins_conflicts(mo
         "offer_id": "server-offer",
         "publication_id": "bilka-current",
         "matched_item_name": "Kaffe",
+        "offer_snapshot": None,
     }
     assert client.put("/api/mobile/v1/offer-metadata", headers=AUTH, json=server_record).status_code == 200
 
@@ -72,6 +78,7 @@ def test_migration_sync_adds_missing_local_metadata_but_server_wins_conflicts(mo
         "offer_id": "bread-offer",
         "publication_id": "meny-current",
         "matched_item_name": "Rugbrød",
+        "offer_snapshot": None,
     }
 
     response = client.put(
@@ -96,6 +103,7 @@ def test_offer_metadata_can_be_updated_and_removed(monkeypatch, tmp_path):
         "offer_id": "butter-1",
         "publication_id": "meny-current",
         "matched_item_name": "Smør",
+        "offer_snapshot": None,
     }
     updated = dict(initial, retailer="Bilka", price=18.0, offer_id="butter-2")
 
@@ -126,6 +134,7 @@ def test_item_rename_updates_samsung_payload_and_moves_offer_metadata(monkeypatc
         "offer_id": "milk-offer",
         "publication_id": "365-current",
         "matched_item_name": "Gammel mælk",
+        "offer_snapshot": None,
     }
     assert client.put("/api/mobile/v1/offer-metadata", headers=AUTH, json=original).status_code == 200
 

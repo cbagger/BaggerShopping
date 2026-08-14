@@ -172,7 +172,8 @@ struct OffersView: View {
                 offerValidUntil: offer.validUntil,
                 offerID: offer.id,
                 publicationID: offer.publicationID,
-                matchedItemName: itemName
+                matchedItemName: itemName,
+                offerSnapshot: offer
             ) {
                 withAnimation { addedOfferID = offer.id }
             }

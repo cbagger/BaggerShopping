@@ -26,9 +26,14 @@ extension Notification.Name {
 
 @MainActor
 final class AppNavigation: ObservableObject {
+    private static let inactivityResetInterval: TimeInterval = 30 * 60
+
     @Published var selectedTab: AppTab = .shoppingList
+    @Published private(set) var rootResetID = UUID()
     @Published private(set) var shoppingListRoute: ShoppingListRoute?
     @Published private(set) var flyerRoute: FlyerRoute?
+    private var backgroundedAt: Date?
+    private var lastExternalNavigationAt: Date?
 
     init() {
         NotificationCenter.default.addObserver(
@@ -56,6 +61,7 @@ final class AppNavigation: ObservableObject {
         let trimmed = retailer.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         selectedTab = .shoppingList
+        lastExternalNavigationAt = Date()
         shoppingListRoute = ShoppingListRoute(retailer: trimmed)
     }
 
@@ -63,6 +69,31 @@ final class AppNavigation: ObservableObject {
         let trimmed = publicationID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         selectedTab = .flyers
+        lastExternalNavigationAt = Date()
         flyerRoute = FlyerRoute(publicationID: trimmed, retailer: retailer)
+    }
+
+    func didEnterBackground(at date: Date = Date()) {
+        backgroundedAt = date
+    }
+
+    @discardableResult
+    func resetAfterLongInactivityIfNeeded(at date: Date = Date()) -> Bool {
+        guard let backgroundedAt,
+              date.timeIntervalSince(backgroundedAt) >= Self.inactivityResetInterval else {
+            return false
+        }
+
+        self.backgroundedAt = nil
+        if let lastExternalNavigationAt,
+           date.timeIntervalSince(lastExternalNavigationAt) < 10 {
+            return false
+        }
+
+        selectedTab = .shoppingList
+        shoppingListRoute = nil
+        flyerRoute = nil
+        rootResetID = UUID()
+        return true
     }
 }

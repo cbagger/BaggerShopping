@@ -35,5 +35,6 @@ struct RootView: View {
                     Label("Indstillinger", systemImage: "gearshape")
                 }
         }
+        .id(navigation.rootResetID)
     }
 }

@@ -120,7 +120,8 @@ final class AppModel: ObservableObject {
         offerValidUntil: String? = nil,
         offerID: String? = nil,
         publicationID: String? = nil,
-        matchedItemName: String? = nil
+        matchedItemName: String? = nil,
+        offerSnapshot: GroceryOffer? = nil
     ) async -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
@@ -150,7 +151,8 @@ final class AppModel: ObservableObject {
                     validUntil: offerValidUntil,
                     offerID: offerID,
                     publicationID: publicationID,
-                    matchedItemName: matchedItemName ?? trimmed
+                    matchedItemName: matchedItemName ?? trimmed,
+                    offerSnapshot: offerSnapshot
                 )
                 offerMetadata[metadataKey] = metadata
                 saveOfferMetadata()
@@ -316,6 +318,10 @@ final class AppModel: ObservableObject {
 
     func offerPrice(for item: ShoppingItem) -> Double? {
         currentOfferMetadata(for: item)?.price
+    }
+
+    func offerMetadataReference(for item: ShoppingItem) -> OfferMetadataDTO? {
+        offerMetadata[offerRetailerNameKey(item.name)]?.dto(itemName: item.name)
     }
 
     func offerState(for item: ShoppingItem) -> OfferItemState? {
@@ -494,6 +500,7 @@ private struct OfferItemMetadata: Codable {
     let offerID: String?
     let publicationID: String?
     let matchedItemName: String?
+    let offerSnapshot: GroceryOffer?
 
     init(
         retailer: String,
@@ -502,7 +509,8 @@ private struct OfferItemMetadata: Codable {
         validUntil: String?,
         offerID: String? = nil,
         publicationID: String? = nil,
-        matchedItemName: String? = nil
+        matchedItemName: String? = nil,
+        offerSnapshot: GroceryOffer? = nil
     ) {
         self.retailer = retailer
         self.price = price
@@ -511,6 +519,7 @@ private struct OfferItemMetadata: Codable {
         self.offerID = offerID
         self.publicationID = publicationID
         self.matchedItemName = matchedItemName
+        self.offerSnapshot = offerSnapshot
     }
 
     init(dto: OfferMetadataDTO) {
@@ -521,6 +530,7 @@ private struct OfferItemMetadata: Codable {
         offerID = dto.offerID
         publicationID = dto.publicationID
         matchedItemName = dto.matchedItemName
+        offerSnapshot = dto.offerSnapshot
     }
 
     func dto(itemName: String) -> OfferMetadataDTO {
@@ -532,7 +542,8 @@ private struct OfferItemMetadata: Codable {
             validUntil: validUntil,
             offerID: offerID,
             publicationID: publicationID,
-            matchedItemName: matchedItemName ?? itemName
+            matchedItemName: matchedItemName ?? itemName,
+            offerSnapshot: offerSnapshot
         )
     }
 
@@ -545,6 +556,7 @@ private struct OfferItemMetadata: Codable {
         offerID = try values.decodeIfPresent(String.self, forKey: .offerID)
         publicationID = try values.decodeIfPresent(String.self, forKey: .publicationID)
         matchedItemName = try values.decodeIfPresent(String.self, forKey: .matchedItemName)
+        offerSnapshot = try values.decodeIfPresent(GroceryOffer.self, forKey: .offerSnapshot)
     }
 }
 

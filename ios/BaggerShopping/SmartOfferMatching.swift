@@ -128,7 +128,8 @@ final class SmartOfferMatchService: ObservableObject {
                 validUntil: offer.validUntil,
                 offerID: offer.id,
                 publicationID: offer.publicationID,
-                matchedItemName: selectedName
+                matchedItemName: selectedName,
+                offerSnapshot: offer
             )
 
             try await api.setOfferMetadata(metadata)
