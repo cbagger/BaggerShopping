@@ -40,6 +40,11 @@ class JoinHouseholdRequest(BaseModel):
     member_name: str = Field(min_length=1, max_length=80)
 
 
+class RecoverHouseholdRequest(BaseModel):
+    recovery_code: str = Field(min_length=12, max_length=64)
+    member_name: str = Field(min_length=1, max_length=80)
+
+
 class InviteRequest(BaseModel):
     expires_in_days: int = Field(default=7, ge=1, le=30)
 
@@ -67,6 +72,16 @@ def _new_token() -> str:
 def _new_code() -> str:
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     return "".join(secrets.choice(alphabet) for _ in range(8))
+
+
+def _new_recovery_code() -> str:
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    chunks = ["".join(secrets.choice(alphabet) for _ in range(5)) for _ in range(4)]
+    return "-".join(chunks)
+
+
+def _clean_code(value: str) -> str:
+    return "".join(character for character in value.upper() if character.isalnum())
 
 
 def load_store() -> dict[str, Any]:
@@ -154,7 +169,7 @@ async def require_household(
         store = load_store()
         legacy = ensure_legacy_household(store)
         expected = os.getenv("MOBILE_API_TOKEN", "")
-        if expected and secrets.compare_digest(supplied, expected):
+        if expected and not legacy.get("legacy_token_disabled", False) and secrets.compare_digest(supplied, expected):
             return set_current(HouseholdContext(
                 household_id=legacy["id"], household_name=legacy["name"],
                 member_name="Christoffer", role="owner", list_backend="samsung",
@@ -176,17 +191,78 @@ async def household_me(context: HouseholdContext = Depends(require_household)) -
 async def create_household(request: CreateHouseholdRequest) -> dict[str, Any]:
     household_id = str(uuid.uuid4())
     token = _new_token()
+    recovery_code = _new_recovery_code()
     household = {
         "id": household_id, "name": request.household_name.strip(), "list_backend": "local",
         "created_at": int(time.time()), "items": [], "offer_metadata": {},
         "members": {_hash(token): {"id": _member_id(), "name": request.member_name.strip(), "role": "owner", "created_at": int(time.time())}},
+        "recovery_code_hash": _hash(_clean_code(recovery_code)),
     }
     async with LOCK:
         store = load_store()
         ensure_legacy_household(store)
         store.setdefault("households", {})[household_id] = household
         save_store(store)
-    return {"ok": True, "access_token": token, **context_from_record(household, next(iter(household["members"].values()))).model_dump()}
+    return {"ok": True, "access_token": token, "recovery_code": recovery_code, **context_from_record(household, next(iter(household["members"].values()))).model_dump()}
+
+
+@router.get("/recovery")
+async def recovery_status(context: HouseholdContext = Depends(require_household)) -> dict[str, Any]:
+    require_owner(context)
+    async with LOCK:
+        store = load_store()
+        household = ensure_legacy_household(store) if context.household_id == LEGACY_HOUSEHOLD_ID else store.get("households", {}).get(context.household_id)
+        if not household:
+            raise HTTPException(status_code=404, detail="Familien findes ikke")
+        configured = bool(household.get("recovery_code_hash"))
+    return {"ok": True, "configured": configured}
+
+
+@router.post("/recovery/rotate")
+async def rotate_recovery_code(
+    context: HouseholdContext = Depends(require_household),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_owner(context)
+    code = _new_recovery_code()
+    async with LOCK:
+        store = load_store()
+        household = ensure_legacy_household(store) if context.household_id == LEGACY_HOUSEHOLD_ID else store.get("households", {}).get(context.household_id)
+        if not household:
+            raise HTTPException(status_code=404, detail="Familien findes ikke")
+        household["recovery_code_hash"] = _hash(_clean_code(code))
+
+        # Convert Familien Baggers historic environment token into a normal,
+        # revocable server member without changing family ID or list backend.
+        supplied = (authorization or "").removeprefix("Bearer ").strip()
+        expected = os.getenv("MOBILE_API_TOKEN", "")
+        if context.household_id == LEGACY_HOUSEHOLD_ID and expected and secrets.compare_digest(supplied, expected):
+            household.setdefault("members", {}).setdefault(
+                _hash(supplied),
+                {"id": _member_id(), "name": household.get("owner", {}).get("name", "Christoffer"), "role": "owner", "created_at": int(time.time())},
+            )
+            household["legacy_token_disabled"] = True
+        save_store(store)
+    return {"ok": True, "recovery_code": code}
+
+
+@router.post("/recover")
+async def recover_household(request: RecoverHouseholdRequest) -> dict[str, Any]:
+    code_hash = _hash(_clean_code(request.recovery_code))
+    token = _new_token()
+    async with LOCK:
+        store = load_store()
+        ensure_legacy_household(store)
+        household = next(
+            (value for value in store.get("households", {}).values() if value.get("recovery_code_hash") and secrets.compare_digest(value["recovery_code_hash"], code_hash)),
+            None,
+        )
+        if not household:
+            raise HTTPException(status_code=404, detail="Gendannelseskoden er ugyldig")
+        member = {"id": _member_id(), "name": request.member_name.strip(), "role": "owner", "created_at": int(time.time())}
+        household.setdefault("members", {})[_hash(token)] = member
+        save_store(store)
+    return {"ok": True, "access_token": token, **context_from_record(household, member).model_dump()}
 
 
 @router.post("/invite")
@@ -241,7 +317,7 @@ async def list_members(context: HouseholdContext = Depends(require_household)) -
         if migrate_member_ids(household):
             save_store(store)
         members = []
-        if context.household_id == LEGACY_HOUSEHOLD_ID:
+        if context.household_id == LEGACY_HOUSEHOLD_ID and not any(member.get("role") == "owner" for member in household.get("members", {}).values()):
             members.append(household["owner"])
         members.extend({"id": member.get("id"), "name": member.get("name"), "role": member.get("role", "member")} for member in household.get("members", {}).values())
     return {"ok": True, "members": members}
@@ -289,7 +365,9 @@ async def remove_member(
             raise HTTPException(status_code=404, detail="Familiemedlemmet findes ikke")
         member = household["members"][token_hash]
         if member.get("role") == "owner":
-            raise HTTPException(status_code=409, detail="Familiens administrator kan ikke slettes")
+            owners = [value for value in household.get("members", {}).values() if value.get("role") == "owner"]
+            if len(owners) <= 1:
+                raise HTTPException(status_code=409, detail="Familiens sidste administrator kan ikke slettes")
         del household["members"][token_hash]
         save_store(store)
     return {"ok": True, "removed": True}

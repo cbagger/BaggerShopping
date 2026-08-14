@@ -57,6 +57,9 @@ private struct SettingsContent: View {
                             NavigationLink("Administrér familiemedlemmer") {
                                 HouseholdMembersView(model: model)
                             }
+                            NavigationLink("Gendannelse og sikkerhed") {
+                                HouseholdRecoveryView(model: model)
+                            }
                         }
                         if let inviteCode {
                             VStack(alignment: .leading, spacing: 5) {
@@ -209,8 +212,8 @@ private struct HouseholdMembersView: View {
                             editedName = member.name
                             editing = member
                         }
-                        if member.role != "owner" {
-                            Button("Fjern fra familien", systemImage: "person.badge.minus", role: .destructive) {
+                        if member.id != "legacy-owner" {
+                            Button(member.role == "owner" ? "Tilbagekald denne adgang" : "Fjern fra familien", systemImage: "person.badge.minus", role: .destructive) {
                                 removing = member
                             }
                         }
@@ -247,6 +250,37 @@ private struct HouseholdMembersView: View {
 
     @MainActor private func reload() async {
         if let loaded = await model.householdMembers() { members = loaded }
+    }
+}
+
+private struct HouseholdRecoveryView: View {
+    @ObservedObject var model: AppModel
+    @State private var code: String?
+    @State private var confirmingRotation = false
+
+    var body: some View {
+        Form {
+            Section("Gendannelseskode") {
+                if let code {
+                    Text(code).font(.title3.monospaced().bold()).textSelection(.enabled)
+                    ShareLink(item: code) { Label("Gem eller del sikkert", systemImage: "square.and.arrow.up") }
+                    Text("Den tidligere kode er nu ugyldig.").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Af sikkerhedsgrunde kan den eksisterende kode ikke vises igen. Opret en ny, hvis du ikke længere har den gemt.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                Button(code == nil ? "Opret ny gendannelseskode" : "Generér en anden kode") { confirmingRotation = true }
+            }
+            Section {
+                Text("En gendannelseskode kan udstede en ny administratoradgang på en ny telefon uden at oprette en tom familie eller ændre listen og integrationerne.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("Gendannelse")
+        .confirmationDialog("Generér ny kode?", isPresented: $confirmingRotation, titleVisibility: .visible) {
+            Button("Generér ny kode") { Task { code = await model.rotateRecoveryCode() } }
+            Button("Annuller", role: .cancel) {}
+        } message: { Text("En tidligere gendannelseskode stopper med at virke med det samme.") }
     }
 }
 

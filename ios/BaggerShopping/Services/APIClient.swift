@@ -286,6 +286,22 @@ struct APIClient {
         return try JSONDecoder().decode(HouseholdAuthResponse.self, from: data)
     }
 
+    func recoverHousehold(code: String, memberName: String) async throws -> HouseholdAuthResponse {
+        let body = try JSONSerialization.data(withJSONObject: ["recovery_code": code, "member_name": memberName])
+        let data = try await performPublic(path: "/api/mobile/v1/households/recover", body: body)
+        return try JSONDecoder().decode(HouseholdAuthResponse.self, from: data)
+    }
+
+    func fetchRecoveryStatus() async throws -> HouseholdRecoveryStatus {
+        let data = try await perform(request(path: "/api/mobile/v1/households/recovery"))
+        return try JSONDecoder().decode(HouseholdRecoveryStatus.self, from: data)
+    }
+
+    func rotateRecoveryCode() async throws -> String {
+        let data = try await perform(request(path: "/api/mobile/v1/households/recovery/rotate", method: "POST", body: Data("{}".utf8)))
+        return try JSONDecoder().decode(HouseholdRecoveryCodeResponse.self, from: data).recoveryCode
+    }
+
     func createHouseholdInvite() async throws -> HouseholdInviteResponse {
         let body = try JSONSerialization.data(withJSONObject: ["expires_in_days": 7])
         let data = try await perform(request(path: "/api/mobile/v1/households/invite", method: "POST", body: body))

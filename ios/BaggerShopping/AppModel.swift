@@ -6,8 +6,10 @@ final class AppModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var tokenConfigured = KeychainStore.loadToken() != nil
+    @Published var onboardingRequired = KeychainStore.loadToken() == nil
     @Published var mutatingItemIDs: Set<String> = []
     @Published var householdProfile: HouseholdProfile?
+    @Published var latestRecoveryCode: String?
 
     let stores = StoreRepository()
     let geofence = GeofenceManager()
@@ -400,6 +402,11 @@ final class AppModel: ObservableObject {
         tokenConfigured = true
     }
 
+    func completeOnboarding() {
+        onboardingRequired = false
+        latestRecoveryCode = nil
+    }
+
     func createHousehold(name: String, memberName: String) async -> Bool {
         do {
             let response = try await api.createHousehold(name: name, memberName: memberName)
@@ -409,6 +416,7 @@ final class AppModel: ObservableObject {
                 householdID: response.householdID, householdName: response.householdName,
                 memberName: response.memberName, role: response.role, listBackend: response.listBackend
             )
+            latestRecoveryCode = response.recoveryCode
             await refresh()
             return true
         } catch { errorMessage = error.localizedDescription; return false }
@@ -426,6 +434,28 @@ final class AppModel: ObservableObject {
             await refresh()
             return true
         } catch { errorMessage = error.localizedDescription; return false }
+    }
+
+    func recoverHousehold(code: String, memberName: String) async -> Bool {
+        do {
+            let response = try await api.recoverHousehold(code: code, memberName: memberName)
+            try KeychainStore.saveToken(response.accessToken)
+            tokenConfigured = true
+            householdProfile = HouseholdProfile(
+                householdID: response.householdID, householdName: response.householdName,
+                memberName: response.memberName, role: response.role, listBackend: response.listBackend
+            )
+            await refresh()
+            return true
+        } catch { errorMessage = error.localizedDescription; return false }
+    }
+
+    func rotateRecoveryCode() async -> String? {
+        do {
+            let code = try await api.rotateRecoveryCode()
+            latestRecoveryCode = code
+            return code
+        } catch { errorMessage = error.localizedDescription; return nil }
     }
 
     func createInvite() async -> String? {

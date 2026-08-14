@@ -23,6 +23,7 @@ struct HouseholdAuthResponse: Codable {
     let memberName: String
     let role: String
     let listBackend: String
+    let recoveryCode: String?
 
     enum CodingKeys: String, CodingKey {
         case accessToken = "access_token"
@@ -31,6 +32,19 @@ struct HouseholdAuthResponse: Codable {
         case memberName = "member_name"
         case role
         case listBackend = "list_backend"
+        case recoveryCode = "recovery_code"
+    }
+}
+
+struct HouseholdRecoveryStatus: Codable {
+    let configured: Bool
+}
+
+struct HouseholdRecoveryCodeResponse: Codable {
+    let recoveryCode: String
+
+    enum CodingKeys: String, CodingKey {
+        case recoveryCode = "recovery_code"
     }
 }
 
