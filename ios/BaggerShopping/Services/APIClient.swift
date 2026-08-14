@@ -355,6 +355,29 @@ struct APIClient {
         return try JSONDecoder().decode(SamsungDisconnectResponse.self, from: data)
     }
 
+    func startSamsungLogin() async throws -> SamsungLoginStartResponse {
+        let data = try await perform(request(
+            path: "/api/mobile/v1/integrations/samsung-food/login/start",
+            method: "POST",
+            body: Data("{}".utf8)
+        ))
+        return try JSONDecoder().decode(SamsungLoginStartResponse.self, from: data)
+    }
+
+    func fetchSamsungLoginStatus(sessionID: String) async throws -> SamsungLoginStatus {
+        let data = try await perform(request(path: "/api/mobile/v1/integrations/samsung-food/login/\(sessionID)"))
+        return try JSONDecoder().decode(SamsungLoginStatus.self, from: data)
+    }
+
+    func selectSamsungList(sessionID: String, listID: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["session_id": sessionID, "list_id": listID])
+        _ = try await perform(request(
+            path: "/api/mobile/v1/integrations/samsung-food/login/select-list",
+            method: "POST",
+            body: body
+        ))
+    }
+
     private func performPublic(path: String, body: Data) async throws -> Data {
         let url = baseURL.appending(path: path)
         var request = URLRequest(url: url)

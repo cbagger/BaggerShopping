@@ -98,3 +98,34 @@ struct SamsungDisconnectResponse: Codable {
         case preservedItemCount = "preserved_item_count"
     }
 }
+
+struct SamsungLoginStartResponse: Codable {
+    let sessionID: String
+    let loginURL: URL
+    let expiresAt: Int
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case loginURL = "login_url"
+        case expiresAt = "expires_at"
+    }
+}
+
+struct SamsungListChoice: Codable, Identifiable, Hashable {
+    let id: String
+    let name: String
+}
+
+struct SamsungLoginStatus: Codable {
+    let sessionID: String
+    let status: String
+    let expiresAt: Int
+    let lists: [SamsungListChoice]
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case status
+        case expiresAt = "expires_at"
+        case lists
+    }
+}

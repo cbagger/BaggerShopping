@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import secrets
 import time
 import uuid
@@ -16,6 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from .mobile_offer_metadata import router as offer_metadata_router
 from .mobile_offers import router as offers_router
 from .product_identity import router as product_identity_router
+from .samsung_login import router as samsung_login_router
 from .households import HouseholdContext, read_household, require_household, require_owner, router as households_router, update_household
 from .flyer_push import router as flyer_push_router
 
@@ -213,10 +215,37 @@ async def core_delete(path: str) -> httpx.Response:
         return await client.delete(f"{settings.core_api_base}{path}")
 
 
+async def family_samsung_client(context: HouseholdContext) -> Any | None:
+    household = await read_household(context)
+    integration = household.get("integrations", {}).get("samsung_food", {})
+    list_id = integration.get("list_id")
+    auth_state = integration.get("auth_state_path")
+    browser_profile = integration.get("browser_profile_path")
+    if not all(isinstance(value, str) and value for value in (list_id, auth_state, browser_profile)):
+        return None
+    # Keep the public/local-family mobile API importable without requiring the
+    # legacy SAMSUNG_LIST_ID environment variable.
+    from .auth import SamsungAuthManager
+    from .samsung import SamsungFoodClient
+    auth = SamsungAuthManager(
+        state_file=Path(auth_state),
+        browser_user_data_dir=Path(browser_profile),
+        allow_credential_fallback=False,
+    )
+    return SamsungFoodClient(list_id=list_id, auth=auth)
+
+
 @app.get("/api/mobile/v1/health")
 async def mobile_health(context: HouseholdContext = Depends(household_context)) -> dict[str, Any]:
     if context.list_backend == "local":
         return {"ok": True, "service": "bagger-shopping-mobile", "core_status": "ok", "samsung_auth": "not_used", "requires_interaction": False}
+    family_client = await family_samsung_client(context)
+    if family_client is not None:
+        try:
+            await family_client.get_list()
+            return {"ok": True, "service": "bagger-shopping-mobile", "core_status": "ok", "samsung_auth": "ok", "requires_interaction": False}
+        except Exception:
+            return {"ok": True, "service": "bagger-shopping-mobile", "core_status": "ok", "samsung_auth": "refresh-needed", "requires_interaction": True}
     try:
         response = await core_get("/api/health")
     except Exception as exc:
@@ -239,6 +268,14 @@ async def get_mobile_list(context: HouseholdContext = Depends(household_context)
         household = await read_household(context)
         items = [MobileItem.model_validate(item) for item in household.get("items", [])]
         return MobileListResponse(name=household["name"], count=len(items), has_items=bool(items), items=items)
+    family_client = await family_samsung_client(context)
+    if family_client is not None:
+        try:
+            payload = await family_client.get_list()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        items = [MobileItem.model_validate(item.model_dump()) for item in payload.items]
+        return MobileListResponse(name=payload.name or "Indkøbsliste", count=len(items), has_items=bool(items), items=items)
     try:
         response = await core_get("/api/shopping")
     except Exception as exc:
@@ -327,6 +364,13 @@ async def add_mobile_item(
             "created_at": int(time.time()),
         }))
         return AddItemResponse(ok=True, name=name)
+    family_client = await family_samsung_client(context)
+    if family_client is not None:
+        try:
+            await family_client.add_item(name)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return AddItemResponse(ok=True, name=name)
     try:
         response = await core_post("/api/shopping/items", {"name": name})
     except Exception as exc:
@@ -350,6 +394,12 @@ async def set_mobile_item_checked(
                     return {"ok": True, "item_id": item_id}
             raise HTTPException(status_code=404, detail="Varen findes ikke i familien")
         return await update_household(context, mutate)
+    family_client = await family_samsung_client(context)
+    if family_client is not None:
+        try:
+            return {"ok": True, **await family_client.set_item_checked(item_id, request.checked)}
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     try:
         response = await core_patch(f"/api/shopping/items/{item_id}/checked", {"checked": request.checked})
     except Exception as exc:
@@ -373,6 +423,12 @@ async def set_mobile_item_quantity(
                     return {"ok": True, "item_id": item_id}
             raise HTTPException(status_code=404, detail="Varen findes ikke i familien")
         return await update_household(context, mutate)
+    family_client = await family_samsung_client(context)
+    if family_client is not None:
+        try:
+            return {"ok": True, **await family_client.set_item_quantity(item_id, request.quantity, request.unit)}
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     try:
         response = await core_patch(
             f"/api/shopping/items/{item_id}/quantity",
@@ -399,6 +455,12 @@ async def delete_mobile_item(
                 raise HTTPException(status_code=404, detail="Varen findes ikke i familien")
             return {"ok": True, "item_id": item_id}
         return await update_household(context, mutate)
+    family_client = await family_samsung_client(context)
+    if family_client is not None:
+        try:
+            return {"ok": True, **await family_client.delete_item(item_id)}
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     try:
         response = await core_delete(f"/api/shopping/items/{item_id}")
     except Exception as exc:
@@ -419,6 +481,18 @@ async def delete_all_checked_mobile_items(
             household["items"] = [item for item in items if not item.get("checked")]
             return {"ok": True, "deleted_count": len(deleted), "deleted_item_ids": deleted}
         return await update_household(context, mutate)
+    family_client = await family_samsung_client(context)
+    if family_client is not None:
+        try:
+            current = await family_client.get_list()
+            deleted: list[str] = []
+            for item in current.items:
+                if item.checked is True and item.id:
+                    await family_client.delete_item(item.id)
+                    deleted.append(item.id)
+            return {"ok": True, "deleted_count": len(deleted), "deleted_item_ids": deleted}
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     try:
         response = await core_delete("/api/shopping/actions/clear-checked")
     except Exception as exc:
@@ -436,22 +510,27 @@ async def samsung_integration_status(
     record = _integration_record(household)
 
     if context.list_backend == "samsung":
+        family_client = await family_samsung_client(context)
         try:
-            health = await core_get("/api/health")
-            shopping = await core_get("/api/shopping")
-            if health.status_code == 200 and shopping.status_code == 200:
-                payload = shopping.json()
+            if family_client is not None:
+                family_list = await family_client.get_list()
+                payload = family_list.model_dump()
                 record = await _set_integration_health(
                     context,
                     status_value="connected",
-                    list_name=payload.get("name") or record.get("list_name") or "Indkøbsliste",
-                    list_id=payload.get("list_id") or record.get("list_id"),
+                    list_name=family_list.name or record.get("list_name") or "Indkøbsliste",
+                    list_id=family_list.list_id or record.get("list_id"),
                 )
             else:
+                health = await core_get("/api/health")
+                shopping = await core_get("/api/shopping")
+                if health.status_code != 200 or shopping.status_code != 200:
+                    raise RuntimeError("Legacy-sessionen er udløbet")
+                payload = shopping.json()
                 record = await _set_integration_health(
-                    context,
-                    status_value="requires_reconnect",
-                    error_message="Samsung Food-sessionen er udløbet. Familiens varer er bevaret.",
+                    context, status_value="connected",
+                    list_name=payload.get("name") or record.get("list_name") or "Indkøbsliste",
+                    list_id=payload.get("list_id") or record.get("list_id"),
                 )
         except Exception:
             record = await _set_integration_health(
@@ -471,6 +550,7 @@ async def samsung_integration_status(
         last_successful_sync=record.get("last_successful_sync"),
         error_message=record.get("error_message"),
         can_manage=context.role == "owner",
+        self_service_login_available=bool(os.getenv("SAMSUNG_LOGIN_PUBLIC_BASE_URL", "").strip()),
     )
 
 
@@ -482,13 +562,18 @@ async def disconnect_samsung_integration(
     preserved_items: list[dict[str, Any]] = []
     preserved_name = context.household_name
     if context.list_backend == "samsung":
+        family_client = await family_samsung_client(context)
         try:
-            response = await core_get("/api/shopping")
+            if family_client is not None:
+                family_list = await family_client.get_list()
+                payload = family_list.model_dump()
+            else:
+                response = await core_get("/api/shopping")
+                if response.status_code != 200:
+                    raise RuntimeError("Legacy-listen kunne ikke læses")
+                payload = response.json()
         except Exception as exc:
             raise HTTPException(status_code=409, detail="Samsung-listen kunne ikke kopieres sikkert før afbrydelse") from exc
-        if response.status_code != 200:
-            raise HTTPException(status_code=409, detail="Samsung-listen kunne ikke kopieres sikkert før afbrydelse")
-        payload = response.json()
         preserved_name = payload.get("name") or preserved_name
         for item in payload.get("items") or []:
             if not isinstance(item, dict) or not item.get("name"):
@@ -522,4 +607,5 @@ app.include_router(offer_metadata_router, dependencies=[Depends(household_contex
 app.include_router(households_router)
 app.include_router(offers_router, dependencies=[Depends(household_context)])
 app.include_router(product_identity_router, dependencies=[Depends(household_context)])
+app.include_router(samsung_login_router)
 app.include_router(flyer_push_router, dependencies=[Depends(household_context)])

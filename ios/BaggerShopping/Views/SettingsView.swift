@@ -296,11 +296,16 @@ private struct HouseholdRecoveryView: View {
 
 private struct SamsungFoodIntegrationView: View {
     @ObservedObject var model: AppModel
+    @Environment(\.openURL) private var openURL
     @State private var integration: SamsungIntegrationStatus?
     @State private var loading = true
     @State private var disconnecting = false
     @State private var confirmingDisconnect = false
     @State private var resultMessage: String?
+    @State private var loginSession: SamsungLoginStartResponse?
+    @State private var availableLists: [SamsungListChoice] = []
+    @State private var selectedListID: String?
+    @State private var loginWorking = false
     private let api = APIClient()
 
     var body: some View {
@@ -327,17 +332,48 @@ private struct SamsungFoodIntegrationView: View {
 
                 Section("Handlinger") {
                     if integration.status == "connected" {
+                        Button("Forbind igen") { Task { await startLogin() } }
+                            .disabled(!integration.canManage || !integration.selfServiceLoginAvailable || loginWorking)
                         Button("Afbryd forbindelse", role: .destructive) { confirmingDisconnect = true }
                             .disabled(!integration.canManage || disconnecting)
                     } else {
-                        Button(integration.status == "requires_reconnect" ? "Forbind igen" : "Forbind Samsung Food") {}
-                            .disabled(true)
-                        Text("Det familieisolerede loginflow færdiggøres i næste integrationsfase. Kurv beder aldrig om din Samsung-adgangskode i appen.")
+                        Button(integration.status == "requires_reconnect" ? "Forbind igen" : "Forbind Samsung Food") {
+                            Task { await startLogin() }
+                        }
+                        .disabled(!integration.canManage || !integration.selfServiceLoginAvailable || loginWorking)
+                    }
+                    if integration.canManage && !integration.selfServiceLoginAvailable {
+                        Text("Det sikre login skal først aktiveres på familiens QNAP.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                    Text("Samsung-login foregår direkte i en midlertidig QNAP-browser. Kurv ser eller modtager aldrig din Samsung-adgangskode.")
+                        .font(.caption).foregroundStyle(.secondary)
                     if !integration.canManage {
                         Text("Kun familiens administrator kan ændre integrationen.")
                             .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
+                if let loginSession {
+                    Section("Midlertidigt login") {
+                        LabeledContent("Udløber", value: Date(timeIntervalSince1970: TimeInterval(loginSession.expiresAt)).formatted(date: .omitted, time: .shortened))
+                        Button("Åbn Samsung-login igen") { openURL(loginSession.loginURL) }
+                        Button("Jeg er færdig – kontrollér login") { Task { await checkLogin() } }
+                            .disabled(loginWorking)
+                    }
+                }
+
+                if !availableLists.isEmpty {
+                    Section("Vælg Samsung-liste") {
+                        Picker("Indkøbsliste", selection: Binding(
+                            get: { selectedListID ?? availableLists.first?.id ?? "" },
+                            set: { selectedListID = $0 }
+                        )) {
+                            ForEach(availableLists) { list in Text(list.name).tag(list.id) }
+                        }
+                        Button("Brug den valgte liste") { Task { await activateSelectedList() } }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(selectedListID == nil && availableLists.isEmpty)
                     }
                 }
 
@@ -380,6 +416,49 @@ private struct SamsungFoodIntegrationView: View {
             await reload()
         } catch { model.errorMessage = error.localizedDescription }
         disconnecting = false
+    }
+
+    @MainActor private func startLogin() async {
+        loginWorking = true
+        do {
+            let session = try await api.startSamsungLogin()
+            loginSession = session
+            availableLists = []
+            selectedListID = nil
+            openURL(session.loginURL)
+        } catch { model.errorMessage = error.localizedDescription }
+        loginWorking = false
+    }
+
+    @MainActor private func checkLogin() async {
+        guard let loginSession else { return }
+        loginWorking = true
+        do {
+            let status = try await api.fetchSamsungLoginStatus(sessionID: loginSession.sessionID)
+            if status.status == "choose_list" {
+                availableLists = status.lists
+                selectedListID = status.lists.first?.id
+            } else {
+                resultMessage = "Samsung-login er endnu ikke afsluttet i QNAP-browseren."
+            }
+        } catch { model.errorMessage = error.localizedDescription }
+        loginWorking = false
+    }
+
+    @MainActor private func activateSelectedList() async {
+        guard let sessionID = loginSession?.sessionID,
+              let listID = selectedListID else { return }
+        loginWorking = true
+        do {
+            try await api.selectSamsungList(sessionID: sessionID, listID: listID)
+            resultMessage = "Samsung Food-listen er forbundet med familien."
+            loginSession = nil
+            availableLists = []
+            selectedListID = nil
+            await model.refresh()
+            await reload()
+        } catch { model.errorMessage = error.localizedDescription }
+        loginWorking = false
     }
 
     private func statusText(_ status: String) -> String {
