@@ -113,6 +113,14 @@ private struct SettingsContent: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Section("Varepræferencer") {
+                    NavigationLink("Familiens foretrukne varer") {
+                        FamilyProductPreferencesView(model: model)
+                    }
+                    Text("Disse valg gælder kun familien. Den fælles, anonyme produktviden nulstilles ikke herfra.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
                 Section("Notifikation om ny avis") {
                     Toggle("Send push ved nye aviser", isOn: Binding(
                         get: { flyerPush.enabled },
@@ -291,6 +299,62 @@ private struct HouseholdRecoveryView: View {
             Button("Generér ny kode") { Task { code = await model.rotateRecoveryCode() } }
             Button("Annuller", role: .cancel) {}
         } message: { Text("En tidligere gendannelseskode stopper med at virke med det samme.") }
+    }
+}
+
+private struct FamilyProductPreferencesView: View {
+    @ObservedObject var model: AppModel
+    @State private var preferences: [FamilyProductPreference] = []
+    @State private var loading = true
+    private let api = APIClient()
+
+    var body: some View {
+        List {
+            if loading {
+                ProgressView("Henter præferencer …")
+            } else if preferences.isEmpty {
+                ContentUnavailableView(
+                    "Ingen varepræferencer endnu",
+                    systemImage: "slider.horizontal.3",
+                    description: Text("Kurv kan huske familiens valg direkte fra variantvælgeren.")
+                )
+            } else {
+                ForEach(preferences) { preference in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(preference.itemName).font(.headline)
+                        Text(preferenceText(preference)).font(.subheadline).foregroundStyle(.secondary)
+                    }
+                    .swipeActions {
+                        Button("Fjern", role: .destructive) { Task { await remove(preference) } }
+                    }
+                }
+            }
+        }
+        .navigationTitle("Varepræferencer")
+        .task { await reload() }
+        .refreshable { await reload() }
+    }
+
+    @MainActor private func reload() async {
+        loading = true
+        do { preferences = try await api.fetchFamilyProductPreferences() }
+        catch { model.errorMessage = error.localizedDescription }
+        loading = false
+    }
+
+    @MainActor private func remove(_ preference: FamilyProductPreference) async {
+        do {
+            try await api.removeFamilyProductPreference(itemName: preference.itemName)
+            preferences.removeAll { $0.id == preference.id }
+        } catch { model.errorMessage = error.localizedDescription }
+    }
+
+    private func preferenceText(_ preference: FamilyProductPreference) -> String {
+        switch preference.mode {
+        case "required": "Kræver: \(preference.preferredName)"
+        case "any_variant": "Alle varianter accepteres"
+        default: "Foretrækker: \(preference.preferredName)"
+        }
     }
 }
 

@@ -129,3 +129,20 @@ struct SamsungLoginStatus: Codable {
         case lists
     }
 }
+
+struct FamilyProductPreference: Codable, Identifiable, Hashable {
+    var id: String { itemName.lowercased() }
+    let itemName: String
+    let preferredName: String
+    let mode: String
+
+    enum CodingKeys: String, CodingKey {
+        case itemName = "item_name"
+        case preferredName = "preferred_name"
+        case mode
+    }
+}
+
+struct FamilyProductPreferencesResponse: Codable {
+    let preferences: [FamilyProductPreference]
+}

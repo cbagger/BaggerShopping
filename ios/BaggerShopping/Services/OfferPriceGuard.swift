@@ -16,8 +16,8 @@ struct OfferPriceGuard {
         let candidates = response.offers.filter {
             $0.id != selected.id
                 && $0.publicationID != selected.publicationID
-                && $0.price.map { $0 < selectedPrice } == true
-                && $0.identityMatch?.level == "same_item"
+                && $0.price != nil
+                && ["same_item", "compatible_variant"].contains($0.identityMatch?.level ?? "")
         }
         var verified: [GroceryOffer] = []
         for candidate in candidates {
@@ -25,10 +25,22 @@ struct OfferPriceGuard {
                 left: selected.productName,
                 leftQuantity: selected.quantity,
                 leftUnit: selected.unit,
+                leftPrice: selected.price,
                 right: candidate.productName,
                 rightQuantity: candidate.quantity,
-                rightUnit: candidate.unit
-            ), comparison.level == "same_item", comparison.directPriceComparison else { continue }
+                rightUnit: candidate.unit,
+                rightPrice: candidate.price
+            ) else { continue }
+            let directCheaper = comparison.level == "same_item"
+                && comparison.directPriceComparison
+                && (candidate.price ?? .greatestFiniteMagnitude) < selectedPrice
+            let selectedLowestUnitPrice = comparison.left.unitPriceMin ?? comparison.left.unitPrice
+            let candidateHighestUnitPrice = comparison.right.unitPriceMax ?? comparison.right.unitPrice
+            let safelyCheaperPerUnit = ["same_item", "compatible_variant"].contains(comparison.level)
+                && candidateHighestUnitPrice.map { candidateValue in
+                    selectedLowestUnitPrice.map { candidateValue < $0 } ?? false
+                } == true
+            guard directCheaper || safelyCheaperPerUnit else { continue }
             verified.append(candidate)
         }
         return sortedUnique(verified)

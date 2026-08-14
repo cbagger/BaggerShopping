@@ -41,6 +41,35 @@ def test_equal_quantities_in_different_units_can_be_compared():
     assert result.direct_price_comparison is True
 
 
+def test_multipack_total_and_unit_price_are_calculated():
+    product = analyze("Coca-Cola 6 x 33 cl", price=30)
+
+    assert product.pack_count == 6
+    assert product.total_amount == 1980
+    assert product.unit_price_unit == "l"
+    assert round(product.unit_price or 0, 2) == 15.15
+
+
+def test_amount_range_returns_safe_unit_price_interval():
+    product = analyze("Kylling 750–1000 g", price=40)
+
+    assert product.total_amount is None
+    assert product.total_amount_min == 750
+    assert product.total_amount_max == 1000
+    assert product.unit_price_unit == "kg"
+    assert product.unit_price_min == 40
+    assert round(product.unit_price_max or 0, 2) == 53.33
+
+
+def test_pack_only_quantity_is_understood():
+    product = analyze("Lambi toiletpapir 8-pak", price=32)
+
+    assert product.pack_count == 8
+    assert product.total_amount == 8
+    assert product.unit_price == 4
+    assert product.unit_price_unit == "stk"
+
+
 def test_short_word_does_not_match_inside_unrelated_compound():
     assert compare("Æg", "Dansk pålæg").level == "not_same"
 

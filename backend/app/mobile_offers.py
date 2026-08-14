@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from .flyer_adapters import RETAILER_ORDER, fetch_all_publications
 from .meny_flyer import Offer, Publication, _is_pet_offer, _product_domain, search_publication
-from .product_identity import MatchResult, compare
+from .product_identity import MatchResult, analyze, apply_family_preference, compare
 
 
 router = APIRouter(prefix="/api/mobile/v1/offers", tags=["offers"])
@@ -178,8 +178,28 @@ def _offer_match_result(item_name: str, offer: Offer) -> tuple[int, MatchResult]
             return 0, result
 
     results = [(compare(item_name, candidate), candidate) for candidate in candidates]
-    best, _ = max(results, key=lambda value: _identity_score(value[0]))
-    return _identity_score(best), best
+    best, candidate = max(results, key=lambda value: _identity_score(value[0]))
+    return apply_family_preference(item_name, candidate, _identity_score(best), best)
+
+
+def _offer_payload(offer: Offer, identity: MatchResult | None = None) -> dict:
+    payload = offer.model_dump()
+    payload["product_identity"] = analyze(
+        offer.product_name, quantity=offer.quantity, unit=offer.unit, price=offer.price,
+    ).model_dump()
+    payload["variants"] = []
+    for variant in offer.variants:
+        value = variant.model_dump()
+        value["identity"] = analyze(
+            variant.name,
+            quantity=variant.quantity if variant.quantity is not None else offer.quantity,
+            unit=variant.unit or offer.unit,
+            price=offer.price,
+        ).model_dump()
+        payload["variants"].append(value)
+    if identity is not None:
+        payload["identity_match"] = identity.model_dump()
+    return payload
 
 
 def _matched_offer(item_name: str, offer: Offer) -> tuple[int, Offer, MatchResult] | None:
@@ -232,7 +252,7 @@ def match_items_to_publications(item_names: list[str], publications: list[Public
         if ranked:
             groups.append({
                 "item_name": item_name,
-                "offers": [dict(offer.model_dump(), identity_match=identity.model_dump()) for _, offer, identity in ranked],
+                "offers": [_offer_payload(offer, identity) for _, offer, identity in ranked],
             })
     return groups
 
@@ -299,7 +319,7 @@ async def search_offers(
             if match is not None:
                 ranked.append(match)
     ranked.sort(key=lambda value: (-value[0], value[1].price if value[1].price is not None else float("inf"), value[1].retailer.casefold()))
-    offers = [dict(offer.model_dump(), identity_match=identity.model_dump()) for _, offer, identity in ranked]
+    offers = [_offer_payload(offer, identity) for _, offer, identity in ranked]
     return {
         "ok": True,
         "query": q,
@@ -340,7 +360,7 @@ async def publication_offers(publication_id: str):
     return {
         "ok": True,
         "publication": _publication_payload(publication),
-        "offers": [offer.model_dump() for offer in publication.structured_offers],
+        "offers": [_offer_payload(offer) for offer in publication.structured_offers],
     }
 
 
@@ -358,7 +378,7 @@ async def current_publication_offers():
         "publication": _publication_payload(publication),
         "offer_count": len(publication.structured_offers),
         "coverage": _coverage_payload(publication),
-        "offers": [offer.model_dump() for offer in publication.structured_offers],
+        "offers": [_offer_payload(offer) for offer in publication.structured_offers],
     }
 
 
