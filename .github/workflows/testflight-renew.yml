@@ -1,0 +1,276 @@
+name: TestFlight Renewal
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "Build number to use"
+        required: true
+        default: "35"
+        type: string
+      upload:
+        description: "Upload to App Store Connect/TestFlight"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: testflight-renew-kurv
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    name: Archive and optionally upload Kurv
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    env:
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+
+      TEAM_ID: 8VFZA2MGRK
+      PROJECT: BaggerShopping.xcodeproj
+      SCHEME: BaggerShopping
+      INFO_PLIST: BaggerShopping/Info.plist
+
+    defaults:
+      run:
+        working-directory: ios
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Configure runtime paths
+        run: |
+          set -euo pipefail
+          echo "ARCHIVE_PATH=$RUNNER_TEMP/Kurv.xcarchive" >> "$GITHUB_ENV"
+          echo "EXPORT_PATH=$RUNNER_TEMP/TestFlightExport" >> "$GITHUB_ENV"
+          echo "EXPORT_OPTIONS=$RUNNER_TEMP/ExportOptions.plist" >> "$GITHUB_ENV"
+          echo "AUTH_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: Validate inputs and secrets
+        env:
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+
+          case "$BUILD_NUMBER" in
+            ''|*[!0-9]*)
+              echo "build_number must be a positive integer"
+              exit 1
+              ;;
+          esac
+
+          if [ "$BUILD_NUMBER" -lt 1 ]; then
+            echo "build_number must be >= 1"
+            exit 1
+          fi
+
+          test -n "$ASC_KEY_ID"
+          test -n "$ASC_ISSUER_ID"
+          test -n "$ASC_PRIVATE_KEY"
+          test -f "$INFO_PLIST"
+
+      - name: Prepare build metadata
+        env:
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleVersion $BUILD_NUMBER" \
+            "$INFO_PLIST"
+
+          if /usr/libexec/PlistBuddy \
+            -c 'Print :ITSAppUsesNonExemptEncryption' \
+            "$INFO_PLIST" >/dev/null 2>&1; then
+            /usr/libexec/PlistBuddy \
+              -c 'Set :ITSAppUsesNonExemptEncryption false' \
+              "$INFO_PLIST"
+          else
+            /usr/libexec/PlistBuddy \
+              -c 'Add :ITSAppUsesNonExemptEncryption bool false' \
+              "$INFO_PLIST"
+          fi
+
+          echo "Source marketing version: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO_PLIST")"
+          echo "CI build number: $BUILD_NUMBER"
+
+      - name: Generate Xcode project
+        run: |
+          set -euo pipefail
+          xcodegen generate
+          xcodebuild -project "$PROJECT" -list
+
+      - name: Show Xcode environment
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+
+      - name: Prepare App Store Connect API key
+        run: |
+          set -euo pipefail
+
+          umask 077
+          printf '%s' "$ASC_PRIVATE_KEY" > "$AUTH_KEY_PATH"
+          test -s "$AUTH_KEY_PATH"
+
+      - name: Create export options
+        env:
+          UPLOAD: ${{ inputs.upload }}
+        run: |
+          set -euo pipefail
+
+          if [ "$UPLOAD" = "true" ]; then
+            DESTINATION="upload"
+          else
+            DESTINATION="export"
+          fi
+
+          cat > "$EXPORT_OPTIONS" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store-connect</string>
+
+              <key>destination</key>
+              <string>${DESTINATION}</string>
+
+              <key>signingStyle</key>
+              <string>automatic</string>
+
+              <key>teamID</key>
+              <string>${TEAM_ID}</string>
+
+              <key>manageAppVersionAndBuildNumber</key>
+              <false/>
+
+              <key>stripSwiftSymbols</key>
+              <true/>
+          </dict>
+          </plist>
+          PLIST
+
+          plutil -lint "$EXPORT_OPTIONS"
+
+      - name: Archive with automatic cloud signing
+        run: |
+          set -euo pipefail
+          set -o pipefail
+
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$ARCHIVE_PATH" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$AUTH_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            clean archive
+
+      - name: Verify archive metadata
+        env:
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+
+          APP_INFO="$(find "$ARCHIVE_PATH/Products/Applications" \
+            -maxdepth 2 \
+            -name Info.plist \
+            -print \
+            -quit)"
+
+          test -n "$APP_INFO"
+
+          VERSION="$(/usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleShortVersionString' \
+            "$APP_INFO")"
+
+          ACTUAL_BUILD="$(/usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleVersion' \
+            "$APP_INFO")"
+
+          BUNDLE_ID="$(/usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleIdentifier' \
+            "$APP_INFO")"
+
+          ENCRYPTION="$(/usr/libexec/PlistBuddy \
+            -c 'Print :ITSAppUsesNonExemptEncryption' \
+            "$APP_INFO")"
+
+          echo "Bundle ID: $BUNDLE_ID"
+          echo "Version:   $VERSION"
+          echo "Build:     $ACTUAL_BUILD"
+          echo "Non-exempt encryption: $ENCRYPTION"
+
+          test "$BUNDLE_ID" = "dk.chewbagger.BaggerShopping"
+          test "$ACTUAL_BUILD" = "$BUILD_NUMBER"
+          test "$ENCRYPTION" = "false"
+
+      - name: Export or upload archive
+        run: |
+          set -euo pipefail
+          set -o pipefail
+
+          mkdir -p "$EXPORT_PATH"
+
+          xcodebuild \
+            -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportPath "$EXPORT_PATH" \
+            -exportOptionsPlist "$EXPORT_OPTIONS" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$AUTH_KEY_PATH" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+
+      - name: Verify exported IPA
+        if: ${{ inputs.upload == false }}
+        run: |
+          set -euo pipefail
+
+          find "$EXPORT_PATH" -maxdepth 2 -type f -print
+
+          IPA="$(find "$EXPORT_PATH" \
+            -maxdepth 1 \
+            -name '*.ipa' \
+            -print \
+            -quit)"
+
+          test -n "$IPA"
+          echo "IPA successfully exported: $(basename "$IPA")"
+
+      - name: Save temporary IPA artifact
+        if: ${{ inputs.upload == false }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kurv-build-${{ inputs.build_number }}
+          path: ${{ runner.temp }}/TestFlightExport/*.ipa
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Result
+        env:
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          UPLOAD: ${{ inputs.upload }}
+        run: |
+          if [ "$UPLOAD" = "true" ]; then
+            echo "Kurv build $BUILD_NUMBER was uploaded."
+          else
+            echo "Kurv build $BUILD_NUMBER was archived, signed and exported."
+            echo "NO TESTFLIGHT UPLOAD WAS PERFORMED."
+          fi
