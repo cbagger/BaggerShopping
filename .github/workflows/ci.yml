@@ -30,6 +30,8 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Run backend tests
         run: pytest -q
+      - name: Build Samsung login broker image
+        run: docker build -f Dockerfile.login-broker -t kurv-samsung-login:ci .
 
   ios-build:
     runs-on: macos-latest
