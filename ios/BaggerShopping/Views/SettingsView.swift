@@ -76,6 +76,16 @@ private struct SettingsContent: View {
                     }
                 }
 
+                Section("Integrationer") {
+                    NavigationLink {
+                        SamsungFoodIntegrationView(model: model)
+                    } label: {
+                        Label("Samsung Food", systemImage: "refrigerator")
+                    }
+                    Text("Integrationer tilhører familien og opbevares sikkert på QNAP – ikke på den enkelte telefon.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
                 Section("Geofencing") {
                     LabeledContent("Placering", value: authorizationText)
                     LabeledContent("Notifikationer", value: geofence.notificationAuthorizationText)
@@ -281,6 +291,119 @@ private struct HouseholdRecoveryView: View {
             Button("Generér ny kode") { Task { code = await model.rotateRecoveryCode() } }
             Button("Annuller", role: .cancel) {}
         } message: { Text("En tidligere gendannelseskode stopper med at virke med det samme.") }
+    }
+}
+
+private struct SamsungFoodIntegrationView: View {
+    @ObservedObject var model: AppModel
+    @State private var integration: SamsungIntegrationStatus?
+    @State private var loading = true
+    @State private var disconnecting = false
+    @State private var confirmingDisconnect = false
+    @State private var resultMessage: String?
+    private let api = APIClient()
+
+    var body: some View {
+        Form {
+            if loading {
+                Section { ProgressView("Henter integrationsstatus …") }
+            } else if let integration {
+                Section("Status") {
+                    LabeledContent("Samsung Food") {
+                        Label(statusText(integration.status), systemImage: statusIcon(integration.status))
+                            .foregroundStyle(statusColor(integration.status))
+                    }
+                    if let listName = integration.listName {
+                        LabeledContent("Tilknyttet liste", value: listName)
+                    }
+                    if let timestamp = integration.lastSuccessfulSync {
+                        LabeledContent("Seneste synkronisering", value: Date(timeIntervalSince1970: TimeInterval(timestamp)).formatted(date: .abbreviated, time: .shortened))
+                    }
+                    if let error = integration.errorMessage {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .font(.subheadline).foregroundStyle(.orange)
+                    }
+                }
+
+                Section("Handlinger") {
+                    if integration.status == "connected" {
+                        Button("Afbryd forbindelse", role: .destructive) { confirmingDisconnect = true }
+                            .disabled(!integration.canManage || disconnecting)
+                    } else {
+                        Button(integration.status == "requires_reconnect" ? "Forbind igen" : "Forbind Samsung Food") {}
+                            .disabled(true)
+                        Text("Det familieisolerede loginflow færdiggøres i næste integrationsfase. Kurv beder aldrig om din Samsung-adgangskode i appen.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if !integration.canManage {
+                        Text("Kun familiens administrator kan ændre integrationen.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
+                Section {
+                    Text("Ved afbrydelse kopierer QNAP først alle aktuelle varer til familiens Kurv-liste. Tilbudsmetadata og familiens adgang bevares.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                ContentUnavailableView("Status kunne ikke hentes", systemImage: "wifi.exclamationmark", description: Text(model.errorMessage ?? "Prøv igen senere."))
+            }
+
+            if let resultMessage {
+                Section { Label(resultMessage, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
+            }
+        }
+        .navigationTitle("Samsung Food")
+        .task { await reload() }
+        .refreshable { await reload() }
+        .confirmationDialog("Afbryd Samsung Food?", isPresented: $confirmingDisconnect, titleVisibility: .visible) {
+            Button("Afbryd og bevar listen", role: .destructive) { Task { await disconnect() } }
+            Button("Annuller", role: .cancel) {}
+        } message: {
+            Text("QNAP kopierer først den aktuelle Samsung-liste. Der slettes ikke varer fra Samsung Food eller Kurv.")
+        }
+    }
+
+    @MainActor private func reload() async {
+        loading = true
+        do { integration = try await api.fetchSamsungIntegration() }
+        catch { model.errorMessage = error.localizedDescription; integration = nil }
+        loading = false
+    }
+
+    @MainActor private func disconnect() async {
+        disconnecting = true
+        do {
+            let response = try await api.disconnectSamsungIntegration()
+            resultMessage = "\(response.preservedItemCount) varer er bevaret i \(response.preservedListName)."
+            await model.refresh()
+            await reload()
+        } catch { model.errorMessage = error.localizedDescription }
+        disconnecting = false
+    }
+
+    private func statusText(_ status: String) -> String {
+        switch status {
+        case "connected": "Forbundet"
+        case "requires_reconnect": "Kræver genforbindelse"
+        default: "Ikke forbundet"
+        }
+    }
+
+    private func statusIcon(_ status: String) -> String {
+        switch status {
+        case "connected": "checkmark.circle.fill"
+        case "requires_reconnect": "exclamationmark.triangle.fill"
+        default: "minus.circle"
+        }
+    }
+
+    private func statusColor(_ status: String) -> Color {
+        switch status {
+        case "connected": .green
+        case "requires_reconnect": .orange
+        default: .secondary
+        }
     }
 }
 

@@ -15,7 +15,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .mobile_offer_metadata import router as offer_metadata_router
 from .mobile_offers import router as offers_router
-from .households import HouseholdContext, read_household, require_household, router as households_router, update_household
+from .households import HouseholdContext, read_household, require_household, require_owner, router as households_router, update_household
 from .flyer_push import router as flyer_push_router
 
 
@@ -96,6 +96,54 @@ class CategoryOverrideRequest(BaseModel):
 
 class CategoryOverrideRemoveRequest(BaseModel):
     item_name: str = Field(min_length=1, max_length=200)
+
+
+class SamsungIntegrationResponse(BaseModel):
+    provider: str = "samsung_food"
+    status: str
+    list_name: str | None = None
+    list_id: str | None = None
+    last_successful_sync: int | None = None
+    error_message: str | None = None
+    can_manage: bool
+    self_service_login_available: bool = False
+
+
+def _integration_record(household: dict[str, Any]) -> dict[str, Any]:
+    integrations = household.setdefault("integrations", {})
+    samsung = integrations.setdefault("samsung_food", {})
+    if household.get("list_backend") == "samsung":
+        # Legacy migration is metadata-only on purpose: the active QNAP auth
+        # state and Samsung list are retained until the isolated login flow can
+        # replace them atomically.
+        samsung.setdefault("status", "connected")
+        samsung.setdefault("storage_scope", household["id"])
+        samsung.setdefault("migrated_from_legacy", household["id"] == "family-bagger")
+    else:
+        samsung.setdefault("status", "not_connected")
+    return samsung
+
+
+async def _set_integration_health(
+    context: HouseholdContext,
+    *,
+    status_value: str,
+    list_name: str | None = None,
+    list_id: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, Any]:
+    def mutate(household: dict[str, Any]) -> dict[str, Any]:
+        record = _integration_record(household)
+        record["status"] = status_value
+        record["error_message"] = error_message
+        if list_name:
+            record["list_name"] = list_name
+        if list_id:
+            record["list_id"] = list_id
+        if status_value == "connected":
+            record["last_successful_sync"] = int(time.time())
+        return dict(record)
+    return await update_household(context, mutate)
 
 
 async def require_mobile_token(
@@ -377,6 +425,96 @@ async def delete_all_checked_mobile_items(
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Core clear-checked request failed: {response.text[:500]}")
     return response.json()
+
+
+@app.get("/api/mobile/v1/integrations/samsung-food", response_model=SamsungIntegrationResponse)
+async def samsung_integration_status(
+    context: HouseholdContext = Depends(household_context),
+) -> SamsungIntegrationResponse:
+    household = await read_household(context)
+    record = _integration_record(household)
+
+    if context.list_backend == "samsung":
+        try:
+            health = await core_get("/api/health")
+            shopping = await core_get("/api/shopping")
+            if health.status_code == 200 and shopping.status_code == 200:
+                payload = shopping.json()
+                record = await _set_integration_health(
+                    context,
+                    status_value="connected",
+                    list_name=payload.get("name") or record.get("list_name") or "Indkøbsliste",
+                    list_id=payload.get("list_id") or record.get("list_id"),
+                )
+            else:
+                record = await _set_integration_health(
+                    context,
+                    status_value="requires_reconnect",
+                    error_message="Samsung Food-sessionen er udløbet. Familiens varer er bevaret.",
+                )
+        except Exception:
+            record = await _set_integration_health(
+                context,
+                status_value="requires_reconnect",
+                error_message="Kurv kunne ikke kontakte Samsung Food. Familiens varer er ikke slettet.",
+            )
+    else:
+        # Persist the family-owned integration envelope even for families that
+        # choose to use Kurv without Samsung Food.
+        record = await update_household(context, lambda value: dict(_integration_record(value)))
+
+    return SamsungIntegrationResponse(
+        status=record.get("status", "not_connected"),
+        list_name=record.get("list_name"),
+        list_id=record.get("list_id"),
+        last_successful_sync=record.get("last_successful_sync"),
+        error_message=record.get("error_message"),
+        can_manage=context.role == "owner",
+    )
+
+
+@app.post("/api/mobile/v1/integrations/samsung-food/disconnect")
+async def disconnect_samsung_integration(
+    context: HouseholdContext = Depends(household_context),
+) -> dict[str, Any]:
+    require_owner(context)
+    preserved_items: list[dict[str, Any]] = []
+    preserved_name = context.household_name
+    if context.list_backend == "samsung":
+        try:
+            response = await core_get("/api/shopping")
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail="Samsung-listen kunne ikke kopieres sikkert før afbrydelse") from exc
+        if response.status_code != 200:
+            raise HTTPException(status_code=409, detail="Samsung-listen kunne ikke kopieres sikkert før afbrydelse")
+        payload = response.json()
+        preserved_name = payload.get("name") or preserved_name
+        for item in payload.get("items") or []:
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            preserved_items.append({
+                "id": str(uuid.uuid4()),
+                "name": str(item["name"]),
+                "checked": bool(item.get("checked", False)),
+                "quantity": item.get("quantity"),
+                "unit": item.get("unit"),
+                "created_at": int(time.time()),
+            })
+
+    def disconnect(household: dict[str, Any]) -> None:
+        if household.get("list_backend") == "samsung":
+            household["items"] = preserved_items
+            household["list_backend"] = "local"
+        record = _integration_record(household)
+        record.update(
+            status="not_connected",
+            error_message=None,
+            disconnected_at=int(time.time()),
+            preserved_list_name=preserved_name,
+        )
+
+    await update_household(context, disconnect)
+    return {"ok": True, "preserved_list_name": preserved_name, "preserved_item_count": len(preserved_items)}
 
 
 app.include_router(offer_metadata_router, dependencies=[Depends(household_context)])

@@ -67,3 +67,34 @@ struct HouseholdMember: Codable, Identifiable {
 struct HouseholdMembersResponse: Codable {
     let members: [HouseholdMember]
 }
+
+struct SamsungIntegrationStatus: Codable {
+    let provider: String
+    let status: String
+    let listName: String?
+    let listID: String?
+    let lastSuccessfulSync: Int?
+    let errorMessage: String?
+    let canManage: Bool
+    let selfServiceLoginAvailable: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case provider, status
+        case listName = "list_name"
+        case listID = "list_id"
+        case lastSuccessfulSync = "last_successful_sync"
+        case errorMessage = "error_message"
+        case canManage = "can_manage"
+        case selfServiceLoginAvailable = "self_service_login_available"
+    }
+}
+
+struct SamsungDisconnectResponse: Codable {
+    let preservedListName: String
+    let preservedItemCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case preservedListName = "preserved_list_name"
+        case preservedItemCount = "preserved_item_count"
+    }
+}

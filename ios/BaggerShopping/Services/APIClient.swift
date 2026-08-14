@@ -322,6 +322,20 @@ struct APIClient {
         _ = try await perform(request(path: "/api/mobile/v1/households/members/\(id)", method: "DELETE"))
     }
 
+    func fetchSamsungIntegration() async throws -> SamsungIntegrationStatus {
+        let data = try await perform(request(path: "/api/mobile/v1/integrations/samsung-food"))
+        return try JSONDecoder().decode(SamsungIntegrationStatus.self, from: data)
+    }
+
+    func disconnectSamsungIntegration() async throws -> SamsungDisconnectResponse {
+        let data = try await perform(request(
+            path: "/api/mobile/v1/integrations/samsung-food/disconnect",
+            method: "POST",
+            body: Data("{}".utf8)
+        ))
+        return try JSONDecoder().decode(SamsungDisconnectResponse.self, from: data)
+    }
+
     private func performPublic(path: String, body: Data) async throws -> Data {
         let url = baseURL.appending(path: path)
         var request = URLRequest(url: url)
