@@ -147,7 +147,7 @@ struct ProductIdentityCompareResponse: Codable {
     let right: ProductIdentityAnalysis
 
     enum CodingKeys: String, CodingKey {
-        case level, confidence, explanation
+        case level, confidence, explanation, left, right
         case directPriceComparison = "direct_price_comparison"
     }
 }
