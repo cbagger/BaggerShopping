@@ -10,6 +10,11 @@ private struct ShoppingItemOfferTarget: Identifiable {
     let item: ShoppingItem
 }
 
+private struct ShoppingItemOfferPreviewTarget: Identifiable {
+    let id = UUID()
+    let metadata: OfferMetadataDTO
+}
+
 struct ShoppingListView: View {
     private struct CategoryGroup: Identifiable {
         let category: ShoppingCategory
@@ -31,6 +36,7 @@ struct ShoppingListView: View {
     @State private var selectedRetailerFilters: Set<String> = []
     @State private var renameTarget: ShoppingItemRenameTarget?
     @State private var offerTarget: ShoppingItemOfferTarget?
+    @State private var offerPreviewTarget: ShoppingItemOfferPreviewTarget?
     @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
 
     private let retailerFilterOptions = [
@@ -197,31 +203,21 @@ struct ShoppingListView: View {
                         } else {
                             if sortByRetailer {
                                 ForEach(retailerGroups) { retailerGroup in
-                                    Section {
-                                        ForEach(retailerGroup.categories) { categoryGroup in
-                                            Label(
-                                                categoryGroup.category.rawValue,
-                                                systemImage: categoryGroup.category.icon
-                                            )
-                                            .font(.caption2.weight(.semibold))
-                                            .foregroundStyle(.secondary)
-                                            .listRowInsets(EdgeInsets(top: 5, leading: 20, bottom: 0, trailing: 16))
-                                            .listRowSeparator(.hidden)
-
+                                    ForEach(retailerGroup.categories) { categoryGroup in
+                                        Section {
                                             ForEach(categoryGroup.items, id: \.stableID) { item in
                                                 itemRow(item, showCategory: false)
-                                                    .listRowInsets(EdgeInsets(top: 2, leading: 20, bottom: 2, trailing: 16))
                                             }
-                                        }
-                                    } header: {
-                                        if let retailer = retailerGroup.retailer {
-                                            Label("\(retailer) · \(retailerGroup.count)", systemImage: "storefront")
-                                        } else {
-                                            Label("Uden butik · \(retailerGroup.count)", systemImage: "tray")
-                                        }
-                                    } footer: {
-                                        if retailerGroup.retailer != nil {
-                                            Text("Husk varer øverst der ikke er dedikeret til én butik")
+                                        } header: {
+                                            Label(
+                                                retailerCategoryHeader(retailerGroup, categoryGroup),
+                                                systemImage: categoryGroup.category.icon
+                                            )
+                                        } footer: {
+                                            if retailerGroup.retailer != nil,
+                                               categoryGroup.id == retailerGroup.categories.last?.id {
+                                                Text("Husk varer øverst der ikke er dedikeret til én butik")
+                                            }
                                         }
                                     }
                                 }
@@ -303,6 +299,9 @@ struct ShoppingListView: View {
                 SmartOfferMatchesView(service: smartOffers, item: target.item)
                     .environmentObject(model)
             }
+            .sheet(item: $offerPreviewTarget) { target in
+                ShoppingItemOfferPreviewSheet(metadata: target.metadata)
+            }
             .task(id: offerMatchSignature) {
                 guard model.tokenConfigured else { return }
                 await smartOffers.refresh(items: activeItems, model: model)
@@ -356,6 +355,14 @@ struct ShoppingListView: View {
         .buttonStyle(.plain)
     }
 
+    private func retailerCategoryHeader(
+        _ retailerGroup: RetailerGroup,
+        _ categoryGroup: CategoryGroup
+    ) -> String {
+        let retailer = retailerGroup.retailer ?? "Uden butik"
+        return "\(retailer) · \(categoryGroup.category.rawValue) · \(categoryGroup.items.count)"
+    }
+
     @ViewBuilder
     private func itemRow(_ item: ShoppingItem, showCategory: Bool) -> some View {
         HStack(spacing: 12) {
@@ -376,16 +383,25 @@ struct ShoppingListView: View {
                     .foregroundStyle(item.checked ? .secondary : .primary)
 
                 if let retailer = model.offerRetailer(for: item) {
-                    HStack(spacing: 4) {
-                        Text(retailer).lineLimit(1)
-                        if let price = model.offerPrice(for: item) {
-                            Text("·")
-                            Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                    Button {
+                        showOfferPreview(for: item)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(retailer).lineLimit(1)
+                            if let price = model.offerPrice(for: item) {
+                                Text("·")
+                                Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                            }
+                            if model.offerMetadataReference(for: item)?.offerID != nil {
+                                Image(systemName: "photo")
+                            }
                         }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .buttonStyle(.plain)
+                    .disabled(model.offerMetadataReference(for: item)?.offerID == nil)
 
                     if !item.checked, let status = offerStatus(for: item) {
                         Label(status.label, systemImage: status.icon)
@@ -393,16 +409,25 @@ struct ShoppingListView: View {
                             .foregroundStyle(status.color)
                     }
                 } else if !item.checked, let expired = model.expiredOfferMetadata(for: item) {
-                    HStack(spacing: 4) {
-                        Text(expired.retailer).lineLimit(1)
-                        if let price = expired.price {
-                            Text("·")
-                            Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                    Button {
+                        showOfferPreview(for: item)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(expired.retailer).lineLimit(1)
+                            if let price = expired.price {
+                                Text("·")
+                                Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                            }
+                            Text("· Udløbet")
+                            if model.offerMetadataReference(for: item)?.offerID != nil {
+                                Image(systemName: "photo")
+                            }
                         }
-                        Text("· Udløbet")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.red)
                     }
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.red)
+                    .buttonStyle(.plain)
+                    .disabled(model.offerMetadataReference(for: item)?.offerID == nil)
                 }
 
                 if !item.checked, model.offerRetailer(for: item) == nil {
@@ -518,6 +543,13 @@ struct ShoppingListView: View {
         }
     }
 
+    private func showOfferPreview(for item: ShoppingItem) {
+        guard let metadata = model.offerMetadataReference(for: item),
+              metadata.offerID != nil,
+              metadata.publicationID != nil else { return }
+        offerPreviewTarget = ShoppingItemOfferPreviewTarget(metadata: metadata)
+    }
+
     private func offerStatus(for item: ShoppingItem) -> (label: String, icon: String, color: Color)? {
         switch model.offerState(for: item) {
         case .upcoming(let date):
@@ -531,6 +563,62 @@ struct ShoppingListView: View {
             return ("Tilbud udløbet", "calendar.badge.exclamationmark", .red)
         case .active, .none:
             return nil
+        }
+    }
+}
+
+private struct ShoppingItemOfferPreviewSheet: View {
+    let metadata: OfferMetadataDTO
+    @Environment(\.dismiss) private var dismiss
+    @State private var offer: GroceryOffer?
+    @State private var errorMessage: String?
+    private let api = APIClient()
+
+    var body: some View {
+        Group {
+            if let offer {
+                OfferPreviewSheet(offer: offer)
+            } else if let errorMessage {
+                NavigationStack {
+                    ContentUnavailableView(
+                        "Tilbudsbilledet kunne ikke hentes",
+                        systemImage: "photo.badge.exclamationmark",
+                        description: Text(errorMessage)
+                    )
+                    .navigationTitle("Se tilbud")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Luk") { dismiss() }
+                        }
+                    }
+                }
+            } else {
+                ProgressView("Henter tilbud …")
+            }
+        }
+        .task { await load() }
+    }
+
+    @MainActor private func load() async {
+        if let snapshot = metadata.offerSnapshot {
+            offer = snapshot
+            return
+        }
+        guard let publicationID = metadata.publicationID,
+              let offerID = metadata.offerID else {
+            errorMessage = "Varen har ikke længere en reference til det oprindelige tilbud."
+            return
+        }
+        do {
+            let response = try await api.fetchOffers(publicationID: publicationID)
+            guard let match = response.offers.first(where: { $0.id == offerID }) else {
+                errorMessage = "Det oprindelige tilbud findes ikke længere i avisen."
+                return
+            }
+            offer = match
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }

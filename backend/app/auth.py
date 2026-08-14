@@ -27,8 +27,16 @@ class AuthState:
 
 
 class SamsungAuthManager:
-    def __init__(self) -> None:
-        self.state_file = settings.auth_state_file
+    def __init__(
+        self,
+        *,
+        state_file: Path | None = None,
+        browser_user_data_dir: Path | str | None = None,
+        allow_credential_fallback: bool = True,
+    ) -> None:
+        self.state_file = state_file or settings.auth_state_file
+        self.browser_user_data_dir = Path(browser_user_data_dir or settings.browser_user_data_dir)
+        self.allow_credential_fallback = allow_credential_fallback
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
 
     def load_state(self) -> AuthState:
@@ -82,7 +90,7 @@ class SamsungAuthManager:
             return state.token  # type: ignore[return-value]
 
         # 2) Optional env-token fallback for initial migration/testing
-        if not force_refresh and settings.samsung_food_token:
+        if self.allow_credential_fallback and not force_refresh and settings.samsung_food_token:
             if await self.token_valid(settings.samsung_food_token):
                 self.save_state(
                     AuthState(
@@ -104,7 +112,7 @@ class SamsungAuthManager:
             return token
 
         # 4) If the session is gone, attempt Samsung Account login using credentials.
-        if settings.samsung_account_email and settings.samsung_account_password:
+        if self.allow_credential_fallback and settings.samsung_account_email and settings.samsung_account_password:
             token = await self._login_with_credentials()
             if token and await self.token_valid(token):
                 self.save_state(
@@ -128,11 +136,11 @@ class SamsungAuthManager:
         return None
 
     async def _token_from_persistent_browser(self) -> str | None:
-        Path(settings.browser_user_data_dir).mkdir(parents=True, exist_ok=True)
+        self.browser_user_data_dir.mkdir(parents=True, exist_ok=True)
 
         async with async_playwright() as p:
             context = await p.chromium.launch_persistent_context(
-                user_data_dir=settings.browser_user_data_dir,
+                user_data_dir=str(self.browser_user_data_dir),
                 headless=settings.auth_headless,
                 args=["--no-sandbox", "--disable-dev-shm-usage"],
             )
@@ -149,11 +157,11 @@ class SamsungAuthManager:
                 await context.close()
 
     async def _login_with_credentials(self) -> str | None:
-        Path(settings.browser_user_data_dir).mkdir(parents=True, exist_ok=True)
+        self.browser_user_data_dir.mkdir(parents=True, exist_ok=True)
 
         async with async_playwright() as p:
             context = await p.chromium.launch_persistent_context(
-                user_data_dir=settings.browser_user_data_dir,
+                user_data_dir=str(self.browser_user_data_dir),
                 headless=settings.auth_headless,
                 args=["--no-sandbox", "--disable-dev-shm-usage"],
             )

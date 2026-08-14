@@ -246,15 +246,34 @@ struct APIClient {
             )
         )
         let response = try JSONDecoder().decode(OfferSearchResponse.self, from: data)
-        let rankedOffers = OfferSearchRanker.rank(response.offers, for: query)
-        return OfferSearchResponse(
-            ok: response.ok,
-            query: response.query,
-            retailer: response.retailer,
-            publication: response.publication,
-            offerCount: response.offerCount,
-            offers: rankedOffers
-        )
+        return response
+    }
+
+    func compareProducts(
+        left: String,
+        leftQuantity: Double?,
+        leftUnit: String?,
+        right: String,
+        rightQuantity: Double?,
+        rightUnit: String?
+    ) async throws -> ProductIdentityCompareResponse {
+        var payload: [String: Any] = ["left": left, "right": right]
+        if let leftQuantity { payload["left_quantity"] = leftQuantity }
+        if let leftUnit { payload["left_unit"] = leftUnit }
+        if let rightQuantity { payload["right_quantity"] = rightQuantity }
+        if let rightUnit { payload["right_unit"] = rightUnit }
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let data = try await perform(request(path: "/api/mobile/v1/product-identity/compare", method: "POST", body: body))
+        return try JSONDecoder().decode(ProductIdentityCompareResponse.self, from: data)
+    }
+
+    func submitProductMatchFeedback(left: String, right: String, decision: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "left": left,
+            "right": right,
+            "decision": decision
+        ])
+        _ = try await perform(request(path: "/api/mobile/v1/product-identity/feedback", method: "POST", body: body))
     }
 
     func fetchOffers(publicationID: String) async throws -> PublicationOffersResponse {
@@ -286,6 +305,22 @@ struct APIClient {
         return try JSONDecoder().decode(HouseholdAuthResponse.self, from: data)
     }
 
+    func recoverHousehold(code: String, memberName: String) async throws -> HouseholdAuthResponse {
+        let body = try JSONSerialization.data(withJSONObject: ["recovery_code": code, "member_name": memberName])
+        let data = try await performPublic(path: "/api/mobile/v1/households/recover", body: body)
+        return try JSONDecoder().decode(HouseholdAuthResponse.self, from: data)
+    }
+
+    func fetchRecoveryStatus() async throws -> HouseholdRecoveryStatus {
+        let data = try await perform(request(path: "/api/mobile/v1/households/recovery"))
+        return try JSONDecoder().decode(HouseholdRecoveryStatus.self, from: data)
+    }
+
+    func rotateRecoveryCode() async throws -> String {
+        let data = try await perform(request(path: "/api/mobile/v1/households/recovery/rotate", method: "POST", body: Data("{}".utf8)))
+        return try JSONDecoder().decode(HouseholdRecoveryCodeResponse.self, from: data).recoveryCode
+    }
+
     func createHouseholdInvite() async throws -> HouseholdInviteResponse {
         let body = try JSONSerialization.data(withJSONObject: ["expires_in_days": 7])
         let data = try await perform(request(path: "/api/mobile/v1/households/invite", method: "POST", body: body))
@@ -304,6 +339,43 @@ struct APIClient {
 
     func removeHouseholdMember(id: String) async throws {
         _ = try await perform(request(path: "/api/mobile/v1/households/members/\(id)", method: "DELETE"))
+    }
+
+    func fetchSamsungIntegration() async throws -> SamsungIntegrationStatus {
+        let data = try await perform(request(path: "/api/mobile/v1/integrations/samsung-food"))
+        return try JSONDecoder().decode(SamsungIntegrationStatus.self, from: data)
+    }
+
+    func disconnectSamsungIntegration() async throws -> SamsungDisconnectResponse {
+        let data = try await perform(request(
+            path: "/api/mobile/v1/integrations/samsung-food/disconnect",
+            method: "POST",
+            body: Data("{}".utf8)
+        ))
+        return try JSONDecoder().decode(SamsungDisconnectResponse.self, from: data)
+    }
+
+    func startSamsungLogin() async throws -> SamsungLoginStartResponse {
+        let data = try await perform(request(
+            path: "/api/mobile/v1/integrations/samsung-food/login/start",
+            method: "POST",
+            body: Data("{}".utf8)
+        ))
+        return try JSONDecoder().decode(SamsungLoginStartResponse.self, from: data)
+    }
+
+    func fetchSamsungLoginStatus(sessionID: String) async throws -> SamsungLoginStatus {
+        let data = try await perform(request(path: "/api/mobile/v1/integrations/samsung-food/login/\(sessionID)"))
+        return try JSONDecoder().decode(SamsungLoginStatus.self, from: data)
+    }
+
+    func selectSamsungList(sessionID: String, listID: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["session_id": sessionID, "list_id": listID])
+        _ = try await perform(request(
+            path: "/api/mobile/v1/integrations/samsung-food/login/select-list",
+            method: "POST",
+            body: body
+        ))
     }
 
     private func performPublic(path: String, body: Data) async throws -> Data {

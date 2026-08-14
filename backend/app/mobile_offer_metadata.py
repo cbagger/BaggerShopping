@@ -25,6 +25,7 @@ class OfferMetadataRecord(BaseModel):
     offer_id: str | None = None
     publication_id: str | None = None
     matched_item_name: str | None = None
+    offer_snapshot: dict[str, object] | None = None
 
 
 class OfferMetadataResponse(BaseModel):

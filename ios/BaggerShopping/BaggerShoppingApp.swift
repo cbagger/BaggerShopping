@@ -18,9 +18,18 @@ struct BaggerShoppingApp: App {
                 }
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
-            Task {
-                await appModel.refresh()
+            switch phase {
+            case .background:
+                navigation.didEnterBackground()
+            case .active:
+                _ = navigation.resetAfterLongInactivityIfNeeded()
+                Task {
+                    await appModel.refresh()
+                }
+            case .inactive:
+                break
+            @unknown default:
+                break
             }
         }
     }

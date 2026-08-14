@@ -103,7 +103,7 @@ private struct FlyerCoverCard: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .aspectRatio(694.0 / 1007.0, contentMode: .fit)
+            .frame(height: 240)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .clipped()
             .overlay {
@@ -286,7 +286,8 @@ private struct NativeFlyerReader: View {
                 offerValidUntil: offer.validUntil,
                 offerID: offer.id,
                 publicationID: offer.publicationID,
-                matchedItemName: name
+                matchedItemName: name,
+                offerSnapshot: offer
             ) { addedName = name }
         }
     }

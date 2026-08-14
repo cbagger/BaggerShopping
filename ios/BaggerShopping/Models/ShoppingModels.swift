@@ -80,6 +80,29 @@ struct OfferMetadataDTO: Codable, Hashable {
     let offerID: String?
     let publicationID: String?
     let matchedItemName: String?
+    let offerSnapshot: GroceryOffer?
+
+    init(
+        itemName: String,
+        retailer: String,
+        price: Double?,
+        validFrom: String?,
+        validUntil: String?,
+        offerID: String?,
+        publicationID: String?,
+        matchedItemName: String?,
+        offerSnapshot: GroceryOffer? = nil
+    ) {
+        self.itemName = itemName
+        self.retailer = retailer
+        self.price = price
+        self.validFrom = validFrom
+        self.validUntil = validUntil
+        self.offerID = offerID
+        self.publicationID = publicationID
+        self.matchedItemName = matchedItemName
+        self.offerSnapshot = offerSnapshot
+    }
 
     enum CodingKeys: String, CodingKey {
         case retailer, price
@@ -89,6 +112,7 @@ struct OfferMetadataDTO: Codable, Hashable {
         case offerID = "offer_id"
         case publicationID = "publication_id"
         case matchedItemName = "matched_item_name"
+        case offerSnapshot = "offer_snapshot"
     }
 }
 

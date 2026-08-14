@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import time
 from datetime import date, datetime
 
@@ -10,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from .flyer_adapters import RETAILER_ORDER, fetch_all_publications
 from .meny_flyer import Offer, Publication, _is_pet_offer, _product_domain, search_publication
+from .product_identity import MatchResult, compare
 
 
 router = APIRouter(prefix="/api/mobile/v1/offers", tags=["offers"])
@@ -146,102 +146,44 @@ def _reader_problems(publication: Publication, *, today: date | None = None) -> 
     return problems
 
 
-_MATCH_STOPWORDS = {
-    "af", "de", "den", "det", "eller", "fra", "i", "med", "og", "pak",
-    "pk", "pr", "på", "stk", "til", "uden", "x",
-}
-_MATCH_TOKEN_RE = re.compile(r"[0-9a-zæøå]+", re.IGNORECASE)
 _MATCH_THRESHOLD = 62
 _MAX_MATCHES_PER_ITEM = 4
 
 
-def _match_tokens(value: str) -> list[str]:
-    return [
-        token.casefold()
-        for token in _MATCH_TOKEN_RE.findall(value)
-        if token.casefold() not in _MATCH_STOPWORDS
-    ]
-
-
-def _token_forms(token: str) -> set[str]:
-    forms = {token}
-    if len(token) < 6:
-        return forms
-    for ending in ("erne", "ene", "eren", "er", "en", "et", "e", "s"):
-        if token.endswith(ending) and len(token) - len(ending) >= 4:
-            forms.add(token[:-len(ending)])
-    return forms
-
-
-def _token_matches(query_token: str, candidate_token: str) -> bool:
-    if query_token == candidate_token:
-        return True
-    if _token_forms(query_token) & _token_forms(candidate_token):
-        return True
-    # Compounds are common in Danish grocery names (sødmælk, multifrugtjuice,
-    # sandwichrugbrød). Keep short words exact so e.g. "æg" cannot match
-    # unrelated "pålæg".
-    if len(query_token) >= 4 and query_token in candidate_token:
-        return True
-    if len(candidate_token) >= 5 and candidate_token in query_token:
-        return True
-    return False
+def _identity_score(result: MatchResult) -> int:
+    return {
+        "same_item": 120,
+        "compatible_variant": 78,
+        "probably_same": 65,
+        "not_same": 0,
+    }[result.level]
 
 
 def _text_match_score(item_name: str, candidate: str) -> int:
-    query_tokens = _match_tokens(item_name)
-    candidate_tokens = _match_tokens(candidate)
-    if not query_tokens or not candidate_tokens:
-        return 0
-
-    query_compact = "".join(query_tokens)
-    candidate_compact = "".join(candidate_tokens)
-    if len(query_compact) >= 4 and query_compact in candidate_compact:
-        return 120
-
-    matched = [
-        query_token
-        for query_token in query_tokens
-        if any(_token_matches(query_token, candidate_token) for candidate_token in candidate_tokens)
-    ]
-    if not matched:
-        return 0
-
-    coverage = len(matched) / len(query_tokens)
-    longest = max(query_tokens, key=len)
-    longest_matched = longest in matched
-
-    if coverage == 1:
-        return 90 + min(20, len(query_tokens) * 5)
-    if len(query_tokens) == 1:
-        return 85
-    if coverage >= 2 / 3 and longest_matched:
-        return 76
-    if coverage >= 0.5 and len(longest) >= 6 and longest_matched:
-        # This intentionally permits a missing brand qualifier: a list item
-        # such as "Coop pizzadej" may still get a relevant Pizzadej offer from
-        # another retailer, but the user must explicitly approve it.
-        return 62
-    return 0
+    return _identity_score(compare(item_name, candidate))
 
 
-def _offer_match_score(item_name: str, offer: Offer) -> int:
+def _offer_match_result(item_name: str, offer: Offer) -> tuple[int, MatchResult]:
     query_domain = _product_domain(item_name)
     if _is_pet_offer(offer) and query_domain != "pet":
-        return 0
+        result = compare(item_name, "kæledyrsfoder")
+        return 0, result
 
     candidates = [offer.product_name, *(variant.name for variant in offer.variants)]
     if query_domain is not None:
         domains = {_product_domain(candidate) for candidate in candidates}
         concrete_domains = {domain for domain in domains if domain is not None}
         if concrete_domains and query_domain not in concrete_domains:
-            return 0
+            result = compare(item_name, offer.product_name)
+            return 0, result
 
-    return max((_text_match_score(item_name, candidate) for candidate in candidates), default=0)
+    results = [(compare(item_name, candidate), candidate) for candidate in candidates]
+    best, _ = max(results, key=lambda value: _identity_score(value[0]))
+    return _identity_score(best), best
 
 
-def _matched_offer(item_name: str, offer: Offer) -> tuple[int, Offer] | None:
-    score = _offer_match_score(item_name, offer)
+def _matched_offer(item_name: str, offer: Offer) -> tuple[int, Offer, MatchResult] | None:
+    score, identity = _offer_match_result(item_name, offer)
     if score < _MATCH_THRESHOLD or offer.price is None:
         return None
 
@@ -257,7 +199,7 @@ def _matched_offer(item_name: str, offer: Offer) -> tuple[int, Offer] | None:
         # expose the variants that actually matched the list item.
         if relevant:
             matched.variants = relevant
-    return score, matched
+    return score, matched, identity
 
 
 def match_items_to_publications(item_names: list[str], publications: list[Publication]) -> list[dict]:
@@ -272,16 +214,16 @@ def match_items_to_publications(item_names: list[str], publications: list[Public
             continue
         seen_item_keys.add(item_key)
 
-        candidates: dict[str, tuple[int, Offer]] = {}
+        candidates: dict[str, tuple[int, Offer, MatchResult]] = {}
         for publication in current:
             for offer in publication.structured_offers:
                 result = _matched_offer(item_name, offer)
                 if result is None:
                     continue
-                score, matched = result
+                score, matched, identity = result
                 previous = candidates.get(matched.id)
                 if previous is None or score > previous[0]:
-                    candidates[matched.id] = (score, matched)
+                    candidates[matched.id] = (score, matched, identity)
 
         ranked = sorted(
             candidates.values(),
@@ -290,7 +232,7 @@ def match_items_to_publications(item_names: list[str], publications: list[Public
         if ranked:
             groups.append({
                 "item_name": item_name,
-                "offers": [offer.model_dump() for _, offer in ranked],
+                "offers": [dict(offer.model_dump(), identity_match=identity.model_dump()) for _, offer, identity in ranked],
             })
     return groups
 
@@ -344,15 +286,27 @@ async def search_offers(
     ]
     if not items:
         raise HTTPException(status_code=404, detail="Der er ingen aktuel avis for den valgte butik")
-    results = [search_publication(publication, q) for publication in items]
-    offers = [offer for result in results for offer in result.offers]
+    ranked: list[tuple[int, Offer, MatchResult]] = []
+    for publication in items:
+        # Retain the adapter's indexed lookup as a fast candidate source, but
+        # always union it with all structured offers. Product identity is the
+        # sole eligibility/ranking decision, so aliases can find offers even
+        # when the retailer text search does not.
+        indexed = search_publication(publication, q).offers
+        candidates = {offer.id: offer for offer in [*publication.structured_offers, *indexed]}
+        for offer in candidates.values():
+            match = _matched_offer(q, offer)
+            if match is not None:
+                ranked.append(match)
+    ranked.sort(key=lambda value: (-value[0], value[1].price if value[1].price is not None else float("inf"), value[1].retailer.casefold()))
+    offers = [dict(offer.model_dump(), identity_match=identity.model_dump()) for _, offer, identity in ranked]
     return {
         "ok": True,
         "query": q,
         "retailer": items[0].retailer if len({item.retailer for item in items}) == 1 else "Alle butikker",
         "publication": _publication_payload(items[0]) if len(items) == 1 else None,
         "offer_count": len(offers),
-        "offers": [offer.model_dump() for offer in offers],
+        "offers": offers,
     }
 
 

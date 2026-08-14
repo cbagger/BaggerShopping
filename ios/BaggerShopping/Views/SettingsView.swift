@@ -57,6 +57,9 @@ private struct SettingsContent: View {
                             NavigationLink("Administrér familiemedlemmer") {
                                 HouseholdMembersView(model: model)
                             }
+                            NavigationLink("Gendannelse og sikkerhed") {
+                                HouseholdRecoveryView(model: model)
+                            }
                         }
                         if let inviteCode {
                             VStack(alignment: .leading, spacing: 5) {
@@ -71,6 +74,16 @@ private struct SettingsContent: View {
                         Text("Hver familie har sin egen private indkøbsliste og egne tilbudsoplysninger.")
                             .font(.caption).foregroundStyle(.secondary)
                     }
+                }
+
+                Section("Integrationer") {
+                    NavigationLink {
+                        SamsungFoodIntegrationView(model: model)
+                    } label: {
+                        Label("Samsung Food", systemImage: "refrigerator")
+                    }
+                    Text("Integrationer tilhører familien og opbevares sikkert på QNAP – ikke på den enkelte telefon.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section("Geofencing") {
@@ -209,8 +222,8 @@ private struct HouseholdMembersView: View {
                             editedName = member.name
                             editing = member
                         }
-                        if member.role != "owner" {
-                            Button("Fjern fra familien", systemImage: "person.badge.minus", role: .destructive) {
+                        if member.id != "legacy-owner" {
+                            Button(member.role == "owner" ? "Tilbagekald denne adgang" : "Fjern fra familien", systemImage: "person.badge.minus", role: .destructive) {
                                 removing = member
                             }
                         }
@@ -247,6 +260,229 @@ private struct HouseholdMembersView: View {
 
     @MainActor private func reload() async {
         if let loaded = await model.householdMembers() { members = loaded }
+    }
+}
+
+private struct HouseholdRecoveryView: View {
+    @ObservedObject var model: AppModel
+    @State private var code: String?
+    @State private var confirmingRotation = false
+
+    var body: some View {
+        Form {
+            Section("Gendannelseskode") {
+                if let code {
+                    Text(code).font(.title3.monospaced().bold()).textSelection(.enabled)
+                    ShareLink(item: code) { Label("Gem eller del sikkert", systemImage: "square.and.arrow.up") }
+                    Text("Den tidligere kode er nu ugyldig.").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Af sikkerhedsgrunde kan den eksisterende kode ikke vises igen. Opret en ny, hvis du ikke længere har den gemt.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                Button(code == nil ? "Opret ny gendannelseskode" : "Generér en anden kode") { confirmingRotation = true }
+            }
+            Section {
+                Text("En gendannelseskode kan udstede en ny administratoradgang på en ny telefon uden at oprette en tom familie eller ændre listen og integrationerne.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("Gendannelse")
+        .confirmationDialog("Generér ny kode?", isPresented: $confirmingRotation, titleVisibility: .visible) {
+            Button("Generér ny kode") { Task { code = await model.rotateRecoveryCode() } }
+            Button("Annuller", role: .cancel) {}
+        } message: { Text("En tidligere gendannelseskode stopper med at virke med det samme.") }
+    }
+}
+
+private struct SamsungFoodIntegrationView: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.openURL) private var openURL
+    @State private var integration: SamsungIntegrationStatus?
+    @State private var loading = true
+    @State private var disconnecting = false
+    @State private var confirmingDisconnect = false
+    @State private var resultMessage: String?
+    @State private var loginSession: SamsungLoginStartResponse?
+    @State private var availableLists: [SamsungListChoice] = []
+    @State private var selectedListID: String?
+    @State private var loginWorking = false
+    private let api = APIClient()
+
+    var body: some View {
+        Form {
+            if loading {
+                Section { ProgressView("Henter integrationsstatus …") }
+            } else if let integration {
+                Section("Status") {
+                    LabeledContent("Samsung Food") {
+                        Label(statusText(integration.status), systemImage: statusIcon(integration.status))
+                            .foregroundStyle(statusColor(integration.status))
+                    }
+                    if let listName = integration.listName {
+                        LabeledContent("Tilknyttet liste", value: listName)
+                    }
+                    if let timestamp = integration.lastSuccessfulSync {
+                        LabeledContent("Seneste synkronisering", value: Date(timeIntervalSince1970: TimeInterval(timestamp)).formatted(date: .abbreviated, time: .shortened))
+                    }
+                    if let error = integration.errorMessage {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .font(.subheadline).foregroundStyle(.orange)
+                    }
+                }
+
+                Section("Handlinger") {
+                    if integration.status == "connected" {
+                        Button("Forbind igen") { Task { await startLogin() } }
+                            .disabled(!integration.canManage || !integration.selfServiceLoginAvailable || loginWorking)
+                        Button("Afbryd forbindelse", role: .destructive) { confirmingDisconnect = true }
+                            .disabled(!integration.canManage || disconnecting)
+                    } else {
+                        Button(integration.status == "requires_reconnect" ? "Forbind igen" : "Forbind Samsung Food") {
+                            Task { await startLogin() }
+                        }
+                        .disabled(!integration.canManage || !integration.selfServiceLoginAvailable || loginWorking)
+                    }
+                    if integration.canManage && !integration.selfServiceLoginAvailable {
+                        Text("Det sikre login skal først aktiveres på familiens QNAP.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("Samsung-login foregår direkte i en midlertidig QNAP-browser. Kurv ser eller modtager aldrig din Samsung-adgangskode.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if !integration.canManage {
+                        Text("Kun familiens administrator kan ændre integrationen.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
+                if let loginSession {
+                    Section("Midlertidigt login") {
+                        LabeledContent("Udløber", value: Date(timeIntervalSince1970: TimeInterval(loginSession.expiresAt)).formatted(date: .omitted, time: .shortened))
+                        Button("Åbn Samsung-login igen") { openURL(loginSession.loginURL) }
+                        Button("Jeg er færdig – kontrollér login") { Task { await checkLogin() } }
+                            .disabled(loginWorking)
+                    }
+                }
+
+                if !availableLists.isEmpty {
+                    Section("Vælg Samsung-liste") {
+                        Picker("Indkøbsliste", selection: Binding(
+                            get: { selectedListID ?? availableLists.first?.id ?? "" },
+                            set: { selectedListID = $0 }
+                        )) {
+                            ForEach(availableLists) { list in Text(list.name).tag(list.id) }
+                        }
+                        Button("Brug den valgte liste") { Task { await activateSelectedList() } }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(selectedListID == nil && availableLists.isEmpty)
+                    }
+                }
+
+                Section {
+                    Text("Ved afbrydelse kopierer QNAP først alle aktuelle varer til familiens Kurv-liste. Tilbudsmetadata og familiens adgang bevares.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                ContentUnavailableView("Status kunne ikke hentes", systemImage: "wifi.exclamationmark", description: Text(model.errorMessage ?? "Prøv igen senere."))
+            }
+
+            if let resultMessage {
+                Section { Label(resultMessage, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
+            }
+        }
+        .navigationTitle("Samsung Food")
+        .task { await reload() }
+        .refreshable { await reload() }
+        .confirmationDialog("Afbryd Samsung Food?", isPresented: $confirmingDisconnect, titleVisibility: .visible) {
+            Button("Afbryd og bevar listen", role: .destructive) { Task { await disconnect() } }
+            Button("Annuller", role: .cancel) {}
+        } message: {
+            Text("QNAP kopierer først den aktuelle Samsung-liste. Der slettes ikke varer fra Samsung Food eller Kurv.")
+        }
+    }
+
+    @MainActor private func reload() async {
+        loading = true
+        do { integration = try await api.fetchSamsungIntegration() }
+        catch { model.errorMessage = error.localizedDescription; integration = nil }
+        loading = false
+    }
+
+    @MainActor private func disconnect() async {
+        disconnecting = true
+        do {
+            let response = try await api.disconnectSamsungIntegration()
+            resultMessage = "\(response.preservedItemCount) varer er bevaret i \(response.preservedListName)."
+            await model.refresh()
+            await reload()
+        } catch { model.errorMessage = error.localizedDescription }
+        disconnecting = false
+    }
+
+    @MainActor private func startLogin() async {
+        loginWorking = true
+        do {
+            let session = try await api.startSamsungLogin()
+            loginSession = session
+            availableLists = []
+            selectedListID = nil
+            openURL(session.loginURL)
+        } catch { model.errorMessage = error.localizedDescription }
+        loginWorking = false
+    }
+
+    @MainActor private func checkLogin() async {
+        guard let loginSession else { return }
+        loginWorking = true
+        do {
+            let status = try await api.fetchSamsungLoginStatus(sessionID: loginSession.sessionID)
+            if status.status == "choose_list" {
+                availableLists = status.lists
+                selectedListID = status.lists.first?.id
+            } else {
+                resultMessage = "Samsung-login er endnu ikke afsluttet i QNAP-browseren."
+            }
+        } catch { model.errorMessage = error.localizedDescription }
+        loginWorking = false
+    }
+
+    @MainActor private func activateSelectedList() async {
+        guard let sessionID = loginSession?.sessionID,
+              let listID = selectedListID else { return }
+        loginWorking = true
+        do {
+            try await api.selectSamsungList(sessionID: sessionID, listID: listID)
+            resultMessage = "Samsung Food-listen er forbundet med familien."
+            loginSession = nil
+            availableLists = []
+            selectedListID = nil
+            await model.refresh()
+            await reload()
+        } catch { model.errorMessage = error.localizedDescription }
+        loginWorking = false
+    }
+
+    private func statusText(_ status: String) -> String {
+        switch status {
+        case "connected": "Forbundet"
+        case "requires_reconnect": "Kræver genforbindelse"
+        default: "Ikke forbundet"
+        }
+    }
+
+    private func statusIcon(_ status: String) -> String {
+        switch status {
+        case "connected": "checkmark.circle.fill"
+        case "requires_reconnect": "exclamationmark.triangle.fill"
+        default: "minus.circle"
+        }
+    }
+
+    private func statusColor(_ status: String) -> Color {
+        switch status {
+        case "connected": .green
+        case "requires_reconnect": .orange
+        default: .secondary
+        }
     }
 }
 

@@ -288,7 +288,7 @@ private struct StoreConfirmView: View {
                 }
 
                 Section("Geofence") {
-                    Slider(value: $radius, in: 50...500, step: 25)
+                    Slider(value: $radius, in: 100...500, step: 25)
                     LabeledContent("Radius", value: "\(Int(radius)) m")
                     Text("100 m er standard. Du kan vælge helt ned til 50 m, hvis butikkens placering kræver en mere præcis geofence.")
                         .font(.caption)
@@ -402,7 +402,7 @@ private struct ManualStoreMapView: View {
                 }
 
                 Section("Geofence") {
-                    Slider(value: $radius, in: 50...500, step: 25)
+                    Slider(value: $radius, in: 100...500, step: 25)
                     LabeledContent("Radius", value: "\(Int(radius)) m")
                     Text("100 m er standard. Manuelt tilføjede butikker bruger præcis de samme geofence-indstillinger og notifikationer som søgte butikker.")
                         .font(.caption)
@@ -515,7 +515,7 @@ private struct EditStoreView: View {
 
                 Section("Geofence") {
                     Toggle("Aktiv", isOn: $enabled)
-                    Slider(value: $radius, in: 50...500, step: 25)
+                    Slider(value: $radius, in: 100...500, step: 25)
                     LabeledContent("Radius", value: "\(Int(radius)) m")
                     Text("Notifikationen udløses, når iOS registrerer ankomst til området omkring butikken. Radius kan vælges fra 50 til 500 m.")
                         .font(.caption)

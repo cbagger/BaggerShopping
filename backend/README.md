@@ -68,6 +68,34 @@ Expected: `ok=true`, `mode=browser-session`, `token_valid=true`.
 - Do not expose ports 8088 or 3001 directly to the public Internet.
 - Port 3001 is only for temporary login on the trusted LAN.
 
+## Family-isolated Samsung login
+
+The mobile API now exposes a broker contract for self-service Samsung login.
+An owner receives a 15-minute, one-use URL. The broker claims that capability,
+opens Samsung Food with a browser profile under
+`/data/integrations/<household-id>/samsung-food`, and reports the lists found
+after the user has handled password, CAPTCHA and Samsung verification directly.
+
+`SAMSUNG_LOGIN_PUBLIC_BASE_URL` must remain empty until the separate login
+broker and its HTTPS reverse proxy are installed. This deliberately prevents
+new families from being sent to the legacy global Chromium profile. Broker
+completion calls require `X-Kurv-Broker-Key`; this secret must only exist on
+QNAP and must differ from `MOBILE_API_TOKEN`.
+
+The broker is included as `samsung-login-broker` and listens on QNAP port 8091.
+Publish that port through an HTTPS-only reverse proxy such as
+`shopping-login.chewbagger.dk`, then set:
+
+```dotenv
+SAMSUNG_LOGIN_PUBLIC_BASE_URL=https://shopping-login.chewbagger.dk
+SAMSUNG_LOGIN_BROKER_KEY=<a separate random 64+ character value>
+```
+
+The broker launches one temporary visible Chromium session at a time. Its
+noVNC websocket is served on the same HTTPS origin, so no VNC port is exposed.
+The Samsung token is written directly to the family's QNAP auth-state file;
+the password and CAPTCHA input never enter Kurv or the mobile API.
+
 
 ## v0.4 Mobile API
 

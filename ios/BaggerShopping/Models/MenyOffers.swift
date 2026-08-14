@@ -68,6 +68,7 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
     let rawText: String
     let safeToAdd: Bool
     let variants: [OfferVariant]
+    let identityMatch: ProductIdentityMatch?
 
     enum CodingKeys: String, CodingKey {
         case id, retailer, brand, price, quantity, unit
@@ -89,6 +90,7 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         case rawText = "raw_text"
         case safeToAdd = "safe_to_add"
         case variants
+        case identityMatch = "identity_match"
     }
 
     init(from decoder: Decoder) throws {
@@ -117,6 +119,31 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         rawText = try values.decodeIfPresent(String.self, forKey: .rawText) ?? ""
         safeToAdd = try values.decodeIfPresent(Bool.self, forKey: .safeToAdd) ?? false
         variants = try values.decodeIfPresent([OfferVariant].self, forKey: .variants) ?? []
+        identityMatch = try values.decodeIfPresent(ProductIdentityMatch.self, forKey: .identityMatch)
+    }
+}
+
+struct ProductIdentityMatch: Codable, Hashable {
+    let level: String
+    let confidence: Double
+    let explanation: String
+    let directPriceComparison: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case level, confidence, explanation
+        case directPriceComparison = "direct_price_comparison"
+    }
+}
+
+struct ProductIdentityCompareResponse: Codable {
+    let level: String
+    let confidence: Double
+    let explanation: String
+    let directPriceComparison: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case level, confidence, explanation
+        case directPriceComparison = "direct_price_comparison"
     }
 }
 

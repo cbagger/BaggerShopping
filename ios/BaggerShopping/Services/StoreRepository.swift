@@ -36,7 +36,7 @@ final class StoreRepository: ObservableObject {
 
     func setRadius(_ radius: Double, for id: UUID) {
         guard let index = stores.firstIndex(where: { $0.id == id }) else { return }
-        stores[index].radius = min(max(radius, 50), 500)
+        stores[index].radius = min(max(radius, 100), 500)
         save()
     }
 
@@ -54,7 +54,12 @@ final class StoreRepository: ObservableObject {
     private func load() {
         guard let data = UserDefaults.standard.data(forKey: key) else { return }
         if let decoded = try? JSONDecoder().decode([StoreLocation].self, from: data) {
-            stores = decoded
+            stores = decoded.map { store in
+                var migrated = store
+                migrated.radius = min(max(store.radius, 100), 500)
+                return migrated
+            }
+            if stores != decoded { save() }
             return
         }
 
@@ -75,7 +80,7 @@ final class StoreRepository: ObservableObject {
                     name: $0.name,
                     latitude: $0.latitude,
                     longitude: $0.longitude,
-                    radius: $0.radius,
+                    radius: min(max($0.radius, 100), 500),
                     enabled: $0.enabled
                 )
             }

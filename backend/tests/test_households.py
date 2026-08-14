@@ -95,3 +95,29 @@ def test_existing_member_without_id_is_migrated_without_changing_token(tmp_path,
     marielle = next(member for member in listed.json()["members"] if member["name"] == "Marielle")
     assert marielle["id"]
     assert client.get("/api/mobile/v1/households/me", headers=auth(member_token)).status_code == 200
+
+
+def test_recovery_code_restores_same_family_and_can_be_rotated(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOUSEHOLD_STORE_PATH", str(tmp_path / "households.json"))
+    created = client.post("/api/mobile/v1/households/create", json={"household_name": "Familien", "member_name": "Ejer"}).json()
+    original_code = created["recovery_code"]
+
+    recovered = client.post("/api/mobile/v1/households/recover", json={"recovery_code": original_code, "member_name": "Ny telefon"})
+    assert recovered.status_code == 200
+    assert recovered.json()["household_id"] == created["household_id"]
+
+    rotated = client.post("/api/mobile/v1/households/recovery/rotate", headers=auth(recovered.json()["access_token"]), json={})
+    assert rotated.status_code == 200
+    assert rotated.json()["recovery_code"] != original_code
+    assert client.post("/api/mobile/v1/households/recover", json={"recovery_code": original_code, "member_name": "Gammel kode"}).status_code == 404
+
+
+def test_legacy_owner_becomes_server_member_without_changing_family(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOUSEHOLD_STORE_PATH", str(tmp_path / "households.json"))
+    rotated = client.post("/api/mobile/v1/households/recovery/rotate", headers=auth("test-token"), json={})
+    assert rotated.status_code == 200
+    store = households.load_store()
+    legacy = store["households"][households.LEGACY_HOUSEHOLD_ID]
+    assert legacy["legacy_token_disabled"] is True
+    assert legacy["members"][households._hash("test-token")]["role"] == "owner"
+    assert client.get("/api/mobile/v1/households/me", headers=auth("test-token")).status_code == 200
