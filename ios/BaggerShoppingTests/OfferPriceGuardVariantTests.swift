@@ -41,8 +41,14 @@ final class OfferPriceGuardVariantTests: XCTestCase {
 
         XCTAssertEqual(result.map(\.id), ["bilka-12"])
         XCTAssertEqual(result.first?.price, 12)
+
+        // Parsed weight/unit-price presentation is disabled until extraction is
+        // variant-accurate. The backend payload may still carry these values.
+        XCTAssertNil(selected.unitPrice)
+        XCTAssertNil(selected.productIdentity?.amountText)
         XCTAssertNil(selected.productIdentity?.unitPrice)
         XCTAssertNil(cheaper.productIdentity?.unitPrice)
+        XCTAssertNil(selected.variants.first?.identity?.amountText)
         XCTAssertNil(selected.variants.first?.identity?.unitPrice)
     }
 
