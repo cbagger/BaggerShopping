@@ -8,6 +8,7 @@ final class OfferPriceGuardTests: XCTestCase {
             variants: ["Coca-Cola", "Fanta", "Squash sodavand"]
         )
         XCTAssertTrue(offer.exactlyMatchesSelectedItem("Coca-Cola"))
+        XCTAssertTrue(offer.exactlyMatchesSelectedItem("Coca Cola sodavand"))
         XCTAssertTrue(offer.exactlyMatchesSelectedItem("Squash sodavand"))
     }
 
@@ -18,6 +19,23 @@ final class OfferPriceGuardTests: XCTestCase {
         )
         XCTAssertFalse(offer.exactlyMatchesSelectedItem("Coca-Cola Zero"))
         XCTAssertFalse(offer.exactlyMatchesSelectedItem("Sodavand"))
+    }
+
+    func testPepsiCampaignCannotReplaceSelectedCocaCola() throws {
+        let pepsi = try decodeOffer(
+            productName: "Pepsi Max eller Faxe Kondi",
+            variants: ["Pepsi Max", "Faxe Kondi"]
+        )
+        XCTAssertFalse(pepsi.exactlyMatchesSelectedItem("Coca Cola sodavand"))
+        XCTAssertNil(pepsi.matchingSelectedItemName("Coca Cola sodavand"))
+    }
+
+    func testMixedCampaignReturnsConcreteCocaColaVariant() throws {
+        let rema = try decodeOffer(
+            productName: "Coca-Cola, Fanta, Tuborg Squash eller Schweppes",
+            variants: ["Coca-Cola", "Fanta", "Tuborg Squash", "Schweppes"]
+        )
+        XCTAssertEqual(rema.matchingSelectedItemName("Coca Cola sodavand"), "Coca-Cola")
     }
 
     func testAllCheaperExactOffersAreReturnedPriceFirst() throws {
@@ -35,6 +53,32 @@ final class OfferPriceGuardTests: XCTestCase {
 
         XCTAssertEqual(result.map(\.retailer), ["MENY", "Netto", "Bilka"])
         XCTAssertEqual(result.compactMap(\.price), [10, 10, 12])
+    }
+
+    func testCheaperListKeepsCocaColaCampaignAndRejectsPepsi() throws {
+        let selected = try decodeOffer(
+            id: "foetex", retailer: "føtex", price: 17,
+            productName: "Cocio eller Coca Cola sodavand",
+            variants: ["Cocio", "Coca Cola sodavand"]
+        )
+        let rema = try decodeOffer(
+            id: "rema", retailer: "REMA 1000", price: 14,
+            productName: "Coca-Cola, Fanta, Tuborg Squash eller Schweppes",
+            variants: ["Coca-Cola", "Fanta", "Tuborg Squash", "Schweppes"]
+        )
+        let pepsi = try decodeOffer(
+            id: "pepsi", retailer: "REMA 1000", price: 15,
+            productName: "Pepsi Max eller Faxe Kondi",
+            variants: ["Pepsi Max", "Faxe Kondi"]
+        )
+
+        let result = OfferPriceGuard().cheaperOffers(
+            from: [pepsi, rema],
+            for: "Coca Cola sodavand",
+            than: selected
+        )
+
+        XCTAssertEqual(result.map(\.id), ["rema"])
     }
 
     private func decodeOffer(
