@@ -2,7 +2,7 @@ import SwiftUI
 
 struct FlyersView: View {
     @EnvironmentObject private var navigation: AppNavigation
-    @State private var publications: [OfferPublication] = []
+    @State private var publications: [OfferPublication] = FlyerPublicationCache.load()?.publications ?? []
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedPublication: OfferPublication?
@@ -31,7 +31,6 @@ struct FlyersView: View {
                         }
                         .padding(.horizontal, 18)
                         .padding(.vertical, 12)
-                        // Keep the final row fully above the persistent tab bar.
                         .padding(.bottom, 88)
                     }
                     .refreshable { await load() }
@@ -53,9 +52,14 @@ struct FlyersView: View {
         do {
             let fetched = try await api.fetchOfferPublications().publications
             publications = fetched
+            FlyerPublicationCache.save(fetched)
             openRequestedFlyerIfAvailable()
         }
-        catch { errorMessage = error.localizedDescription }
+        catch {
+            // A recent cached shelf remains useful when refresh fails. Only show
+            // a blocking error when there is nothing usable to display.
+            if publications.isEmpty { errorMessage = error.localizedDescription }
+        }
     }
 
     @MainActor private func openRequestedFlyerIfAvailable() {
@@ -326,8 +330,6 @@ private struct FlyerPage: View {
     }
 
     @ViewBuilder private func hotspots(in container: CGSize) -> some View {
-        // MENY's native pages are 694 × 1007. scaledToFit may letterbox,
-        // therefore normalized coordinates are placed inside the fitted rect.
         let ratio = 694.0 / 1007.0
         let width = min(container.width, container.height * ratio)
         let height = width / ratio

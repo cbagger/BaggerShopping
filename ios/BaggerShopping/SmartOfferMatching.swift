@@ -3,11 +3,12 @@ import SwiftUI
 
 @MainActor
 final class SmartOfferMatchService: ObservableObject {
-    @Published private(set) var matchesByItem: [String: [GroceryOffer]] = [:]
+    @Published private(set) var matchesByItem: [String: [GroceryOffer]] = SmartOfferMatchCache.load()?.matches ?? [:]
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
 
     private let api = APIClient()
+    private let matchAPI = SmartOfferMatchAPI()
     private var deferredWarning: String?
 
     private enum ApprovalError: LocalizedError {
@@ -38,6 +39,7 @@ final class SmartOfferMatchService: ObservableObject {
 
         guard !names.isEmpty else {
             matchesByItem = [:]
+            SmartOfferMatchCache.save([:])
             errorMessage = nil
             return
         }
@@ -45,31 +47,33 @@ final class SmartOfferMatchService: ObservableObject {
         isLoading = true
         defer { isLoading = false }
 
-        var refreshed: [String: [GroceryOffer]] = [:]
-        var firstError: Error?
-
-        // The search response is already ranked and classified by the shared
-        // QNAP product-identity engine. Do not reproduce match rules here.
-        for name in names {
+        do {
+            // The backend already exposes one read-only batch endpoint for the
+            // entire shopping list. The previous implementation performed one
+            // sequential HTTP search per item, making startup latency grow with
+            // every item on the list and delaying the “x tilbud fundet” badges.
+            let response = try await matchAPI.fetch(items: names)
             guard !Task.isCancelled else { return }
-            do {
-                let response = try await api.searchOffers(query: name)
-                let offers = response.offers.filter { $0.identityMatch?.level != "not_same" }
-                if !offers.isEmpty {
-                    refreshed[key(name)] = offers
-                }
-            } catch {
-                if firstError == nil { firstError = error }
-            }
-        }
 
-        matchesByItem = refreshed
-        if refreshed.isEmpty, let firstError {
-            errorMessage = firstError.localizedDescription
-        } else {
-            // Suggestions are an enhancement. A single failed item search
-            // must not turn the ordinary shopping list into an error state.
+            var refreshed: [String: [GroceryOffer]] = [:]
+            for group in response.matches {
+                let offers = group.offers.filter { $0.identityMatch?.level != "not_same" }
+                if !offers.isEmpty {
+                    refreshed[key(group.itemName)] = offers
+                }
+            }
+            matchesByItem = refreshed
+            SmartOfferMatchCache.save(refreshed)
             errorMessage = nil
+        } catch {
+            guard !Task.isCancelled else { return }
+            // Suggestions are an enhancement. Keep the recent local cache on
+            // screen if refresh fails instead of blanking badges during startup.
+            if matchesByItem.isEmpty {
+                errorMessage = error.localizedDescription
+            } else {
+                errorMessage = nil
+            }
         }
     }
 
@@ -92,9 +96,6 @@ final class SmartOfferMatchService: ObservableObject {
         deferredWarning = nil
 
         do {
-            // The shopping-list sheet can outlive the optimistic ShoppingItem
-            // that opened it. Resolve the newest persisted Samsung item before
-            // any in-place rename instead of trusting the old sheet snapshot.
             let persistedItem: ShoppingItem
             if needsRename {
                 persistedItem = try await resolvePersistedItem(item, model: model)
@@ -114,9 +115,6 @@ final class SmartOfferMatchService: ObservableObject {
                 }
             }
 
-            // Persist the selected offer against the existing item first. The
-            // existing in-place Samsung rename endpoint moves this metadata to
-            // the new item name in the same server operation.
             let metadata = OfferMetadataDTO(
                 itemName: persistedItem.name,
                 retailer: offer.retailer,
@@ -143,9 +141,6 @@ final class SmartOfferMatchService: ObservableObject {
                     )
                     deferredWarning = result.warning
                 } catch {
-                    // The offer was written under the old item name immediately
-                    // before rename. If rename did not complete, remove that
-                    // provisional assignment so the list is not left half-updated.
                     try? await api.removeOfferMetadata(itemName: persistedItem.name)
                     await model.syncSharedOfferMetadata()
                     throw error
@@ -161,12 +156,8 @@ final class SmartOfferMatchService: ObservableObject {
                 decision: learnedDecision
             )
 
-            // Do not refresh AppModel while SmartOfferMatchesView is presented.
-            // ShoppingListView owns a global model.errorMessage alert; refreshing
-            // under nested sheets can make UIKit attempt to present an alert on
-            // the wrong controller. The view performs reconciliation after all
-            // Smart Matching sheets have been dismissed.
             matchesByItem.removeValue(forKey: key(item.name))
+            SmartOfferMatchCache.save(matchesByItem)
             errorMessage = nil
             return true
         } catch {
@@ -196,9 +187,6 @@ final class SmartOfferMatchService: ObservableObject {
             return current
         }
 
-        // Samsung Food is eventually consistent after SyncItems. Retry the
-        // authoritative list for a few seconds without replacing the visible
-        // optimistic list with an intermediate stale response.
         let delays: [Duration] = [.zero, .milliseconds(500), .seconds(1), .seconds(2)]
         for delay in delays {
             if delay != .zero {
@@ -397,10 +385,6 @@ struct SmartOfferMatchesView: View {
         selectedItemName: String
     ) {
         guard applyingOfferID == nil else { return }
-
-        // Dismiss the variant sheet completely before performing async work.
-        // Presenting/dismissing an alert or the parent sheet while this nested
-        // sheet is still active can crash UIKit's contained-alert lookup.
         applyingOfferID = offer.id
         pendingVariantOffer = nil
         service.errorMessage = nil
@@ -457,10 +441,6 @@ struct SmartOfferMatchesView: View {
         let warning = service.takeDeferredWarning()
         dismiss()
 
-        // Wait until SmartOfferMatchesView itself has left the presentation
-        // stack before refreshing AppModel. ShoppingListView owns a global
-        // error alert, so this ordering prevents UIKit from presenting that
-        // alert underneath an active sheet hierarchy.
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(500))
             await model.refresh()

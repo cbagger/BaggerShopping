@@ -12,9 +12,19 @@ struct BaggerShoppingApp: App {
             RootView()
                 .environmentObject(appModel)
                 .environmentObject(navigation)
+                .onAppear {
+                    // Paint the last confirmed Samsung list immediately. The
+                    // authoritative refresh continues in the background, so a
+                    // cold network/QNAP path no longer leaves startup blank.
+                    if appModel.shoppingList == nil,
+                       let cached = ShoppingListCache.load() {
+                        appModel.shoppingList = cached.list
+                    }
+                }
                 .task {
-                    await appModel.bootstrap()
-                    await appModel.flyerPush.bootstrap()
+                    async let bootstrap: Void = appModel.bootstrap()
+                    async let flyerPush: Void = appModel.flyerPush.bootstrap()
+                    _ = await (bootstrap, flyerPush)
                 }
         }
         .onChange(of: scenePhase) { _, phase in
