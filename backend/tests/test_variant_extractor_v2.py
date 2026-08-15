@@ -46,6 +46,10 @@ def test_v2_restores_shared_text_context_without_weight_or_image_data():
         "Kalkunoverlår",
         "Kalkunschnitzel af brystfilet",
     ]
+    assert names("Coop kyllingeover- eller underlår") == [
+        "Coop kyllingeover",
+        "Coop kyllingeunderlår",
+    ]
 
 
 def test_v2_keeps_independent_brands_independent():
@@ -83,11 +87,16 @@ def test_v2_does_not_treat_generic_items_or_image_labels_as_variants():
     assert result == ["Bakkedal smørbar"]
 
 
-def test_v2_uses_short_explicit_description_but_rejects_ingredient_prose():
+def test_v2_uses_provider_description_and_handles_brand_punctuation():
     assert names(
         "Sodavand",
         "Frit valg mellem Pepsi Max, Faxe Kondi eller Squash. Maks. 6 stk.",
     ) == ["Pepsi Max", "Faxe Kondi", "Squash"]
+
+    assert names(
+        "Xtra! tun",
+        payload={"description": "Xtra! tun i vand eller Xtra! tun i olie. Frit valg. 56 g."},
+    ) == ["Xtra! tun i vand", "Xtra! tun i olie"]
 
     assert names(
         "Pesto",
