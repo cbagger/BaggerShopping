@@ -123,7 +123,10 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         normalPrice = try values.decodeIfPresent(Double.self, forKey: .normalPrice)
         quantity = try values.decodeIfPresent(Double.self, forKey: .quantity)
         unit = try values.decodeIfPresent(String.self, forKey: .unit)
-        unitPrice = try values.decodeIfPresent(String.self, forKey: .unitPrice)
+        // Parsed unit-price data is intentionally hidden for now. Source flyers
+        // often describe a range that is copied onto every parsed variant, so
+        // exposing it would imply a precision Kurv does not currently have.
+        unitPrice = nil
         discountPercent = try values.decodeIfPresent(Int.self, forKey: .discountPercent)
         imageURL = try values.decodeIfPresent(URL.self, forKey: .imageURL)
         sourceURL = try values.decode(URL.self, forKey: .sourceURL)
@@ -202,6 +205,28 @@ struct ProductIdentityAnalysis: Codable, Hashable {
         case unitPriceUnit = "unit_price_unit"
         case canonicalFamily = "canonical_family"
         case evidence
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        brand = try values.decodeIfPresent(String.self, forKey: .brand)
+        product = try values.decode(String.self, forKey: .product)
+        variant = try values.decodeIfPresent(String.self, forKey: .variant)
+        flavours = try values.decodeIfPresent([String].self, forKey: .flavours) ?? []
+        types = try values.decodeIfPresent([String].self, forKey: .types) ?? []
+        packCount = try values.decodeIfPresent(Int.self, forKey: .packCount) ?? 1
+
+        // Keep uncertain size/unit-price data out of the iOS presentation and
+        // matching layer until variant-specific extraction is trustworthy.
+        // Backend/source data remains untouched and can be re-enabled later.
+        amountText = nil
+        unitPrice = nil
+        unitPriceMin = nil
+        unitPriceMax = nil
+        unitPriceUnit = nil
+
+        canonicalFamily = try values.decodeIfPresent(String.self, forKey: .canonicalFamily)
+        evidence = try values.decodeIfPresent([String].self, forKey: .evidence)
     }
 }
 
