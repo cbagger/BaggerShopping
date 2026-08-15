@@ -144,6 +144,9 @@ def test_current_offers_static_route_returns_live_offer_count(monkeypatch):
     assert response["coverage"] == {
         "offer_count": 1,
         "hotspot_count": 0,
+        "average_quality": 0.638,
+        "manual_review_count": 1,
+        "pages_requiring_review": [1],
         "pages_without_hotspots": [],
         "pages": [],
     }
@@ -174,8 +177,12 @@ def test_current_offers_reports_hotspot_coverage_per_page(monkeypatch):
     assert response["coverage"]["offer_count"] == 2
     assert response["coverage"]["hotspot_count"] == 1
     assert response["coverage"]["pages_without_hotspots"] == [2]
-    assert response["coverage"]["pages"][1] == {"page_number": 2, "offer_count": 1, "hotspot_count": 0}
-    assert response["coverage"]["pages"][2] == {"page_number": 3, "offer_count": 0, "hotspot_count": 0}
+    assert response["coverage"]["pages"][1] == {
+        "page_number": 2, "offer_count": 1, "hotspot_count": 0, "review_count": 1,
+    }
+    assert response["coverage"]["pages"][2] == {
+        "page_number": 3, "offer_count": 0, "hotspot_count": 0, "review_count": 0,
+    }
 
 
 def test_health_only_fails_when_flyer_is_not_functionally_usable():

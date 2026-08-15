@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from datetime import date, datetime
 
@@ -8,6 +9,13 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .flyer_adapters import RETAILER_ORDER, fetch_all_publications
+from .flyer_intelligence import (
+    feedback_key,
+    learned_adjustment,
+    load_feedback_store,
+    save_feedback_store,
+    stable_report_id,
+)
 from .meny_flyer import (
     Offer, Publication, _contains_query_term, _is_pet_offer, _product_domain,
     _query_terms, search_publication,
@@ -22,32 +30,53 @@ _publication_cache: Publication | None = None
 _publication_cache_time = 0.0
 _publication_lock = asyncio.Lock()
 _publications_cache: list[Publication] = []
+_QUALITY_STORE_PATH = os.getenv("FLYER_QUALITY_STORE_PATH", "/data/flyer-quality-feedback.json")
+_quality_store_lock = asyncio.Lock()
 
 
 class OfferMatchRequest(BaseModel):
     items: list[str] = Field(min_length=1, max_length=100)
 
 
+class FlyerQualityFeedbackRequest(BaseModel):
+    publication_id: str = Field(min_length=1, max_length=100)
+    offer_id: str | None = Field(default=None, max_length=100)
+    retailer: str = Field(min_length=1, max_length=100)
+    quality_source: str = Field(default="unknown", min_length=1, max_length=100)
+    decision: str = Field(pattern="^(correct|wrong_position|wrong_variants|missing_offer|duplicate)$")
+    page_number: int | None = Field(default=None, ge=1, le=500)
+    note: str | None = Field(default=None, max_length=300)
+
+
 def _coverage_payload(publication: Publication) -> dict:
     offers_by_page: dict[int, int] = {}
     hotspots_by_page: dict[int, int] = {}
+    review_by_page: dict[int, int] = {}
+    quality_scores: list[float] = []
     for offer in publication.structured_offers:
         if offer.page_number is None:
             continue
         offers_by_page[offer.page_number] = offers_by_page.get(offer.page_number, 0) + 1
+        quality_scores.append(offer.quality_score)
         if None not in (offer.hotspot_x, offer.hotspot_y, offer.hotspot_width, offer.hotspot_height):
             hotspots_by_page[offer.page_number] = hotspots_by_page.get(offer.page_number, 0) + 1
+        if offer.quality_score < 0.60 or offer.hotspot_confidence < 0.60:
+            review_by_page[offer.page_number] = review_by_page.get(offer.page_number, 0) + 1
     pages = [
         {
             "page_number": page_number,
             "offer_count": offers_by_page.get(page_number, 0),
             "hotspot_count": hotspots_by_page.get(page_number, 0),
+            "review_count": review_by_page.get(page_number, 0),
         }
         for page_number in range(1, publication.page_count + 1)
     ]
     return {
         "offer_count": sum(offers_by_page.values()),
         "hotspot_count": sum(hotspots_by_page.values()),
+        "average_quality": round(sum(quality_scores) / len(quality_scores), 3) if quality_scores else 0.0,
+        "manual_review_count": sum(review_by_page.values()),
+        "pages_requiring_review": sorted(review_by_page),
         "pages_without_hotspots": [
             page["page_number"]
             for page in pages
@@ -191,6 +220,20 @@ def _offer_payload(
     publication_status: str | None = None,
 ) -> dict:
     payload = offer.model_dump()
+    learning = learned_adjustment(
+        load_feedback_store(_QUALITY_STORE_PATH), offer.retailer, offer.quality_source,
+    )
+    payload["quality_score"] = round(max(0.0, min(1.0, offer.quality_score + learning.score)), 3)
+    payload["hotspot_confidence"] = round(max(
+        0.0, offer.hotspot_confidence - min(0.18, learning.position_reports * 0.02)
+    ), 3)
+    payload["variant_confidence"] = round(max(
+        0.0, offer.variant_confidence - min(0.18, learning.variant_reports * 0.02)
+    ), 3)
+    payload["learning_reports"] = {
+        "wrong_position": learning.position_reports,
+        "wrong_variants": learning.variant_reports,
+    }
     payload["product_identity"] = analyze(
         offer.product_name, quantity=offer.quantity, unit=offer.unit, price=offer.price,
     ).model_dump()
@@ -209,6 +252,47 @@ def _offer_payload(
     if publication_status is not None:
         payload["publication_status"] = publication_status
     return payload
+
+
+@router.post("/quality/feedback")
+async def flyer_quality_feedback(request: FlyerQualityFeedbackRequest):
+    """Persist anonymous source-quality feedback shared across families."""
+    created_at = int(time.time())
+    async with _quality_store_lock:
+        store = load_feedback_store(_QUALITY_STORE_PATH)
+        key = feedback_key(request.retailer, request.quality_source)
+        source = store.setdefault("sources", {}).setdefault(key, {})
+        source[request.decision] = int(source.get(request.decision, 0)) + 1
+        source["updated_at"] = created_at
+        reports = store.setdefault("reports", [])
+        reports.append({
+            "id": stable_report_id(
+                request.publication_id, request.offer_id or "missing",
+                request.decision, created_at,
+            ),
+            "publication_id": request.publication_id,
+            "offer_id": request.offer_id,
+            "retailer": request.retailer,
+            "quality_source": request.quality_source,
+            "decision": request.decision,
+            "page_number": request.page_number,
+            "note": request.note,
+            "created_at": created_at,
+        })
+        store["reports"] = reports[-1000:]
+        save_feedback_store(_QUALITY_STORE_PATH, store)
+    return {"ok": True, "decision": request.decision, "source_key": key}
+
+
+@router.get("/quality/status")
+async def flyer_quality_status():
+    store = load_feedback_store(_QUALITY_STORE_PATH)
+    return {
+        "ok": True,
+        "source_count": len(store.get("sources", {})),
+        "report_count": len(store.get("reports", [])),
+        "sources": store.get("sources", {}),
+    }
 
 
 def _search_match_result(item_name: str, offer: Offer) -> tuple[int, Offer, MatchResult] | None:

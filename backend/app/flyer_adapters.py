@@ -13,6 +13,17 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from .flyer_intelligence import (
+    VariantCandidate,
+    assess_quality,
+    box_from_mapping,
+    box_from_polygon,
+    couple_offers,
+    extract_ocr_regions,
+    extract_variants,
+    text_for_hotspot,
+)
+
 from .meny_flyer import (
     Offer,
     OfferVariant,
@@ -219,117 +230,27 @@ def _quantity(payload: object) -> tuple[float | None, str | None]:
     return (float(value), str(unit.get("symbol"))) if isinstance(value, (int, float)) and unit.get("symbol") else (None, None)
 
 
-def _variant_strings(payload: dict) -> list[str]:
-    """Collect product alternatives supplied by Tjek's changing offer schema.
-
-    Depending on the retailer, alternatives have appeared as strings, product
-    dictionaries, or nested lists below ``variants``/``products``/``items``.
-    Do not treat marketing descriptions as product names.
-    """
-    values: list[str] = []
-
-    def visit(value: object, *, variant_context: bool = False) -> None:
-        if isinstance(value, str):
-            if variant_context:
-                cleaned = _normalize_space(value).strip(" -*")
-                if 2 <= len(cleaned) <= 120:
-                    values.append(cleaned)
-            return
-        if isinstance(value, list):
-            for item in value:
-                visit(item, variant_context=variant_context)
-            return
-        if not isinstance(value, dict):
-            return
-        for key, child in value.items():
-            lowered = str(key).casefold()
-            child_context = variant_context or lowered in {
-                "variants", "variant", "products", "product_variants",
-                "choices", "alternatives", "items",
-            }
-            if child_context and lowered in {"name", "title", "label", "heading"}:
-                visit(child, variant_context=True)
-            elif lowered in {"variants", "variant", "products", "product_variants", "choices", "alternatives", "items"}:
-                visit(child, variant_context=True)
-
-    visit(payload)
-    return list(dict.fromkeys(values))
+def _tjek_variant_candidates(
+    identity: str,
+    heading: str,
+    description: str | None,
+    payload: dict,
+) -> list[VariantCandidate]:
+    return extract_variants(identity, heading, description, payload=payload)
 
 
-def _tjek_variants(identity: str, heading: str, description: str | None, quantity: float | None, unit: str | None, payload: dict) -> list[OfferVariant]:
-    """Expose every explicit alternative from Tjek before heading fallback."""
-    names = _variant_strings(payload)
-    normalized = heading.replace(" / ", ", ")
-    def restore_shared_compound(match: re.Match[str]) -> str:
-        first, second = match.group(1), match.group(2)
-        for ending in ("over", "under", "inder", "yder"):
-            if first.casefold().endswith(ending):
-                return f"{first}, {first[:-len(ending)]}{second}"
-        return match.group(0)
-
-    normalized = re.sub(
-        r"\b([\wæøå]+)-\s+eller\s+([\wæøå]+)\b",
-        restore_shared_compound,
-        normalized,
-        flags=re.IGNORECASE,
-    )
-    if not names:
-        names = [_normalize_space(value) for value in re.split(r"\s*,\s*|\s+eller\s+", normalized, flags=re.IGNORECASE)]
-    # Some Tjek retailers expose alternatives only in the first descriptive
-    # sentence. Accept product-like alternatives there, while rejecting price,
-    # weight and campaign boilerplate rather than falling back to image OCR.
-    if len(names) <= 1 and description:
-        first_clause = re.split(r"\.(?:\s|$)|\b(?:frit valg|flere varianter|kg-pris|literpris)\b", description, maxsplit=1, flags=re.IGNORECASE)[0]
-        described = [
-            _normalize_space(value).strip(" -*")
-            for value in re.split(r"\s*,\s*|\s+eller\s+|\s*/\s*", first_clause, flags=re.IGNORECASE)
-        ]
-        described = [
-            value for value in described
-            if 2 <= len(value) <= 80
-            and not re.fullmatch(r"[\d\s.,x×%+-]+(?:g|kg|ml|cl|l|stk)?", value, re.IGNORECASE)
-        ]
-        if len(described) > 1:
-            names = described
-    names = [name for name in names if len(name) >= 2]
-    # Danish offer headings often omit a repeated product root after "eller",
-    # for example "Kalkunoverlår eller -schnitzel". Restore the root before
-    # exposing the alternatives to every client.
-    if len(names) > 1:
-        folded_first = names[0].casefold()
-        roots = ("kalkun", "kylling", "svine", "okse", "lamme", "kalve")
-        root = next((value for value in roots if folded_first.startswith(value)), None)
-        if root:
-            original_root = names[0][:len(root)]
-            names = [
-                original_root + name.lstrip("-–— ") if name.startswith(("-", "–", "—")) else name
-                for name in names
-            ]
-    # A trailing alternative is frequently written as a relative fragment,
-    # e.g. "Tulip bacon i skiver eller i tern".  Keep it as a selectable
-    # variant and restore the shared product identity.
-    if len(names) > 1:
-        first = names[0]
-        shared = re.split(r"\s+(?:i|med|uden)\s+", first, maxsplit=1, flags=re.IGNORECASE)[0]
-        names = [
-            f"{shared} {name}" if re.match(r"^(?:i|med|uden)\b", name, re.IGNORECASE) else name
-            for name in names
-        ]
-        # When a compound alternative is reconstructed after a branded first
-        # choice ("Coop kyllingeover- eller underlår"), the brand sits outside
-        # the matched compound. Carry that shared prefix into the one-word
-        # continuation as well.
-        if " " in first:
-            prefix = first.rsplit(" ", 1)[0]
-            names = [
-                name if index == 0 or " " in name else f"{prefix} {name}"
-                for index, name in enumerate(names)
-            ]
-    if not 1 < len(names) <= 16:
-        names = [heading]
+def _tjek_variants(
+    candidates: list[VariantCandidate],
+    description: str | None,
+    quantity: float | None,
+    unit: str | None,
+) -> list[OfferVariant]:
     return [
-        OfferVariant(id=f"{identity}-{index}", name=name, description=description, quantity=quantity, unit=unit)
-        for index, name in enumerate(dict.fromkeys(names))
+        OfferVariant(
+            id=candidate.id, name=candidate.name, description=description,
+            quantity=quantity, unit=unit,
+        )
+        for candidate in candidates
     ]
 
 
@@ -391,24 +312,31 @@ def parse_tjek_hotspots(
         locations = row.get("locations") if isinstance(row.get("locations"), dict) else {}
         pricing = payload.get("pricing") if isinstance(payload.get("pricing"), dict) else {}
         quantity, unit = _quantity(payload.get("quantity"))
+        ocr_regions = extract_ocr_regions(payload)
         for page_key, polygon in locations.items():
             try:
                 page = int(page_key)
-                points = [(float(point[0]), float(point[1])) for point in polygon if len(point) >= 2]
             except (TypeError, ValueError):
                 continue
-            if not heading or not points:
+            hotspot = box_from_polygon(
+                polygon if isinstance(polygon, list) else [],
+                vertical_scale=2 ** 0.5,
+                source="tjek-polygon",
+            )
+            if not heading or hotspot is None:
                 continue
-            xs, ys = zip(*points)
-            # Tjek coordinates use page width as the unit on both axes. Their
-            # portrait pages are sqrt(2) units high; SwiftUI uses 0...1.
-            page_aspect = 2 ** 0.5
-            x, y = max(0.0, min(xs)), max(0.0, min(ys) / page_aspect)
-            width = min(1.0 - x, (max(xs) - min(xs)))
-            height = min(1.0 - y, (max(ys) - min(ys)) / page_aspect)
+            ocr_context = text_for_hotspot(ocr_regions, hotspot)
+            description = _normalize_space(" ".join(filter(None, (payload.get("description"), ocr_context)))) or None
             identity = str(payload.get("id") or row.get("id") or hashlib.sha256(f"{publication.id}|{page}|{heading}".encode()).hexdigest()[:20])
-            variants = _tjek_variants(identity, heading, payload.get("description"), quantity, unit, payload)
+            candidates = _tjek_variant_candidates(identity, heading, description, payload)
+            variants = _tjek_variants(candidates, description, quantity, unit)
             images = payload.get("images") if isinstance(payload.get("images"), dict) else {}
+            raw_text = _normalize_space(" ".join(filter(None, (heading, description))))
+            has_crop = bool(images.get("zoom") or images.get("view"))
+            quality = assess_quality(
+                heading=heading, raw_text=raw_text, price=pricing.get("price"),
+                box=hotspot, variants=candidates, structured=True, has_crop=has_crop,
+            )
             offers.append(Offer(
                 id=f"{identity}-{page}", retailer=publication.retailer,
                 publication_id=publication.id, publication_title=publication.title,
@@ -424,11 +352,17 @@ def parse_tjek_hotspots(
                     if 0 < page <= len(publication.page_image_urls) else None
                 ),
                 source_url=publication.source_url, page_number=page,
-                hotspot_x=x, hotspot_y=y, hotspot_width=width, hotspot_height=height,
-                raw_text=_normalize_space(" ".join(filter(None, (heading, payload.get("description"))))),
-                safe_to_add=True, variants=variants,
+                hotspot_x=hotspot.x, hotspot_y=hotspot.y,
+                hotspot_width=hotspot.width, hotspot_height=hotspot.height,
+                raw_text=raw_text, safe_to_add=quality.score >= 0.60, variants=variants,
+                hotspot_confidence=quality.hotspot_confidence,
+                variant_confidence=quality.variant_confidence,
+                quality_score=quality.score,
+                quality_source="tjek-catalog",
+                quality_issues=quality.issues,
+                quality_signals=[*quality.signals, *(["positioned-ocr"] if ocr_context else [])],
             ))
-    return offers
+    return couple_offers(offers)
 
 
 def _publication_from_schwarz(payload: dict, source: RetailerSource, reader_url: str) -> Publication:
@@ -467,20 +401,38 @@ def _publication_from_schwarz(payload: dict, source: RetailerSource, reader_url:
             identity = str(link.get("id") or details.get("productId") or hashlib.sha256(f"{publication.id}|{page_index}|{name}".encode()).hexdigest()[:20])
             try:
                 price = float(str(product.get("price")).replace(",", ".")) if product.get("price") is not None else None
-                x, y, width, height = (float(link[key]) / 100 for key in ("left", "top", "width", "height"))
-            except (TypeError, ValueError, KeyError):
+            except (TypeError, ValueError):
                 continue
-            variant = OfferVariant(id=identity, name=name, description=product.get("description"))
+            hotspot = box_from_mapping(link, source="schwarz-product-link")
+            if hotspot is None:
+                continue
+            candidates = extract_variants(identity, name, product.get("description"), payload=product)
+            variants = [
+                OfferVariant(id=value.id, name=value.name, description=product.get("description"))
+                for value in candidates
+            ]
+            raw_text = _normalize_space(" ".join(filter(None, (name, product.get("description")))))
+            quality = assess_quality(
+                heading=name, raw_text=raw_text, price=price, box=hotspot,
+                variants=candidates, structured=True, has_crop=bool(product.get("image")),
+            )
             publication.structured_offers.append(Offer(
                 id=identity, retailer=source.retailer, publication_id=publication.id,
                 publication_title=publication.title, valid_from=publication.valid_from,
                 valid_until=publication.valid_until, product_name=name, brand=product.get("brand"),
                 price=price, image_url=product.get("image") or page_images[page_index - 1],
                 source_url=str(product.get("url") or link.get("url") or reader_url), page_number=page_index,
-                hotspot_x=x, hotspot_y=y, hotspot_width=width, hotspot_height=height,
-                raw_text=_normalize_space(" ".join(filter(None, (name, product.get("description"))))),
-                safe_to_add=True, variants=[variant],
+                hotspot_x=hotspot.x, hotspot_y=hotspot.y,
+                hotspot_width=hotspot.width, hotspot_height=hotspot.height,
+                raw_text=raw_text, safe_to_add=quality.score >= 0.60, variants=variants,
+                hotspot_confidence=quality.hotspot_confidence,
+                variant_confidence=quality.variant_confidence,
+                quality_score=quality.score,
+                quality_source="schwarz-product-link",
+                quality_issues=quality.issues,
+                quality_signals=quality.signals,
             ))
+    publication.structured_offers = couple_offers(publication.structured_offers)
     return publication
 
 

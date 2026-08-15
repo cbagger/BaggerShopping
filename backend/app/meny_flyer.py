@@ -10,6 +10,14 @@ from html.parser import HTMLParser
 import httpx
 from pydantic import BaseModel, Field
 
+from .flyer_intelligence import (
+    VariantCandidate,
+    assess_quality,
+    box_from_mapping,
+    couple_offers,
+    union_boxes,
+)
+
 
 MENY_FLYER_URL = "https://ugensavis.meny.dk/"
 WEEK_RE = re.compile(r"MENY\s+uge\s+(?P<week>\d{2})(?P<year>\d{2})", re.IGNORECASE)
@@ -77,6 +85,12 @@ class Offer(BaseModel):
     raw_text: str
     safe_to_add: bool = False
     variants: list[OfferVariant] = Field(default_factory=list)
+    hotspot_confidence: float = 0.0
+    variant_confidence: float = 0.0
+    quality_score: float = 0.0
+    quality_source: str = "unknown"
+    quality_issues: list[str] = Field(default_factory=list)
+    quality_signals: list[str] = Field(default_factory=list)
 
 
 class OfferSearchResult(BaseModel):
@@ -300,25 +314,8 @@ def _finite_number(value: object) -> float | None:
 
 def _hotspot_geometry(item: dict) -> tuple[float, float, float, float] | None:
     """Read geometry from both known iPaper enrichment representations."""
-    candidates: list[object] = [item]
-    for key in ("bounds", "rect", "rectangle", "position"):
-        if isinstance(item.get(key), dict):
-            candidates.append(item[key])
-
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            continue
-        x = _finite_number(candidate.get("x", candidate.get("left")))
-        y = _finite_number(candidate.get("y", candidate.get("top")))
-        width = _finite_number(candidate.get("width", candidate.get("w")))
-        height = _finite_number(candidate.get("height", candidate.get("h")))
-        if None in (x, y, width, height) or width <= 0 or height <= 0:
-            continue
-        if max(x, y, width, height) > 1:
-            x, y, width, height = x / 100, y / 100, width / 100, height / 100
-        if 0 <= x < 1 and 0 <= y < 1 and x + width <= 1.01 and y + height <= 1.01:
-            return x, y, width, height
-    return None
+    box = box_from_mapping(item, source="ipaper-marker")
+    return (box.x, box.y, box.width, box.height) if box is not None else None
 
 
 PET_PRODUCT_RE = re.compile(
@@ -454,19 +451,21 @@ def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> lis
             page_index = page_number - 1
             marker_items = markers_by_label.get((page_index, label.casefold()), [])
 
-        geometries = [
-            geometry
+        boxes = [
+            box
             for item in (*items, *marker_items)
-            if (geometry := _hotspot_geometry(item)) is not None
+            if (box := box_from_mapping(item, source="ipaper-marker")) is not None
         ]
-        xs = [geometry[0] for geometry in geometries]
-        ys = [geometry[1] for geometry in geometries]
-        rights = [geometry[0] + geometry[2] for geometry in geometries]
-        bottoms = [geometry[1] + geometry[3] for geometry in geometries]
-        hotspot_x = min(xs) if xs else None
-        hotspot_y = min(ys) if ys else None
-        hotspot_width = max(rights) - hotspot_x if rights and hotspot_x is not None else None
-        hotspot_height = max(bottoms) - hotspot_y if bottoms and hotspot_y is not None else None
+        hotspot = union_boxes(boxes)
+        raw_text = " | ".join(filter(None, (variant.description for variant in variants)))
+        candidates = [
+            VariantCandidate(id=variant.id, name=variant.name, confidence=0.98, source="ipaper-product")
+            for variant in variants
+        ]
+        quality = assess_quality(
+            heading=label, raw_text=raw_text, price=price, box=hotspot,
+            variants=candidates, structured=True, has_crop=False,
+        )
         offers.append(Offer(
             id=stable,
             retailer=publication.retailer,
@@ -485,15 +484,21 @@ def parse_enrichment_chunks(publication: Publication, chunks: list[dict]) -> lis
             unit=unit,
             source_url=publication.source_url,
             page_number=page_number,
-            hotspot_x=hotspot_x,
-            hotspot_y=hotspot_y,
-            hotspot_width=hotspot_width,
-            hotspot_height=hotspot_height,
-            raw_text=" | ".join(filter(None, (variant.description for variant in variants))),
-            safe_to_add=True,
+            hotspot_x=hotspot.x if hotspot else None,
+            hotspot_y=hotspot.y if hotspot else None,
+            hotspot_width=hotspot.width if hotspot else None,
+            hotspot_height=hotspot.height if hotspot else None,
+            raw_text=raw_text,
+            safe_to_add=quality.score >= 0.60,
             variants=variants,
+            hotspot_confidence=quality.hotspot_confidence,
+            variant_confidence=quality.variant_confidence,
+            quality_score=quality.score,
+            quality_source="ipaper-enrichment",
+            quality_issues=quality.issues,
+            quality_signals=quality.signals,
         ))
-    return sorted(offers, key=lambda offer: (offer.page_number or 0, offer.product_name.casefold()))
+    return couple_offers(offers)
 
 
 def _price(match: re.Match[str]) -> float:

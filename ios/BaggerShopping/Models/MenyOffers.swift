@@ -71,6 +71,12 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
     let identityMatch: ProductIdentityMatch?
     let productIdentity: ProductIdentityAnalysis?
     let publicationStatus: String?
+    let hotspotConfidence: Double
+    let variantConfidence: Double
+    let qualityScore: Double
+    let qualitySource: String
+    let qualityIssues: [String]
+    let qualitySignals: [String]
 
     enum CodingKeys: String, CodingKey {
         case id, retailer, brand, price, quantity, unit
@@ -95,6 +101,12 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         case identityMatch = "identity_match"
         case productIdentity = "product_identity"
         case publicationStatus = "publication_status"
+        case hotspotConfidence = "hotspot_confidence"
+        case variantConfidence = "variant_confidence"
+        case qualityScore = "quality_score"
+        case qualitySource = "quality_source"
+        case qualityIssues = "quality_issues"
+        case qualitySignals = "quality_signals"
     }
 
     init(from decoder: Decoder) throws {
@@ -126,6 +138,12 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         identityMatch = try values.decodeIfPresent(ProductIdentityMatch.self, forKey: .identityMatch)
         productIdentity = try values.decodeIfPresent(ProductIdentityAnalysis.self, forKey: .productIdentity)
         publicationStatus = try values.decodeIfPresent(String.self, forKey: .publicationStatus)
+        hotspotConfidence = try values.decodeIfPresent(Double.self, forKey: .hotspotConfidence) ?? 0
+        variantConfidence = try values.decodeIfPresent(Double.self, forKey: .variantConfidence) ?? 0
+        qualityScore = try values.decodeIfPresent(Double.self, forKey: .qualityScore) ?? 0
+        qualitySource = try values.decodeIfPresent(String.self, forKey: .qualitySource) ?? "unknown"
+        qualityIssues = try values.decodeIfPresent([String].self, forKey: .qualityIssues) ?? []
+        qualitySignals = try values.decodeIfPresent([String].self, forKey: .qualitySignals) ?? []
     }
 }
 
