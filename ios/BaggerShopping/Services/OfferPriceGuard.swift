@@ -11,62 +11,39 @@ struct OfferPriceGuard {
     private let api = APIClient()
 
     func cheaperOffers(for itemName: String, than selected: GroceryOffer) async -> [GroceryOffer] {
-        guard let selectedPrice = selected.price else { return [] }
+        await OfferAddActivity.shared.beginChecking()
+        guard selected.price != nil else {
+            await OfferAddActivity.shared.beginAdding()
+            return []
+        }
 
-        // Recall and precision are deliberately separated here. Search may be
-        // broad enough to discover a mixed campaign where the selected product
-        // is only one variant, while the identity checks below stay strict.
-        // This avoids both failure modes:
-        // 1) missing a cheaper Coca-Cola campaign because the search query also
-        //    contained the generic word "sodavand"
-        // 2) suggesting Pepsi/Faxe Kondi just because they share the category.
+        // Discovery may be broad enough to find a mixed campaign where the
+        // selected product is only one variant. Identity verification remains
+        // strict and local, so category neighbours never become price warnings.
+        // Stop as soon as a search term has produced a real alternative; this
+        // avoids a second network round-trip in the common case.
         var discovered: [String: GroceryOffer] = [:]
         for term in GroceryOffer.priceGuardSearchTerms(for: itemName) {
             guard let response = try? await api.searchOffers(query: term) else { continue }
             for offer in response.offers {
                 discovered["\(offer.id)|\(offer.publicationID)"] = offer
             }
-        }
 
-        let candidates = discovered.values.compactMap { candidate -> (GroceryOffer, String)? in
-            guard candidate.id != selected.id,
-                  candidate.publicationID != selected.publicationID,
-                  candidate.price != nil,
-                  let matchedName = candidate.matchingSelectedItemName(itemName) else {
-                return nil
+            let hasConcreteAlternative = response.offers.contains { candidate in
+                candidate.id != selected.id
+                    && candidate.publicationID != selected.publicationID
+                    && candidate.matchingSelectedItemName(itemName) != nil
             }
-            return (candidate, matchedName)
+            if hasConcreteAlternative { break }
         }
 
-        var verified: [GroceryOffer] = []
-        for (candidate, matchedName) in candidates {
-            guard let comparison = try? await api.compareProducts(
-                left: itemName,
-                leftQuantity: selected.quantity,
-                leftUnit: selected.unit,
-                leftPrice: selected.price,
-                right: matchedName,
-                rightQuantity: candidate.quantity,
-                rightUnit: candidate.unit,
-                rightPrice: candidate.price
-            ) else { continue }
-
-            // A category-level neighbour is never enough for a price warning.
-            // The selected concrete identity must survive server verification.
-            guard comparison.level == "same_item" else { continue }
-
-            let directCheaper = comparison.directPriceComparison
-                && (candidate.price ?? .greatestFiniteMagnitude) < selectedPrice
-            let selectedLowestUnitPrice = comparison.left.unitPriceMin ?? comparison.left.unitPrice
-            let candidateHighestUnitPrice = comparison.right.unitPriceMax ?? comparison.right.unitPrice
-            let safelyCheaperPerUnit = candidateHighestUnitPrice.map { candidateValue in
-                selectedLowestUnitPrice.map { candidateValue < $0 } ?? false
-            } == true
-
-            guard directCheaper || safelyCheaperPerUnit else { continue }
-            verified.append(candidate)
+        let cheaper = cheaperOffers(from: Array(discovered.values), for: itemName, than: selected)
+        if cheaper.isEmpty {
+            await OfferAddActivity.shared.beginAdding()
+        } else {
+            await OfferAddActivity.shared.clear()
         }
-        return sortedUnique(verified)
+        return cheaper
     }
 
     func cheaperOffers(
@@ -76,14 +53,36 @@ struct OfferPriceGuard {
     ) -> [GroceryOffer] {
         guard let selectedPrice = selected.price else { return [] }
 
-        return sortedUnique(offers
-            .filter { candidate in
-                candidate.id != selected.id
-                    && candidate.publicationID != selected.publicationID
-                    && candidate.price.map { $0 < selectedPrice } == true
-                    && candidate.exactlyMatchesSelectedItem(itemName)
+        return sortedUnique(offers.filter { candidate in
+            guard candidate.id != selected.id,
+                  candidate.publicationID != selected.publicationID,
+                  candidate.matchingSelectedItemName(itemName) != nil,
+                  let candidatePrice = candidate.price else {
+                return false
             }
-        )
+
+            // Prefer comparable unit prices when both offers provide them. If
+            // that data is missing, an exact concrete identity may still use
+            // the ordinary campaign price comparison, preserving legacy flyers.
+            if let selectedUnitPrice = selected.productIdentity?.unitPrice,
+               let candidateUnitPrice = candidate.productIdentity?.unitPrice,
+               selected.productIdentity?.unitPriceUnit == candidate.productIdentity?.unitPriceUnit {
+                return candidateUnitPrice < selectedUnitPrice
+            }
+
+            if let selectedQuantity = selected.quantity,
+               let candidateQuantity = candidate.quantity,
+               let selectedUnit = selected.unit,
+               let candidateUnit = candidate.unit {
+                let sameUnit = selectedUnit.caseInsensitiveCompare(candidateUnit) == .orderedSame
+                if sameUnit, abs(selectedQuantity - candidateQuantity) < 0.0001 {
+                    return candidatePrice < selectedPrice
+                }
+                return false
+            }
+
+            return candidatePrice < selectedPrice
+        })
     }
 
     private func sortedUnique(_ offers: [GroceryOffer]) -> [GroceryOffer] {
@@ -110,8 +109,6 @@ extension GroceryOffer {
         let wanted = Self.priceGuardKey(selectedName)
         guard !wanted.isEmpty else { return nil }
 
-        // Prefer actual variants over a broad campaign heading. A mixed
-        // campaign is valid only when the concrete selected item is present.
         let variantCandidates = variants.flatMap { variant in
             [variant.name, shoppingItemName(variant: variant.name)]
         }
@@ -127,10 +124,6 @@ extension GroceryOffer {
         let original = normalizedPriceGuardText(value)
         guard !original.isEmpty else { return [] }
 
-        // These words are useful category descriptors for display, but can make
-        // catalogue search too narrow when the cheaper campaign names only the
-        // brand/variant. They are removed for discovery only; strict identity
-        // matching still happens afterwards.
         let discoveryDescriptors: Set<String> = [
             "sodavand", "sodavande", "drik", "drikke", "vand",
             "mælk", "maelk", "smør", "smor", "brød", "brod",

@@ -59,6 +59,7 @@ struct CheaperOffersSheet: View {
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                                 Button("Tilføj dette tilbud") {
+                                    OfferAddActivity.shared.beginAdding()
                                     select(offer)
                                     dismiss()
                                 }
@@ -71,6 +72,7 @@ struct CheaperOffersSheet: View {
 
                 Section {
                     Button("Ignorer og tilføj alligevel") {
+                        OfferAddActivity.shared.beginAdding()
                         ignore()
                         dismiss()
                     }
