@@ -110,7 +110,11 @@ enum SmartOfferMatchCache {
         UserDefaults.standard.set(data, forKey: key)
     }
 
-    static func load(maxAge: TimeInterval = 30 * 60) -> CachedSmartOfferMatches? {
+    // Show the last known badges immediately and validate them in the
+    // background. A six-hour display cache is deliberately longer than the
+    // network refresh cadence; stale badges are replaced by the next batch
+    // response without ever blanking the list during startup.
+    static func load(maxAge: TimeInterval = 6 * 60 * 60) -> CachedSmartOfferMatches? {
         guard
             let data = UserDefaults.standard.data(forKey: key),
             let cached = try? JSONDecoder().decode(CachedSmartOfferMatches.self, from: data),
