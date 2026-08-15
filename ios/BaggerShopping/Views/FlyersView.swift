@@ -195,7 +195,6 @@ private struct NativeFlyerReader: View {
     @State private var offers: [GroceryOffer]
     @State private var page = 1
     @State private var pendingOffer: GroceryOffer?
-    @State private var addedName: String?
     @State private var errorMessage: String?
     @State private var pendingCheaperAddition: PendingOfferAddition?
     private let api = APIClient()
@@ -242,9 +241,6 @@ private struct NativeFlyerReader: View {
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
-            .alert("Tilføjet til indkøbslisten", isPresented: Binding(
-                get: { addedName != nil }, set: { if !$0 { addedName = nil } }
-            )) { Button("OK") { addedName = nil } } message: { Text(addedName ?? "") }
             .alert("Kunne ikke hente avisens varer", isPresented: Binding(
                 get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
             )) { Button("OK") { errorMessage = nil } } message: { Text(errorMessage ?? "") }
@@ -261,10 +257,15 @@ private struct NativeFlyerReader: View {
             }
         }
         .overlay {
-            if let message = offerAddActivity.phase.message,
-               offerAddActivity.phase != .added {
+            if let message = offerAddActivity.phase.message {
                 VStack(spacing: 12) {
-                    ProgressView()
+                    if offerAddActivity.phase.showsProgress {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.green)
+                    }
                     Text(message)
                         .font(.subheadline.weight(.semibold))
                         .multilineTextAlignment(.center)
@@ -305,7 +306,7 @@ private struct NativeFlyerReader: View {
 
     private func addWithoutPriceCheck(_ name: String, from offer: GroceryOffer) {
         Task {
-            if await model.addItem(
+            _ = await model.addItem(
                 name,
                 retailer: offer.retailer,
                 offerPrice: offer.price,
@@ -315,7 +316,7 @@ private struct NativeFlyerReader: View {
                 publicationID: offer.publicationID,
                 matchedItemName: name,
                 offerSnapshot: offer
-            ) { addedName = name }
+            )
         }
     }
 
