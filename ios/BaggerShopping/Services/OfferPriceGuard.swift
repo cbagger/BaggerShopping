@@ -8,6 +8,14 @@ struct PendingOfferAddition: Identifiable {
 }
 
 struct OfferPriceGuard {
+    private struct ComparisonBasis {
+        let price: Double
+        let unitPrice: Double?
+        let unitPriceUnit: String?
+        let quantity: Double?
+        let unit: String?
+    }
+
     private let api = APIClient()
 
     func cheaperOffers(
@@ -46,10 +54,9 @@ struct OfferPriceGuard {
             }
         }
 
-        // One broad discovery query is enough. The previous implementation did
-        // sequential queries and stopped after the first hit, which both added
-        // latency and caused valid cheaper offers later in the result set to be
-        // missed (for example Lurpak/Tuborg campaigns).
+        // One broad discovery query is enough. Identity verification below is
+        // still strict, so broad discovery cannot replace the selected product
+        // with a merely related campaign.
         if let response = try? await api.searchOffers(query: discoveryTerm) {
             OfferSearchCache.save(response.offers, query: discoveryTerm, retailers: [])
             for offer in response.offers {
@@ -71,34 +78,51 @@ struct OfferPriceGuard {
         for itemName: String,
         than selected: GroceryOffer
     ) -> [GroceryOffer] {
-        guard let selectedPrice = selected.price else { return [] }
+        guard let selectedBasis = comparisonBasis(for: itemName, in: selected) else { return [] }
 
         return sortedUnique(offers.filter { candidate in
             guard candidate.id != selected.id || candidate.publicationID != selected.publicationID,
                   candidate.matchingSelectedItemName(itemName) != nil,
-                  let candidatePrice = candidate.price else {
+                  let candidateBasis = comparisonBasis(for: itemName, in: candidate) else {
                 return false
             }
 
-            if let selectedUnitPrice = selected.productIdentity?.unitPrice,
-               let candidateUnitPrice = candidate.productIdentity?.unitPrice,
-               selected.productIdentity?.unitPriceUnit == candidate.productIdentity?.unitPriceUnit {
+            // Compare the concrete variant the user chose, not the campaign's
+            // aggregate quantity. This is critical for mixed offers such as
+            // “AMA fedtstof eller Bakkedal smørbar”, where Bakkedal may be 200 g
+            // even though the campaign itself spans several package sizes.
+            if let selectedUnitPrice = selectedBasis.unitPrice,
+               let candidateUnitPrice = candidateBasis.unitPrice,
+               selectedBasis.unitPriceUnit == candidateBasis.unitPriceUnit {
                 return candidateUnitPrice < selectedUnitPrice
             }
 
-            if let selectedQuantity = selected.quantity,
-               let candidateQuantity = candidate.quantity,
-               let selectedUnit = selected.unit,
-               let candidateUnit = candidate.unit {
+            if let selectedQuantity = selectedBasis.quantity,
+               let candidateQuantity = candidateBasis.quantity,
+               let selectedUnit = selectedBasis.unit,
+               let candidateUnit = candidateBasis.unit {
                 let sameUnit = selectedUnit.caseInsensitiveCompare(candidateUnit) == .orderedSame
                 if sameUnit, abs(selectedQuantity - candidateQuantity) < 0.0001 {
-                    return candidatePrice < selectedPrice
+                    return candidateBasis.price < selectedBasis.price
                 }
                 return false
             }
 
-            return candidatePrice < selectedPrice
+            return candidateBasis.price < selectedBasis.price
         })
+    }
+
+    private func comparisonBasis(for itemName: String, in offer: GroceryOffer) -> ComparisonBasis? {
+        guard let price = offer.price else { return nil }
+        let variant = offer.matchingSelectedVariant(itemName)
+        let identity = variant?.identity ?? offer.productIdentity
+        return ComparisonBasis(
+            price: price,
+            unitPrice: identity?.unitPrice,
+            unitPriceUnit: identity?.unitPriceUnit,
+            quantity: variant?.quantity ?? offer.quantity,
+            unit: variant?.unit ?? offer.unit
+        )
     }
 
     private func offerKey(_ offer: GroceryOffer) -> String {
@@ -125,6 +149,18 @@ struct OfferPriceGuard {
 extension GroceryOffer {
     func exactlyMatchesSelectedItem(_ selectedName: String) -> Bool {
         matchingSelectedItemName(selectedName) != nil
+    }
+
+    func matchingSelectedVariant(_ selectedName: String) -> OfferVariant? {
+        variants.first { variant in
+            [variant.name, shoppingItemName(variant: variant.name)].contains { candidate in
+                Self.priceGuardIdentityMatches(
+                    selectedName: selectedName,
+                    candidateName: candidate,
+                    identity: variant.identity
+                )
+            }
+        }
     }
 
     func matchingSelectedItemName(_ selectedName: String) -> String? {
@@ -169,8 +205,6 @@ extension GroceryOffer {
         let prefix = tokens.prefix(2).joined(separator: " ")
         let first = tokens.first ?? ""
 
-        // Order from narrow to broad-but-useful so `last` is normally the
-        // product/brand phrase rather than a single overly broad token.
         let broadCandidates = [first, prefix, withoutDescriptors]
             .filter { !$0.isEmpty && $0.count >= 4 && $0 != original }
 
