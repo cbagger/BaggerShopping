@@ -17,6 +17,24 @@ CHOICE_KEYS = {
     "alternatives",
 }
 NAME_KEYS = {"name", "title", "label", "heading", "product_name", "productname"}
+IGNORED_BRANCH_KEYS = {
+    "image",
+    "images",
+    "image_labels",
+    "imagelabels",
+    "vision",
+    "vision_results",
+    "recognition",
+    "detections",
+    "ocr",
+    "ocr_blocks",
+    "text_blocks",
+    "textblocks",
+    "regions",
+    "crop",
+    "crops",
+}
+DESCRIPTION_KEYS = ("description", "desc", "subtitle")
 CHOICE_SEPARATOR_RE = re.compile(r"\s*,\s*|\s*;\s*|\s+eller\s+|\s+/\s+", re.IGNORECASE)
 EXPLICIT_CHOICE_RE = re.compile(r"(?:\s+eller\s+|\s+/\s+|[,;])", re.IGNORECASE)
 LEADING_CHOICE_RE = re.compile(
@@ -108,7 +126,7 @@ def _structured_names(payload: object, *, campaign_heading: str) -> list[str]:
     The v1 walker treated generic ``items`` collections as product choices and
     could therefore surface labels from unrelated metadata. V2 traverses the
     payload to *find* known choice containers, but names are collected only
-    inside those containers. Image labels/OCR/image recognition are never read.
+    inside those containers. Image/OCR/vision branches are explicitly ignored.
     """
 
     raw_names: list[object] = []
@@ -126,10 +144,15 @@ def _structured_names(payload: object, *, campaign_heading: str) -> list[str]:
 
         for key, child in node.items():
             lowered = str(key).casefold()
+            if lowered in IGNORED_BRANCH_KEYS:
+                continue
             if lowered in NAME_KEYS and isinstance(child, (str, int, float)):
                 raw_names.append(child)
         for key, child in node.items():
-            if str(key).casefold() in CHOICE_KEYS:
+            lowered = str(key).casefold()
+            if lowered in IGNORED_BRANCH_KEYS:
+                continue
+            if lowered in CHOICE_KEYS:
                 collect_choice_node(child)
 
     def find_choice_containers(node: object) -> None:
@@ -140,13 +163,27 @@ def _structured_names(payload: object, *, campaign_heading: str) -> list[str]:
         if not isinstance(node, dict):
             return
         for key, child in node.items():
-            if str(key).casefold() in CHOICE_KEYS:
+            lowered = str(key).casefold()
+            if lowered in IGNORED_BRANCH_KEYS:
+                continue
+            if lowered in CHOICE_KEYS:
                 collect_choice_node(child)
             elif isinstance(child, (dict, list)):
                 find_choice_containers(child)
 
     find_choice_containers(payload)
     return _dedupe_clean(raw_names, campaign_heading=campaign_heading)
+
+
+def _provider_description(payload: object) -> str | None:
+    """Return provider text only, never OCR/image-derived text branches."""
+    if not isinstance(payload, dict):
+        return None
+    for key in DESCRIPTION_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and _space(value):
+            return _space(value)
+    return None
 
 
 def _restore_variant_context(names: list[str]) -> list[str]:
@@ -246,12 +283,12 @@ def extract_variants_v2(
     Priority is deliberately conservative:
     1. multiple explicit provider product/variant objects,
     2. explicit alternatives in the campaign heading,
-    3. explicit alternatives in the first description clause,
+    3. explicit alternatives in a provider-owned description field,
     4. one trustworthy structured product,
     5. the campaign heading as an unresolved single choice.
 
-    Weight, package size, unit price, image pixels and image recognition never
-    influence variant identity in this engine.
+    Weight, package size, unit price, OCR, image pixels and image recognition
+    never influence variant identity in this engine.
     """
 
     campaign_heading = _space(heading)
@@ -259,7 +296,13 @@ def extract_variants_v2(
 
     structured = _structured_names(payload, campaign_heading=campaign_heading)
     heading_choices = _split_choices(campaign_heading, campaign_heading=campaign_heading)
-    description_choices = _description_choices(description, campaign_heading=campaign_heading)
+
+    # Tjek currently passes provider description + positioned OCR as one merged
+    # argument. If a structured payload exists, read only the provider's own
+    # description field so OCR text can never become a variant. The legacy
+    # argument is used only for sources with no structured payload at all.
+    trusted_description = _provider_description(payload) if isinstance(payload, dict) else description
+    description_choices = _description_choices(trusted_description, campaign_heading=campaign_heading)
 
     if len(structured) > 1:
         names, source, confidence = structured, "structured-products", 0.99
