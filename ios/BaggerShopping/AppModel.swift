@@ -22,6 +22,8 @@ final class AppModel: ObservableObject {
     private var reconciliationTasks: [String: Task<Void, Never>] = [:]
     private var refreshInProgress = false
     private var listMutationRevision = 0
+    private var pendingDeletionIDs: Set<String> = []
+    private var deletionTail: Task<Void, Never>?
 
     init() {
         if let data = UserDefaults.standard.data(forKey: offerMetadataKey),
@@ -56,19 +58,14 @@ final class AppModel: ObservableObject {
             // resurrect a row that the user has just added, changed or deleted.
             guard revision == listMutationRevision else { return }
 
-            // A DELETE is optimistic: the row disappears locally before Samsung
-            // has necessarily removed it from its next read. A mutating id that
-            // is absent from the local list is therefore a deletion tombstone.
-            // Filter those ids from refresh responses until the short grace
-            // period ends, so deleted rows never flash back into the UI.
-            let pendingDeletionIDs = Set(mutatingItemIDs.filter { stableID in
-                !(shoppingList?.items.contains(where: { $0.stableID == stableID }) ?? false)
-            })
+            // DELETE tombstones are independent of ordinary item mutations.
+            // Rapid swipe-deletes can therefore disappear from the UI instantly
+            // while their Samsung requests are serialized in the background.
             let visibleItems = list.items.filter { !pendingDeletionIDs.contains($0.stableID) }
             let visibleList = replacingItems(in: list, with: visibleItems)
             shoppingList = visibleList
             let visibleIDs = Set(visibleItems.map(\.stableID))
-            mutatingItemIDs = mutatingItemIDs.intersection(visibleIDs.union(pendingDeletionIDs))
+            mutatingItemIDs.formIntersection(visibleIDs)
             ShoppingListCache.save(visibleList)
             await syncSharedOfferMetadata()
             errorMessage = nil
@@ -241,11 +238,10 @@ final class AppModel: ObservableObject {
 
     private func scheduleDeletionTombstoneRelease(_ stableID: String) {
         Task { @MainActor [weak self] in
-            // Samsung Food can briefly return the deleted row after DELETE has
-            // succeeded. Keeping the tombstone outside the mutation queue means
-            // subsequent rapid deletes can continue immediately.
-            try? await Task.sleep(for: .seconds(8))
-            self?.mutatingItemIDs.remove(stableID)
+            // Keep successful deletes hidden long enough for Samsung Food's
+            // eventually-consistent read side to catch up.
+            try? await Task.sleep(for: .seconds(20))
+            self?.pendingDeletionIDs.remove(stableID)
         }
     }
 
@@ -296,25 +292,36 @@ final class AppModel: ObservableObject {
 
     func deleteItem(_ item: ShoppingItem) async {
         guard item.id != nil else { return }
-        let previous = shoppingList
 
-        // A just-added item may still have a 2/4/8 second reconciliation loop.
-        // Stop it before changing the list so it cannot race the DELETE and
-        // reinsert stale Samsung state into the SwiftUI List.
+        // Remove the row before entering the serialized Samsung mutation tail.
+        // That means delete #2/#3/#4 are visually gone immediately even while
+        // the previous network request is still completing.
         cancelReconciliation(for: item.name)
         listMutationRevision &+= 1
+        let key = item.stableID
+        pendingDeletionIDs.insert(key)
 
         if let list = shoppingList {
             let updated = replacingItems(
                 in: list,
-                with: list.items.filter { $0.stableID != item.stableID }
+                with: list.items.filter { $0.stableID != key }
             )
             shoppingList = updated
             ShoppingListCache.save(updated)
         }
 
+        let previousTail = deletionTail
+        deletionTail = Task { @MainActor [weak self] in
+            if let previousTail {
+                await previousTail.value
+            }
+            guard let self else { return }
+            await self.commitDeletion(item)
+        }
+    }
+
+    private func commitDeletion(_ item: ShoppingItem) async {
         let key = item.stableID
-        mutatingItemIDs.insert(key)
         do {
             try await api.deleteItem(item)
             offerMetadata.removeValue(forKey: offerRetailerNameKey(item.name))
@@ -328,10 +335,14 @@ final class AppModel: ObservableObject {
             }
             scheduleDeletionTombstoneRelease(key)
         } catch {
-            mutatingItemIDs.remove(key)
-            shoppingList = previous
-            if let previous { ShoppingListCache.save(previous) }
-            errorMessage = error.localizedDescription
+            pendingDeletionIDs.remove(key)
+            if let list = shoppingList,
+               !list.items.contains(where: { $0.stableID == key }) {
+                let restored = replacingItems(in: list, with: list.items + [item])
+                shoppingList = restored
+                ShoppingListCache.save(restored)
+            }
+            errorMessage = Self.userFacingMutationError(error)
         }
     }
 
@@ -340,7 +351,7 @@ final class AppModel: ObservableObject {
         let previous = shoppingList
         checked.forEach { cancelReconciliation(for: $0.name) }
         let deletionIDs = Set(checked.map(\.stableID))
-        mutatingItemIDs.formUnion(deletionIDs)
+        pendingDeletionIDs.formUnion(deletionIDs)
         listMutationRevision &+= 1
         if let list = shoppingList {
             let updated = replacingItems(in: list, with: list.items.filter { !$0.checked })
@@ -357,10 +368,10 @@ final class AppModel: ObservableObject {
             errorMessage = nil
             deletionIDs.forEach(scheduleDeletionTombstoneRelease)
         } catch {
-            mutatingItemIDs.subtract(deletionIDs)
+            pendingDeletionIDs.subtract(deletionIDs)
             shoppingList = previous
             if let previous { ShoppingListCache.save(previous) }
-            errorMessage = error.localizedDescription
+            errorMessage = Self.userFacingMutationError(error)
         }
     }
 
