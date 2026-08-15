@@ -303,6 +303,19 @@ struct APIClient {
         return try JSONDecoder().decode(PublicationOffersResponse.self, from: data)
     }
 
+    func submitFlyerQualityFeedback(offer: GroceryOffer, decision: String) async throws {
+        var payload: [String: Any] = [
+            "publication_id": offer.publicationID,
+            "offer_id": offer.id,
+            "retailer": offer.retailer,
+            "quality_source": offer.qualitySource,
+            "decision": decision
+        ]
+        if let pageNumber = offer.pageNumber { payload["page_number"] = pageNumber }
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        _ = try await perform(request(path: "/api/mobile/v1/offers/quality/feedback", method: "POST", body: body))
+    }
+
     private func validate(response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard 200..<300 ~= http.statusCode else {

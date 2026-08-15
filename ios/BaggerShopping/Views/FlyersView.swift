@@ -205,9 +205,12 @@ private struct NativeFlyerReader: View {
                 } else {
                     TabView(selection: $page) {
                         ForEach(Array(publication.pageImageURLs.enumerated()), id: \.offset) { index, url in
-                            FlyerPage(url: url, offers: offers.filter { $0.pageNumber == index + 1 }) { offer in
-                                choose(offer)
-                            }
+                            FlyerPage(
+                                url: url,
+                                offers: offers.filter { $0.pageNumber == index + 1 },
+                                select: choose,
+                                report: report
+                            )
                             .tag(index + 1)
                         }
                     }
@@ -296,12 +299,17 @@ private struct NativeFlyerReader: View {
         do { offers = try await api.fetchOffers(publicationID: publication.id).offers }
         catch { errorMessage = error.localizedDescription }
     }
+
+    private func report(_ offer: GroceryOffer, decision: String) {
+        Task { try? await api.submitFlyerQualityFeedback(offer: offer, decision: decision) }
+    }
 }
 
 private struct FlyerPage: View {
     let url: URL
     let offers: [GroceryOffer]
     let select: (GroceryOffer) -> Void
+    let report: (GroceryOffer, String) -> Void
 
     var body: some View {
         GeometryReader { proxy in
@@ -334,13 +342,27 @@ private struct FlyerPage: View {
                             .font(.caption.bold())
                             .foregroundStyle(.white)
                             .frame(width: 30, height: 30)
-                            .background(.black.opacity(0.82), in: Circle())
+                            .background(
+                                offer.hotspotConfidence >= 0.75
+                                    ? Color.black.opacity(0.82)
+                                    : Color.orange.opacity(0.90),
+                                in: Circle()
+                            )
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .contentShape(Rectangle())
                     }
                         .frame(width: max(44, width * w), height: max(44, height * h))
                         .offset(x: offsetX + width * x, y: offsetY + height * y)
                         .accessibilityLabel("Tilføj \(offer.productName)")
+                        .accessibilityValue(offer.hotspotConfidence >= 0.75 ? "Sikker placering" : "Usikker placering")
+                        .contextMenu {
+                            Button("Rapportér forkert placering", systemImage: "scope") {
+                                report(offer, "wrong_position")
+                            }
+                            Button("Rapportér forkerte varianter", systemImage: "square.stack.3d.up.slash") {
+                                report(offer, "wrong_variants")
+                            }
+                        }
                 }
             }
         }

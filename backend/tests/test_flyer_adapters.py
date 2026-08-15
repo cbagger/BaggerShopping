@@ -359,6 +359,38 @@ def test_tjek_description_variants_are_used_without_image_ocr():
     assert [variant.name for variant in offers[0].variants] == ["Xtra! tun i vand", "Xtra! tun i olie"]
 
 
+def test_tjek_positioned_ocr_enriches_variants_and_quality_without_neighbour_text():
+    publication = Publication(
+        id="catalog", retailer="Netto", title="Uge 34", source_url="https://netto.test",
+        page_count=1, page_image_urls=["https://images.test/page.webp"],
+    )
+    offers = parse_tjek_hotspots(publication, [{
+        "type": "offer",
+        "locations": {"1": [[0.10, 0.20], [0.50, 0.20], [0.50, 0.60], [0.10, 0.60]]},
+        "offer": {
+            "id": "bread", "heading": "Schulstad brød", "pricing": {"price": 12},
+            "textBlocks": [
+                {
+                    "text": "Schulstad Solsikkerugbrød eller Levebrød Sandwich",
+                    "confidence": 97,
+                    "bounds": {"left": 10, "top": 14, "width": 40, "height": 30},
+                },
+                {
+                    "text": "Lambi toiletpapir",
+                    "confidence": 99,
+                    "bounds": {"left": 60, "top": 70, "width": 30, "height": 10},
+                },
+            ],
+        },
+    }])
+    assert [variant.name for variant in offers[0].variants] == [
+        "Schulstad Solsikkerugbrød", "Levebrød Sandwich",
+    ]
+    assert "positioned-ocr" in offers[0].quality_signals
+    assert "Lambi" not in offers[0].raw_text
+    assert offers[0].quality_score >= 0.8
+
+
 def test_tjek_heading_keeps_relative_product_alternatives_selectable():
     publication = Publication(
         id="catalog", retailer="365discount", title="Uge 33", source_url="https://365.test",
