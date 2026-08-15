@@ -12,13 +12,23 @@ struct OfferPriceGuard {
 
     func cheaperOffers(for itemName: String, than selected: GroceryOffer) async -> [GroceryOffer] {
         guard let selectedPrice = selected.price else { return [] }
-        guard let response = try? await api.searchOffers(query: itemName) else { return [] }
 
-        // Search is intentionally broad (e.g. "cola" may return Coca-Cola,
-        // Pepsi Max and other sodavand). The cheaper-offer guard is not broad:
-        // once the user selected a concrete variant, only campaigns that
-        // actually contain that selected product are allowed through.
-        let candidates = response.offers.compactMap { candidate -> (GroceryOffer, String)? in
+        // Recall and precision are deliberately separated here. Search may be
+        // broad enough to discover a mixed campaign where the selected product
+        // is only one variant, while the identity checks below stay strict.
+        // This avoids both failure modes:
+        // 1) missing a cheaper Coca-Cola campaign because the search query also
+        //    contained the generic word "sodavand"
+        // 2) suggesting Pepsi/Faxe Kondi just because they share the category.
+        var discovered: [String: GroceryOffer] = [:]
+        for term in GroceryOffer.priceGuardSearchTerms(for: itemName) {
+            guard let response = try? await api.searchOffers(query: term) else { continue }
+            for offer in response.offers {
+                discovered["\(offer.id)|\(offer.publicationID)"] = offer
+            }
+        }
+
+        let candidates = discovered.values.compactMap { candidate -> (GroceryOffer, String)? in
             guard candidate.id != selected.id,
                   candidate.publicationID != selected.publicationID,
                   candidate.price != nil,
@@ -41,9 +51,8 @@ struct OfferPriceGuard {
                 rightPrice: candidate.price
             ) else { continue }
 
-            // A generic category-level match must never trigger "Billigere
-            // tilbud fundet". The concrete selected identity has to survive the
-            // server comparison too, after the local campaign/variant check.
+            // A category-level neighbour is never enough for a price warning.
+            // The selected concrete identity must survive server verification.
             guard comparison.level == "same_item" else { continue }
 
             let directCheaper = comparison.directPriceComparison
@@ -101,9 +110,8 @@ extension GroceryOffer {
         let wanted = Self.priceGuardKey(selectedName)
         guard !wanted.isEmpty else { return nil }
 
-        // Prefer actual variants over a broad campaign heading. This is what
-        // makes "Coca-Cola, Fanta, Squash eller Schweppes" a valid cheaper
-        // Coca-Cola offer while rejecting a Pepsi/Faxe Kondi campaign.
+        // Prefer actual variants over a broad campaign heading. A mixed
+        // campaign is valid only when the concrete selected item is present.
         let variantCandidates = variants.flatMap { variant in
             [variant.name, shoppingItemName(variant: variant.name)]
         }
@@ -115,14 +123,48 @@ extension GroceryOffer {
         return campaignCandidates.first(where: { Self.priceGuardKey($0) == wanted })
     }
 
+    static func priceGuardSearchTerms(for value: String) -> [String] {
+        let original = normalizedPriceGuardText(value)
+        guard !original.isEmpty else { return [] }
+
+        // These words are useful category descriptors for display, but can make
+        // catalogue search too narrow when the cheaper campaign names only the
+        // brand/variant. They are removed for discovery only; strict identity
+        // matching still happens afterwards.
+        let discoveryDescriptors: Set<String> = [
+            "sodavand", "sodavande", "drik", "drikke", "vand",
+            "mælk", "maelk", "smør", "smor", "brød", "brod",
+            "kaffe", "yoghurt", "juice", "ost", "pålæg", "palaeg",
+            "kød", "kod", "kylling", "svinekød", "svinekod"
+        ]
+
+        let broad = original
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+            .filter { !discoveryDescriptors.contains($0) }
+            .joined(separator: " ")
+
+        var terms = [original]
+        if !broad.isEmpty, broad != original {
+            terms.append(broad)
+        }
+        return terms
+    }
+
     private static func priceGuardKey(_ value: String) -> String {
         let genericCategoryWords: Set<String> = ["sodavand", "sodavande"]
-        return value
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
-            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+        return normalizedPriceGuardText(value)
             .split(whereSeparator: \.isWhitespace)
             .map(String.init)
             .filter { !genericCategoryWords.contains($0) }
+            .joined(separator: " ")
+    }
+
+    private static func normalizedPriceGuardText(_ value: String) -> String {
+        value
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+            .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
     }
 }
