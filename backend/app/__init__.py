@@ -16,6 +16,7 @@ from typing import Iterable, Sequence
 
 from . import flyer_intelligence as _fi
 from . import product_identity as _pi
+from .variant_extractor_v2 import extract_variants_v2 as _extract_variants_v2
 
 
 def _recall_first_box_from_polygon(
@@ -130,6 +131,11 @@ def _recall_first_couple_offers(offers):
 
 _fi.box_from_polygon = _recall_first_box_from_polygon
 _fi.couple_offers = _recall_first_couple_offers
+# Variant Extractor v2 is deliberately text/structure-only. It never reads
+# image labels or uses package weight/unit price to invent or rank variants.
+# Patching the shared function here makes Tjek/Schwarz adapters use v2 without
+# changing their provider-specific geometry and source handling.
+_fi.extract_variants = _extract_variants_v2
 
 
 # Product identity is used hundreds of times while one Tilbud search is ranked.
