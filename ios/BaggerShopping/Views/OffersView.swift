@@ -23,7 +23,7 @@ struct OffersView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Find tilbud i aktuelle aviser")
+                        Text("Find tilbud i aktuelle og kommende aviser")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
 
@@ -83,7 +83,7 @@ struct OffersView: View {
                     } else if let errorMessage {
                         ContentUnavailableView("Kunne ikke hente tilbud", systemImage: "wifi.exclamationmark", description: Text(errorMessage))
                     } else if hasSearched && offers.isEmpty {
-                        ContentUnavailableView("Ingen tilbud fundet", systemImage: "magnifyingglass", description: Text("\"\(query)\" findes ikke i de valgte aktuelle aviser."))
+                        ContentUnavailableView("Ingen tilbud fundet", systemImage: "magnifyingglass", description: Text("\"\(query)\" findes ikke i de valgte aktuelle eller kommende aviser."))
                     } else {
                         ForEach(offers) { offer in
                             OfferCard(
@@ -139,7 +139,7 @@ struct OffersView: View {
     private func loadRetailers() async {
         guard let response = try? await api.fetchOfferPublications() else { return }
         let available = response.publications
-            .filter { $0.status == "current" && $0.searchable }
+            .filter { ["current", "upcoming"].contains($0.status) && $0.searchable }
             .map(\.retailer)
         retailers = available.reduce(into: []) { result, retailer in
             if !result.contains(retailer) { result.append(retailer) }
@@ -194,7 +194,10 @@ struct OffersView: View {
             let response = try await api.searchOffers(query: term, retailers: Array(retailerSnapshot))
             guard term == query.trimmingCharacters(in: .whitespacesAndNewlines),
                   retailerSnapshot == selectedRetailers else { return }
-            offers = response.offers.filter { $0.identityMatch?.level != "not_same" }
+            // The server has already combined literal, alias and identity
+            // matching.  Reapplying the strict identity level here discarded
+            // valid literal hits such as Schulstad and Coca-Cola.
+            offers = response.offers
         } catch {
             guard !Task.isCancelled else { return }
             offers = []
@@ -294,6 +297,14 @@ private struct OfferCard: View {
                         Text("Gyldig \(from)–\(until)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                    }
+                    if offer.publicationStatus == "upcoming" {
+                        Label(
+                            offer.validFrom.map { "Kommer snart · fra \($0)" } ?? "Kommer snart",
+                            systemImage: "calendar.badge.clock"
+                        )
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.orange)
                     }
                     if let unitPrice = offer.productIdentity?.unitPrice,
                        let unit = offer.productIdentity?.unitPriceUnit {

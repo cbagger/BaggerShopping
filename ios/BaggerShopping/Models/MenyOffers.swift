@@ -70,6 +70,7 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
     let variants: [OfferVariant]
     let identityMatch: ProductIdentityMatch?
     let productIdentity: ProductIdentityAnalysis?
+    let publicationStatus: String?
 
     enum CodingKeys: String, CodingKey {
         case id, retailer, brand, price, quantity, unit
@@ -93,6 +94,7 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         case variants
         case identityMatch = "identity_match"
         case productIdentity = "product_identity"
+        case publicationStatus = "publication_status"
     }
 
     init(from decoder: Decoder) throws {
@@ -123,6 +125,7 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         variants = try values.decodeIfPresent([OfferVariant].self, forKey: .variants) ?? []
         identityMatch = try values.decodeIfPresent(ProductIdentityMatch.self, forKey: .identityMatch)
         productIdentity = try values.decodeIfPresent(ProductIdentityAnalysis.self, forKey: .productIdentity)
+        publicationStatus = try values.decodeIfPresent(String.self, forKey: .publicationStatus)
     }
 }
 

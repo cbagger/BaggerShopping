@@ -8,7 +8,10 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .flyer_adapters import RETAILER_ORDER, fetch_all_publications
-from .meny_flyer import Offer, Publication, _is_pet_offer, _product_domain, search_publication
+from .meny_flyer import (
+    Offer, Publication, _contains_query_term, _is_pet_offer, _product_domain,
+    _query_terms, search_publication,
+)
 from .product_identity import MatchResult, analyze, apply_family_preference, compare
 
 
@@ -182,7 +185,11 @@ def _offer_match_result(item_name: str, offer: Offer) -> tuple[int, MatchResult]
     return apply_family_preference(item_name, candidate, _identity_score(best), best)
 
 
-def _offer_payload(offer: Offer, identity: MatchResult | None = None) -> dict:
+def _offer_payload(
+    offer: Offer,
+    identity: MatchResult | None = None,
+    publication_status: str | None = None,
+) -> dict:
     payload = offer.model_dump()
     payload["product_identity"] = analyze(
         offer.product_name, quantity=offer.quantity, unit=offer.unit, price=offer.price,
@@ -199,7 +206,65 @@ def _offer_payload(offer: Offer, identity: MatchResult | None = None) -> dict:
         payload["variants"].append(value)
     if identity is not None:
         payload["identity_match"] = identity.model_dump()
+    if publication_status is not None:
+        payload["publication_status"] = publication_status
     return payload
+
+
+def _search_match_result(item_name: str, offer: Offer) -> tuple[int, Offer, MatchResult] | None:
+    """Search is broader than automatic item matching, but remains explainable.
+
+    A literal hit in the advert, brand or one of its variants must never be
+    discarded by the conservative identity engine.  The full campaign is
+    retained so the iPhone can show every choice from the flyer; matching
+    variants are merely marked and sorted first by the client.
+    """
+    query_domain = _product_domain(item_name)
+    if _is_pet_offer(offer) and query_domain != "pet":
+        return None
+
+    terms = _query_terms(item_name)
+    product_match = _contains_query_term(offer.product_name, terms)
+    brand_match = bool(offer.brand and _contains_query_term(offer.brand, terms))
+    raw_match = bool(offer.raw_text and _contains_query_term(offer.raw_text, terms))
+    matching_ids = {
+        variant.id for variant in offer.variants
+        if _contains_query_term(variant.name, terms)
+    }
+
+    if product_match or brand_match or raw_match or matching_ids:
+        matched = offer.model_copy(deep=True)
+        matched.variants = [
+            variant.model_copy(update={"matches_query": variant.id in matching_ids})
+            for variant in matched.variants
+        ]
+        candidates = [offer.product_name, *(variant.name for variant in offer.variants)]
+        identity = max(
+            (compare(item_name, candidate) for candidate in candidates),
+            key=_identity_score,
+        )
+        if identity.level == "not_same":
+            identity = identity.model_copy(update={
+                "level": "probably_same",
+                "confidence": .82,
+                "explanation": "Direkte tekstmatch i tilbuddet eller en af dets varianter.",
+            })
+        score = 150 if matching_ids else 145 if product_match or brand_match else 125
+        score, identity = apply_family_preference(item_name, offer.product_name, score, identity)
+        if score <= 0:
+            return None
+        return score, matched, identity
+
+    return _matched_offer(item_name, offer)
+
+
+def _search_deduplication_key(offer: Offer) -> tuple:
+    """Collapse duplicate hotspots while preserving real price/size choices."""
+    return (
+        offer.retailer.casefold(), offer.publication_id, offer.page_number,
+        " ".join(offer.product_name.casefold().split()), offer.price,
+        offer.quantity, (offer.unit or "").casefold(),
+    )
 
 
 def _matched_offer(item_name: str, offer: Offer) -> tuple[int, Offer, MatchResult] | None:
@@ -302,24 +367,36 @@ async def search_offers(
     selected = {value.strip().casefold() for value in (retailer or "").split(",") if value.strip()}
     items = [
         p for p in await _publications()
-        if p.status == "current" and (not selected or p.retailer.casefold() in selected)
+        if p.status in {"current", "upcoming"}
+        and (not selected or p.retailer.casefold() in selected)
     ]
     if not items:
-        raise HTTPException(status_code=404, detail="Der er ingen aktuel avis for den valgte butik")
-    ranked: list[tuple[int, Offer, MatchResult]] = []
+        raise HTTPException(status_code=404, detail="Der er ingen aktuel eller kommende avis for den valgte butik")
+    ranked: dict[tuple, tuple[int, Offer, MatchResult, str]] = {}
     for publication in items:
-        # Retain the adapter's indexed lookup as a fast candidate source, but
-        # always union it with all structured offers. Product identity is the
-        # sole eligibility/ranking decision, so aliases can find offers even
-        # when the retailer text search does not.
-        indexed = search_publication(publication, q).offers
-        candidates = {offer.id: offer for offer in [*publication.structured_offers, *indexed]}
-        for offer in candidates.values():
-            match = _matched_offer(q, offer)
+        # Search the complete structured campaign objects.  search_publication
+        # intentionally narrows variants for indexing; using those copies as
+        # response objects was the reason Tilbud lost choices visible in Aviser.
+        for offer in publication.structured_offers:
+            match = _search_match_result(q, offer)
             if match is not None:
-                ranked.append(match)
-    ranked.sort(key=lambda value: (-value[0], value[1].price if value[1].price is not None else float("inf"), value[1].retailer.casefold()))
-    offers = [_offer_payload(offer, identity) for _, offer, identity in ranked]
+                score, matched, identity = match
+                key = _search_deduplication_key(matched)
+                previous = ranked.get(key)
+                if previous is None or score > previous[0] or len(matched.variants) > len(previous[1].variants):
+                    ranked[key] = (score, matched, identity, publication.status)
+    ordered = sorted(
+        ranked.values(),
+        key=lambda value: (
+            value[3] != "current", -value[0],
+            value[1].price if value[1].price is not None else float("inf"),
+            value[1].retailer.casefold(),
+        ),
+    )
+    offers = [
+        _offer_payload(offer, identity, publication_status)
+        for _, offer, identity, publication_status in ordered
+    ]
     return {
         "ok": True,
         "query": q,
