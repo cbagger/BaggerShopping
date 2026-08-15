@@ -242,8 +242,10 @@ extension GroceryOffer {
             "gluten_free": ["glutenfri"],
             "alcohol_free": ["alkoholfri"],
         ]
-        for type in identity.types {
-            if let hints = typeHints[type], selectedTokens.isDisjoint(with: hints) {
+        for (type, hints) in typeHints {
+            let selectedHasType = !selectedTokens.isDisjoint(with: hints)
+            let candidateHasType = identity.types.contains(type)
+            if selectedHasType != candidateHasType {
                 return false
             }
         }
