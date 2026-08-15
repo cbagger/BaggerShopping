@@ -10,11 +10,25 @@ struct PendingOfferAddition: Identifiable {
 struct OfferPriceGuard {
     private let api = APIClient()
 
-    func cheaperOffers(for itemName: String, than selected: GroceryOffer) async -> [GroceryOffer] {
+    func cheaperOffers(
+        for itemName: String,
+        than selected: GroceryOffer,
+        knownOffers: [GroceryOffer] = []
+    ) async -> [GroceryOffer] {
         await OfferAddActivity.shared.beginChecking()
         guard selected.price != nil else {
             await OfferAddActivity.shared.beginAdding()
             return []
+        }
+
+        // A complete Tilbud search already contains the candidates the user is
+        // looking at. Reuse it instead of performing another network round-trip.
+        if !knownOffers.isEmpty {
+            let local = cheaperOffers(from: knownOffers, for: itemName, than: selected)
+            if !local.isEmpty {
+                await OfferAddActivity.shared.clear()
+                return local
+            }
         }
 
         let terms = GroceryOffer.priceGuardSearchTerms(for: itemName)
@@ -23,9 +37,6 @@ struct OfferPriceGuard {
             return []
         }
 
-        // Reuse recent Tilbud searches first. In the normal flow the user has
-        // already searched for the product, so price guard can often answer
-        // without another round-trip at all.
         var discovered: [String: GroceryOffer] = [:]
         for term in terms {
             if let cached = OfferSearchCache.load(query: term, retailers: []) {
@@ -69,10 +80,6 @@ struct OfferPriceGuard {
                 return false
             }
 
-            // Prefer a genuinely comparable unit price. This handles different
-            // pack sizes without treating a smaller pack as automatically
-            // cheaper. If unit information is unavailable, fall back to total
-            // price only for a strongly verified product identity.
             if let selectedUnitPrice = selected.productIdentity?.unitPrice,
                let candidateUnitPrice = candidate.productIdentity?.unitPrice,
                selected.productIdentity?.unitPriceUnit == candidate.productIdentity?.unitPriceUnit {
@@ -159,13 +166,12 @@ extension GroceryOffer {
 
         let tokens = original.split(whereSeparator: \.isWhitespace).map(String.init)
         let withoutDescriptors = tokens.filter { !descriptors.contains($0) }.joined(separator: " ")
-
-        // Brand/product discovery should be broad, but never one- or two-letter
-        // noise. Verification below stays strict, so a broad query cannot turn
-        // Pepsi into Coca-Cola or Kærgården into Lurpak.
         let prefix = tokens.prefix(2).joined(separator: " ")
         let first = tokens.first ?? ""
-        let broadCandidates = [withoutDescriptors, prefix, first]
+
+        // Order from narrow to broad-but-useful so `last` is normally the
+        // product/brand phrase rather than a single overly broad token.
+        let broadCandidates = [first, prefix, withoutDescriptors]
             .filter { !$0.isEmpty && $0.count >= 4 && $0 != original }
 
         var terms = [original]
@@ -197,15 +203,10 @@ extension GroceryOffer {
         let brandTokens = Set(brand.split(whereSeparator: \.isWhitespace).map(String.init))
         guard brandTokens.isSubset(of: wantedTokens) else { return false }
 
-        // A same-brand shorter label is accepted only when its structured family
-        // agrees with something explicit in the selected name. This is what lets
-        // “Lurpak smør” match a flyer variant named simply “Lurpak”, without
-        // allowing an unrelated product from the same manufacturer.
         if let family = identity.canonicalFamily,
-           selectedNameSupportsFamily(selectedName, family: family) {
-            if candidateTokens.isSubset(of: wantedTokens) || wantedTokens.isSubset(of: candidateTokens) {
-                return typesAndFlavoursAreCompatible(selectedName: selectedName, identity: identity)
-            }
+           selectedNameSupportsFamily(selectedName, family: family),
+           (candidateTokens.isSubset(of: wantedTokens) || wantedTokens.isSubset(of: candidateTokens)) {
+            return typesAndFlavoursAreCompatible(selectedName: selectedName, identity: identity)
         }
 
         return false
