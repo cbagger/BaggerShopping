@@ -359,7 +359,7 @@ def test_tjek_description_variants_are_used_without_image_ocr():
     assert [variant.name for variant in offers[0].variants] == ["Xtra! tun i vand", "Xtra! tun i olie"]
 
 
-def test_tjek_positioned_ocr_enriches_variants_and_quality_without_neighbour_text():
+def test_tjek_positioned_ocr_can_enrich_quality_but_never_invents_variants():
     publication = Publication(
         id="catalog", retailer="Netto", title="Uge 34", source_url="https://netto.test",
         page_count=1, page_image_urls=["https://images.test/page.webp"],
@@ -383,9 +383,10 @@ def test_tjek_positioned_ocr_enriches_variants_and_quality_without_neighbour_tex
             ],
         },
     }])
-    assert [variant.name for variant in offers[0].variants] == [
-        "Schulstad Solsikkerugbrød", "Levebrød Sandwich",
-    ]
+    # Variant Extractor v2 must never turn OCR/image-derived text into selectable
+    # products. Without structured/provider text choices, keep the campaign as
+    # one unresolved textual choice instead of guessing from pixels.
+    assert [variant.name for variant in offers[0].variants] == ["Schulstad brød"]
     assert "positioned-ocr" in offers[0].quality_signals
     assert "Lambi" not in offers[0].raw_text
     assert offers[0].quality_score >= 0.8
