@@ -8,9 +8,13 @@ identical source regions are merged, while distinct visual offers keep separate
 
 from __future__ import annotations
 
+import copy
+import threading
+import time
 from typing import Iterable, Sequence
 
 from . import flyer_intelligence as _fi
+from . import product_identity as _pi
 
 
 def _recall_first_box_from_polygon(
@@ -125,3 +129,56 @@ def _recall_first_couple_offers(offers):
 
 _fi.box_from_polygon = _recall_first_box_from_polygon
 _fi.couple_offers = _recall_first_couple_offers
+
+
+# Product identity is used hundreds of times while one Tilbud search is ranked.
+# The original helper re-read and decoded the same JSON knowledge store on every
+# `analyze()` and `compare()` call. Keep a short-lived, mutation-safe in-memory
+# copy instead. `_save_store` still writes exactly the same persistent file, so
+# family learning and QNAP backups are unchanged.
+_product_store_lock = threading.RLock()
+_product_store_cache: dict | None = None
+_product_store_signature: tuple[int, int] | None = None
+_product_store_checked_at = 0.0
+_original_product_load_store = _pi._load_store
+_original_product_save_store = _pi._save_store
+
+
+def _product_store_file_signature() -> tuple[int, int] | None:
+    try:
+        stat = _pi.store_path().stat()
+        return stat.st_mtime_ns, stat.st_size
+    except OSError:
+        return None
+
+
+def _cached_product_load_store():
+    global _product_store_cache, _product_store_signature, _product_store_checked_at
+    now = time.monotonic()
+    with _product_store_lock:
+        if _product_store_cache is not None and now - _product_store_checked_at < 1.0:
+            return copy.deepcopy(_product_store_cache)
+
+        signature = _product_store_file_signature()
+        if _product_store_cache is not None and signature == _product_store_signature:
+            _product_store_checked_at = now
+            return copy.deepcopy(_product_store_cache)
+
+        store = _original_product_load_store()
+        _product_store_cache = copy.deepcopy(store)
+        _product_store_signature = signature
+        _product_store_checked_at = now
+        return store
+
+
+def _cached_product_save_store(store):
+    global _product_store_cache, _product_store_signature, _product_store_checked_at
+    _original_product_save_store(store)
+    with _product_store_lock:
+        _product_store_cache = copy.deepcopy(store)
+        _product_store_signature = _product_store_file_signature()
+        _product_store_checked_at = time.monotonic()
+
+
+_pi._load_store = _cached_product_load_store
+_pi._save_store = _cached_product_save_store
