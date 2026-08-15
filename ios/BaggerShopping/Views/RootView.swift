@@ -41,25 +41,26 @@ struct RootView: View {
                     }
             }
             .id(navigation.rootResetID)
-            .overlay(alignment: .top) {
+            .overlay {
                 if let message = offerAddActivity.phase.message {
-                    HStack(spacing: 10) {
+                    VStack(spacing: 12) {
                         if offerAddActivity.phase.showsProgress {
                             ProgressView()
-                                .controlSize(.small)
+                                .controlSize(.regular)
                         } else {
                             Image(systemName: "checkmark.circle.fill")
+                                .font(.title2)
                                 .foregroundStyle(.green)
                         }
                         Text(message)
                             .font(.subheadline.weight(.semibold))
+                            .multilineTextAlignment(.center)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 11)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .shadow(radius: 8, y: 3)
-                    .padding(.top, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(.horizontal, 22)
+                    .padding(.vertical, 18)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .shadow(radius: 12, y: 4)
+                    .transition(.scale(scale: 0.96).combined(with: .opacity))
                     .allowsHitTesting(false)
                 }
             }
