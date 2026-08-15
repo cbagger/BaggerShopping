@@ -20,6 +20,8 @@ final class AppModel: ObservableObject {
     private let offerMetadataMigrationKey = "bagger-shopping-offer-metadata-qnap-migrated-v1"
     private var offerMetadata: [String: OfferItemMetadata]
     private var reconciliationTasks: [String: Task<Void, Never>] = [:]
+    private var refreshInProgress = false
+    private var listMutationRevision = 0
 
     init() {
         if let data = UserDefaults.standard.data(forKey: offerMetadataKey),
@@ -40,11 +42,19 @@ final class AppModel: ObservableObject {
     }
 
     func refresh() async {
-        guard tokenConfigured else { return }
+        guard tokenConfigured, !refreshInProgress else { return }
+        refreshInProgress = true
         isLoading = true
-        defer { isLoading = false }
+        let revision = listMutationRevision
+        defer {
+            isLoading = false
+            refreshInProgress = false
+        }
         do {
             let list = try await api.fetchList()
+            // Do not let a response that started before an optimistic mutation
+            // resurrect a row that the user has just added, changed or deleted.
+            guard revision == listMutationRevision else { return }
             shoppingList = list
             mutatingItemIDs = mutatingItemIDs.intersection(Set(list.items.map(\.stableID)))
             ShoppingListCache.save(list)
@@ -129,6 +139,7 @@ final class AppModel: ObservableObject {
         guard !trimmed.isEmpty else { return false }
 
         let previous = shoppingList
+        listMutationRevision &+= 1
         if let list = shoppingList {
             let provisional = ShoppingItem(
                 id: nil,
@@ -189,6 +200,7 @@ final class AppModel: ObservableObject {
             return true
         } catch {
             shoppingList = previous
+            if let previous { ShoppingListCache.save(previous) }
             errorMessage = error.localizedDescription
             return false
         }
@@ -210,9 +222,15 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private func cancelReconciliation(for name: String) {
+        let key = offerRetailerNameKey(name)
+        reconciliationTasks.removeValue(forKey: key)?.cancel()
+    }
+
     func setChecked(_ item: ShoppingItem, checked: Bool) async {
         guard item.id != nil else { return }
         let previous = shoppingList
+        listMutationRevision &+= 1
         updateLocalItem(item.stableID) { changed in
             changed.checked = checked
         }
@@ -222,9 +240,11 @@ final class AppModel: ObservableObject {
         defer { mutatingItemIDs.remove(key) }
         do {
             try await api.setChecked(item: item, checked: checked)
+            if let shoppingList { ShoppingListCache.save(shoppingList) }
             errorMessage = nil
         } catch {
             shoppingList = previous
+            if let previous { ShoppingListCache.save(previous) }
             errorMessage = error.localizedDescription
         }
     }
@@ -232,6 +252,7 @@ final class AppModel: ObservableObject {
     func setQuantity(_ item: ShoppingItem, quantity: Double) async {
         guard item.id != nil, quantity > 0 else { return }
         let previous = shoppingList
+        listMutationRevision &+= 1
         updateLocalItem(item.stableID) { changed in
             changed.quantity = quantity
             changed.unit = changed.unit ?? "stk"
@@ -242,9 +263,11 @@ final class AppModel: ObservableObject {
         defer { mutatingItemIDs.remove(key) }
         do {
             try await api.setQuantity(item: item, quantity: quantity, unit: item.unit ?? "stk")
+            if let shoppingList { ShoppingListCache.save(shoppingList) }
             errorMessage = nil
         } catch {
             shoppingList = previous
+            if let previous { ShoppingListCache.save(previous) }
             errorMessage = error.localizedDescription
         }
     }
@@ -252,11 +275,20 @@ final class AppModel: ObservableObject {
     func deleteItem(_ item: ShoppingItem) async {
         guard item.id != nil else { return }
         let previous = shoppingList
+
+        // A just-added item may still have a 2/4/8 second reconciliation loop.
+        // Stop it before changing the list so it cannot race the DELETE and
+        // reinsert stale Samsung state into the SwiftUI List.
+        cancelReconciliation(for: item.name)
+        listMutationRevision &+= 1
+
         if let list = shoppingList {
-            shoppingList = replacingItems(
+            let updated = replacingItems(
                 in: list,
                 with: list.items.filter { $0.stableID != item.stableID }
             )
+            shoppingList = updated
+            ShoppingListCache.save(updated)
         }
 
         let key = item.stableID
@@ -275,6 +307,7 @@ final class AppModel: ObservableObject {
             }
         } catch {
             shoppingList = previous
+            if let previous { ShoppingListCache.save(previous) }
             errorMessage = error.localizedDescription
         }
     }
@@ -282,8 +315,12 @@ final class AppModel: ObservableObject {
     func clearChecked() async {
         guard let checked = shoppingList?.items.filter(\.checked), !checked.isEmpty else { return }
         let previous = shoppingList
+        checked.forEach { cancelReconciliation(for: $0.name) }
+        listMutationRevision &+= 1
         if let list = shoppingList {
-            shoppingList = replacingItems(in: list, with: list.items.filter { !$0.checked })
+            let updated = replacingItems(in: list, with: list.items.filter { !$0.checked })
+            shoppingList = updated
+            ShoppingListCache.save(updated)
         }
         do {
             try await api.deleteAllCheckedItems()
@@ -295,6 +332,7 @@ final class AppModel: ObservableObject {
             errorMessage = nil
         } catch {
             shoppingList = previous
+            if let previous { ShoppingListCache.save(previous) }
             errorMessage = error.localizedDescription
         }
     }
