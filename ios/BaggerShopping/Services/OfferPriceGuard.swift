@@ -11,7 +11,11 @@ struct OfferPriceGuard {
     private let api = APIClient()
 
     func cheaperOffers(for itemName: String, than selected: GroceryOffer) async -> [GroceryOffer] {
-        guard selected.price != nil else { return [] }
+        await OfferAddActivity.shared.beginChecking()
+        guard selected.price != nil else {
+            await OfferAddActivity.shared.beginAdding()
+            return []
+        }
 
         // Discovery may be broad enough to find a mixed campaign where the
         // selected product is only one variant. Identity verification remains
@@ -33,7 +37,13 @@ struct OfferPriceGuard {
             if hasConcreteAlternative { break }
         }
 
-        return cheaperOffers(from: Array(discovered.values), for: itemName, than: selected)
+        let cheaper = cheaperOffers(from: Array(discovered.values), for: itemName, than: selected)
+        if cheaper.isEmpty {
+            await OfferAddActivity.shared.beginAdding()
+        } else {
+            await OfferAddActivity.shared.clear()
+        }
+        return cheaper
     }
 
     func cheaperOffers(
