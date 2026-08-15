@@ -38,6 +38,21 @@ final class OfferPriceGuardTests: XCTestCase {
         XCTAssertEqual(rema.matchingSelectedItemName("Coca Cola sodavand"), "Coca-Cola")
     }
 
+    func testDiscoverySearchBroadensGenericDescriptorWithoutLosingOriginal() {
+        XCTAssertEqual(
+            GroceryOffer.priceGuardSearchTerms(for: "Coca Cola sodavand"),
+            ["coca cola sodavand", "coca cola"]
+        )
+        XCTAssertEqual(
+            GroceryOffer.priceGuardSearchTerms(for: "Lurpak smør"),
+            ["lurpak smor", "lurpak"]
+        )
+        XCTAssertEqual(
+            GroceryOffer.priceGuardSearchTerms(for: "Schulstad Signaturbrød"),
+            ["schulstad signaturbrod"]
+        )
+    }
+
     func testAllCheaperExactOffersAreReturnedPriceFirst() throws {
         let selected = try decodeOffer(id: "rema", retailer: "REMA 1000", price: 15, productName: "Coca-Cola", variants: ["Coca-Cola"])
         let meny = try decodeOffer(id: "meny", retailer: "MENY", price: 10, productName: "Coca-Cola", variants: ["Coca-Cola"])
