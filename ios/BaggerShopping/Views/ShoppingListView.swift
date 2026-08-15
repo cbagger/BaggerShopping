@@ -32,6 +32,7 @@ struct ShoppingListView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var navigation: AppNavigation
     @StateObject private var smartOffers = SmartOfferMatchService()
+    @StateObject private var mutationQueue = ShoppingListMutationQueue()
     @State private var newItem = ""
     @State private var selectedRetailerFilters: Set<String> = []
     @State private var renameTarget: ShoppingItemRenameTarget?
@@ -261,7 +262,9 @@ struct ShoppingListView: View {
                                 }
 
                                 Button(role: .destructive) {
-                                    Task { await model.clearChecked() }
+                                    mutationQueue.enqueue {
+                                        await model.clearChecked()
+                                    }
                                 } label: {
                                     Label("Ryd købte varer", systemImage: "trash")
                                 }
@@ -311,7 +314,9 @@ struct ShoppingListView: View {
                 ShoppingItemOfferPreviewSheet(metadata: target.metadata)
             }
             .task(id: offerMatchSignature) {
-                guard model.tokenConfigured else { return }
+                guard model.tokenConfigured,
+                      model.shoppingList != nil,
+                      !activeItems.isEmpty else { return }
                 await smartOffers.refresh(items: activeItems, model: model)
             }
             .onChange(of: navigation.shoppingListRoute?.id) { _, _ in
@@ -328,7 +333,7 @@ struct ShoppingListView: View {
             ) {
                 Button("OK", role: .cancel) { model.errorMessage = nil }
             } message: {
-                Text(model.errorMessage ?? "")
+                Text(AppModel.userFacingMutationMessage(model.errorMessage ?? ""))
             }
         }
     }
@@ -338,7 +343,7 @@ struct ShoppingListView: View {
         guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         newItem = ""
         Task {
-            if !(await model.addItem(value)) {
+            if !(await model.addManualItemResponsive(value)) {
                 newItem = value
             }
         }
@@ -535,7 +540,9 @@ struct ShoppingListView: View {
         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
             if item.id != nil {
                 Button(role: .destructive) {
-                    Task { await model.deleteItem(item) }
+                    mutationQueue.enqueue {
+                        await model.deleteItem(item)
+                    }
                 } label: {
                     Label("Slet", systemImage: "trash")
                 }
