@@ -2,7 +2,7 @@ import XCTest
 @testable import BaggerShopping
 
 final class OfferPriceGuardVariantTests: XCTestCase {
-    func testBakkedalMixedCampaignFindsCheaperConcreteBakkedalOffer() throws {
+    func testBakkedalMixedCampaignIgnoresMisleadingWeightAndUnitPrice() throws {
         let selected = try decodeOffer(
             id: "foetex-1495",
             retailer: "føtex",
@@ -10,11 +10,11 @@ final class OfferPriceGuardVariantTests: XCTestCase {
             productName: "AMA fedtstof eller Bakkedal smørbar",
             offerQuantity: 500,
             offerUnit: "g",
-            productUnitPrice: nil,
+            productUnitPrice: 29.90,
             variantName: "Bakkedal smørbar",
-            variantQuantity: 200,
+            variantQuantity: 500,
             variantUnit: "g",
-            variantUnitPrice: 74.75
+            variantUnitPrice: 29.90
         )
         let cheaper = try decodeOffer(
             id: "bilka-12",
@@ -30,6 +30,9 @@ final class OfferPriceGuardVariantTests: XCTestCase {
             variantUnitPrice: 60
         )
 
+        // The parser metadata would make 14,95 look cheaper per kg, but those
+        // weights are not reliable per concrete variant. Exact item identity +
+        // shelf price must therefore win: 12 kr. is the cheaper offer.
         let result = OfferPriceGuard().cheaperOffers(
             from: [selected, cheaper],
             for: "Bakkedal smørbar",
@@ -38,6 +41,9 @@ final class OfferPriceGuardVariantTests: XCTestCase {
 
         XCTAssertEqual(result.map(\.id), ["bilka-12"])
         XCTAssertEqual(result.first?.price, 12)
+        XCTAssertNil(selected.productIdentity?.unitPrice)
+        XCTAssertNil(cheaper.productIdentity?.unitPrice)
+        XCTAssertNil(selected.variants.first?.identity?.unitPrice)
     }
 
     private func decodeOffer(
@@ -58,6 +64,7 @@ final class OfferPriceGuardVariantTests: XCTestCase {
             "flavours": [],
             "types": [],
             "pack_count": 1,
+            "amount_text": "200-500 g",
             "unit_price_unit": "kg"
         ]
         if let productUnitPrice {
@@ -69,6 +76,7 @@ final class OfferPriceGuardVariantTests: XCTestCase {
             "flavours": [],
             "types": [],
             "pack_count": 1,
+            "amount_text": "\(Int(variantQuantity)) g",
             "unit_price": variantUnitPrice,
             "unit_price_unit": "kg"
         ]
@@ -82,6 +90,7 @@ final class OfferPriceGuardVariantTests: XCTestCase {
             "price": price,
             "quantity": offerQuantity,
             "unit": offerUnit,
+            "unit_price": "\(productUnitPrice ?? 0) kr. pr. kg",
             "source_url": "https://example.test",
             "raw_text": "",
             "safe_to_add": true,
