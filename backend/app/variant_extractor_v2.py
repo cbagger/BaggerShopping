@@ -114,7 +114,6 @@ def _clean_name(value: object, *, campaign_heading: str = "") -> str | None:
         return None
     if len(name.split()) > 12:
         return None
-    # Long prose fragments from descriptions are not product variants.
     if name.count(".") >= 2 or name.count(":") >= 2:
         return None
     return _space(name)
@@ -123,10 +122,9 @@ def _clean_name(value: object, *, campaign_heading: str = "") -> str | None:
 def _structured_names(payload: object, *, campaign_heading: str) -> list[str]:
     """Read only explicit product/variant containers from provider payloads.
 
-    The v1 walker treated generic ``items`` collections as product choices and
-    could therefore surface labels from unrelated metadata. V2 traverses the
-    payload to *find* known choice containers, but names are collected only
-    inside those containers. Image/OCR/vision branches are explicitly ignored.
+    Generic ``items`` collections are deliberately excluded. Image, OCR and
+    Vision branches are never traversed, even if they happen to contain keys
+    named ``choices`` or ``variants``.
     """
 
     raw_names: list[object] = []
@@ -176,7 +174,7 @@ def _structured_names(payload: object, *, campaign_heading: str) -> list[str]:
 
 
 def _provider_description(payload: object) -> str | None:
-    """Return provider text only, never OCR/image-derived text branches."""
+    """Return provider-owned text only, never OCR/image-derived text branches."""
     if not isinstance(payload, dict):
         return None
     for key in DESCRIPTION_KEYS:
@@ -189,6 +187,22 @@ def _provider_description(payload: object) -> str | None:
 def _restore_variant_context(names: list[str]) -> list[str]:
     if len(names) < 2:
         return names
+
+    # Shared Danish compound notation can put the hyphen on the first choice:
+    # "Coop kyllingeover- eller underlår". Rebuild the omitted common stem.
+    first = names[0]
+    if first.endswith("-"):
+        first_without_hyphen = first[:-1].rstrip()
+        for ending in ("over", "under", "inder", "yder"):
+            if first_without_hyphen.casefold().endswith(ending):
+                shared_stem = first_without_hyphen[: -len(ending)]
+                names[0] = first_without_hyphen
+                names = [
+                    value if index == 0 or " " in value or value.startswith(("-", "–", "—"))
+                    else f"{shared_stem}{value}"
+                    for index, value in enumerate(names)
+                ]
+                break
 
     first = names[0]
     folded = first.casefold()
@@ -248,9 +262,6 @@ def _split_choices(text: str, *, campaign_heading: str) -> list[str]:
         return []
 
     value = LEADING_CHOICE_RE.sub("", value)
-
-    # Danish shared compound: "Kalkunoverlår eller -schnitzel". Keep the
-    # relative hyphen for context restoration after splitting.
     pieces = CHOICE_SEPARATOR_RE.split(value)
     names = _dedupe_clean(pieces, campaign_heading=campaign_heading)
     if not 2 <= len(names) <= 12:
@@ -263,9 +274,9 @@ def _description_choices(description: str | None, *, campaign_heading: str) -> l
     value = _space(description)
     if not value or NOISE_RE.search(value):
         return []
-    # Only the first short clause is eligible. Descriptions commonly continue
-    # with ingredients, recipes and legal copy that must never become variants.
-    clause = re.split(r"[.!?]", value, maxsplit=1)[0]
+    # Product brands can contain punctuation (e.g. "Xtra!"). A full stop is a
+    # much safer boundary for the first provider-owned product clause than '!'.
+    clause = value.split(".", 1)[0]
     if len(clause) > 220:
         return []
     return _split_choices(clause, campaign_heading=campaign_heading)
