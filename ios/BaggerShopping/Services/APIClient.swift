@@ -280,6 +280,28 @@ struct APIClient {
         _ = try await perform(request(path: "/api/mobile/v1/product-identity/feedback", method: "POST", body: body))
     }
 
+    func analyzeOfferImage(
+        offer: GroceryOffer,
+        observations: [OfferImageTextObservation]
+    ) async throws -> OfferImageEvidenceResponse {
+        var payload: [String: Any] = [
+            "offer_name": offer.productName,
+            "raw_text": offer.rawText,
+            "existing_variants": offer.variants.map(\.name),
+            "observations": observations.map {
+                ["text": $0.text, "confidence": $0.confidence]
+            }
+        ]
+        if let brand = offer.brand { payload["brand"] = brand }
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let data = try await perform(request(
+            path: "/api/mobile/v1/product-identity/image-evidence",
+            method: "POST",
+            body: body
+        ))
+        return try JSONDecoder().decode(OfferImageEvidenceResponse.self, from: data)
+    }
+
     func fetchFamilyProductPreferences() async throws -> [FamilyProductPreference] {
         let data = try await perform(request(path: "/api/mobile/v1/product-identity/preferences"))
         return try JSONDecoder().decode(FamilyProductPreferencesResponse.self, from: data).preferences

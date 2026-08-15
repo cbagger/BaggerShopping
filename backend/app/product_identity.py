@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from .households import HouseholdContext, current_household, load_store as load_household_store, require_household, update_household
+from .flyer_intelligence import extract_variants
 
 router = APIRouter(prefix="/api/mobile/v1/product-identity", tags=["product-identity"])
 LOCK = asyncio.Lock()
@@ -29,15 +30,31 @@ TYPE_ALIASES = {
     "laktosefri": "lactose_free", "glutenfri": "gluten_free",
     "alkoholfri": "alcohol_free",
 }
+COMPOUND_TYPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("whole_milk", re.compile(r"\bsødmælk\b")),
+    ("low_fat_milk", re.compile(r"\bletmælk\b")),
+    ("mini_milk", re.compile(r"\bminimælk\b")),
+    ("skimmed_milk", re.compile(r"\bskummetmælk\b")),
+)
 FLAVOURS = {
     "appelsin", "citron", "cola", "jordbær", "karamel", "lime", "mango",
     "naturel", "pebermynte", "salt", "saltet", "salted", "vanilje",
 }
 KNOWN_BRANDS = {
-    "arla", "carlsberg", "coca cola", "coca-cola", "danone", "kærgården",
-    "lambi", "lurpak", "merrild", "nestlé", "nutella", "pepsi", "royal",
-    "schulstad", "tuborg", "whiskas",
+    "arla", "carlsberg", "coca cola", "coca-cola", "coop", "danone",
+    "floralys", "harboe", "jolly", "kærgården", "lambi", "lurpak",
+    "merrild", "milbona", "nestlé", "nutella", "pepsi", "rema 1000",
+    "royal", "schulstad", "tuborg", "whiskas", "xtra",
 }
+CANONICAL_FAMILY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("cola", re.compile(r"\b(cola|coca\s*cola|pepsi)\b")),
+    ("soft_drink", re.compile(r"\b(sodavand|fanta|sprite|squash|schweppes)\b")),
+    ("bread", re.compile(r"\b[\wæøå]*(?:brød|toast)\b")),
+    ("fermented_dairy", re.compile(r"\b(yoghurt|yogurt|skyr)\b")),
+    ("butter_spread", re.compile(r"\b(smør|smørbar|kærgården|lurpak)\b")),
+    ("household_paper", re.compile(r"\b(toiletpapir|køkkenrulle|køkkenruller|husholdningspapir)\b")),
+    ("milk", re.compile(r"\b(mælk|sødmælk|letmælk|minimælk|skummetmælk)\b")),
+)
 UNIT_FACTORS = {
     "g": ("mass", 1.0), "kg": ("mass", 1000.0),
     "ml": ("volume", 1.0), "cl": ("volume", 10.0), "l": ("volume", 1000.0),
@@ -76,6 +93,8 @@ class ProductAnalysis(BaseModel):
     unit_price_unit: str | None = None
     amount_text: str | None = None
     canonical_id: str | None = None
+    canonical_family: str | None = None
+    evidence: list[str] = Field(default_factory=list)
 
 
 class MatchResult(BaseModel):
@@ -85,6 +104,8 @@ class MatchResult(BaseModel):
     direct_price_comparison: bool = False
     left: ProductAnalysis
     right: ProductAnalysis
+    evidence: list[str] = Field(default_factory=list)
+    conflicts: list[str] = Field(default_factory=list)
 
 
 class CompareRequest(BaseModel):
@@ -119,6 +140,35 @@ class FamilyPreferencesResponse(BaseModel):
     preferences: list[FamilyProductPreference]
 
 
+class ImageTextObservation(BaseModel):
+    text: str = Field(min_length=1, max_length=200)
+    confidence: float = Field(ge=0, le=1)
+
+
+class ImageEvidenceRequest(BaseModel):
+    offer_name: str = Field(min_length=1, max_length=300)
+    brand: str | None = Field(default=None, max_length=100)
+    raw_text: str | None = Field(default=None, max_length=1000)
+    existing_variants: list[str] = Field(default_factory=list, max_length=30)
+    observations: list[ImageTextObservation] = Field(min_length=1, max_length=100)
+
+
+class RecognizedImageVariant(BaseModel):
+    name: str
+    confidence: float = Field(ge=0, le=1)
+    match_level: Literal["same_item", "compatible_variant", "probably_same", "not_same"]
+    explanation: str
+    evidence: list[str] = Field(default_factory=list)
+
+
+class ImageEvidenceResponse(BaseModel):
+    ok: bool = True
+    observed_text: str
+    variants: list[RecognizedImageVariant]
+    confidence: float = Field(ge=0, le=1)
+    requires_confirmation: bool = True
+
+
 def store_path() -> Path:
     return Path(os.getenv("PRODUCT_IDENTITY_STORE_PATH", "/data/product-identity.json"))
 
@@ -131,6 +181,13 @@ def _fold(value: str) -> str:
 def normalize(value: str) -> str:
     value = value.replace("-", " ").replace("/", " ")
     return " ".join(TOKEN_RE.findall(_fold(value)))
+
+
+def _canonical_family(normalized: str) -> str | None:
+    return next(
+        (family for family, pattern in CANONICAL_FAMILY_PATTERNS if pattern.search(normalized)),
+        None,
+    )
 
 
 def _load_store() -> dict[str, Any]:
@@ -208,7 +265,10 @@ def analyze(
 ) -> ProductAnalysis:
     normalized = normalize(value)
     tokens = normalized.split()
-    types = sorted({TYPE_ALIASES[token] for token in tokens if token in TYPE_ALIASES})
+    types = sorted({
+        *(TYPE_ALIASES[token] for token in tokens if token in TYPE_ALIASES),
+        *(kind for kind, pattern in COMPOUND_TYPE_PATTERNS if pattern.search(normalized)),
+    })
     flavours = sorted({token for token in tokens if token in FLAVOURS})
 
     amount_source = _fold(value).replace("/", " ")
@@ -271,6 +331,16 @@ def analyze(
 
     store = _load_store()
     canonical_id = store.get("aliases", {}).get(normalized)
+    canonical_family = store.get("families", {}).get(normalized) or _canonical_family(normalized)
+    evidence: list[str] = []
+    if brand:
+        evidence.append(f"brand:{brand}")
+    if canonical_family:
+        evidence.append(f"family:{canonical_family}")
+    evidence.extend(f"type:{value}" for value in types)
+    evidence.extend(f"flavour:{value}" for value in flavours)
+    if amount_text:
+        evidence.append(f"amount:{amount_text}")
     unit_price = unit_price_min = unit_price_max = unit_price_unit = None
     if price is not None and total is not None and total > 0:
         basis = 1000.0 if dimension in {"mass", "volume"} else 1.0
@@ -292,6 +362,7 @@ def analyze(
         unit_price_min=unit_price_min, unit_price_max=unit_price_max,
         unit_price_unit=unit_price_unit,
         amount_text=amount_text, canonical_id=canonical_id,
+        canonical_family=canonical_family, evidence=evidence,
     )
 
 
@@ -303,6 +374,8 @@ def _product_overlap(left: ProductAnalysis, right: ProductAnalysis) -> float:
         return 1
     intersection = left_tokens & right_tokens
     if not intersection:
+        if left.canonical_family and left.canonical_family == right.canonical_family:
+            return 0.7
         # Conservative Danish compound support: sødmælk may match mælk, but
         # short fragments such as æg inside pålæg never do.
         if any(
@@ -327,30 +400,71 @@ def compare(
 ) -> MatchResult:
     left = analyze(left_text, quantity=left_quantity, unit=left_unit, price=left_price)
     right = analyze(right_text, quantity=right_quantity, unit=right_unit, price=right_price)
+
+    def result(
+        level: Literal["same_item", "compatible_variant", "probably_same", "not_same"],
+        confidence: float,
+        explanation: str,
+        *,
+        direct: bool = False,
+        evidence: list[str] | None = None,
+        conflicts: list[str] | None = None,
+    ) -> MatchResult:
+        return MatchResult(
+            level=level, confidence=confidence, explanation=explanation,
+            direct_price_comparison=direct, left=left, right=right,
+            evidence=evidence or [], conflicts=conflicts or [],
+        )
+
     store = _load_store()
     learned = store.get("matches", {}).get(_pair_key(left_text, right_text))
     if learned == "never_match":
-        return MatchResult(level="not_same", confidence=1, explanation="Match afvist af fælles produktviden.", left=left, right=right)
-
-    if left.brand and right.brand and left.brand != right.brand:
-        return MatchResult(level="not_same", confidence=.98, explanation="Forskellige mærker.", left=left, right=right)
+        return result(
+            "not_same", 1, "Match afvist af fælles produktviden.",
+            conflicts=["learned:never_match"],
+        )
 
     overlap = _product_overlap(left, right)
     if overlap == 0:
-        return MatchResult(level="not_same", confidence=.97, explanation="Forskellige grundprodukter.", left=left, right=right)
+        return result(
+            "not_same", .97, "Forskellige grundprodukter.",
+            conflicts=["product-family"],
+        )
 
     conflicting_types = bool(set(left.types) ^ set(right.types)) and bool(left.types or right.types)
     conflicting_flavours = bool(left.flavours and right.flavours and set(left.flavours) != set(right.flavours))
     if conflicting_types:
         if (set(left.types) ^ set(right.types)) <= {"light"}:
-            return MatchResult(
-                level="compatible_variant", confidence=.92,
-                explanation="Samme produktfamilie, men almindelig og light/let må ikke behandles som samme vare.",
-                left=left, right=right,
+            return result(
+                "compatible_variant", .92,
+                "Samme produktfamilie, men almindelig og light/let må ikke behandles som samme vare.",
+                evidence=[f"family:{left.canonical_family}"] if left.canonical_family else [],
+                conflicts=["type:light"],
             )
-        return MatchResult(level="not_same", confidence=.96, explanation="Afgørende type er forskellig, eksempelvis zero, light, økologisk eller fri-variant.", left=left, right=right)
+        return result(
+            "not_same", .96,
+            "Afgørende type er forskellig, eksempelvis zero, light, økologisk eller fri-variant.",
+            conflicts=[f"types:{','.join(left.types) or 'standard'}!={','.join(right.types) or 'standard'}"],
+        )
     if conflicting_flavours:
-        return MatchResult(level="compatible_variant", confidence=.94, explanation="Samme produktfamilie, men smagsvarianterne er forskellige.", left=left, right=right)
+        return result(
+            "compatible_variant", .94,
+            "Samme produktfamilie, men smagsvarianterne er forskellige.",
+            conflicts=[f"flavours:{','.join(left.flavours)}!={','.join(right.flavours)}"],
+        )
+
+    if left.brand and right.brand and left.brand != right.brand:
+        if left.canonical_family and left.canonical_family == right.canonical_family:
+            return result(
+                "compatible_variant", .93,
+                "Samme produktfamilie, men forskellige mærker.",
+                evidence=[f"family:{left.canonical_family}"],
+                conflicts=[f"brand:{left.brand}!={right.brand}"],
+            )
+        return result(
+            "not_same", .98, "Forskellige mærker.",
+            conflicts=[f"brand:{left.brand}!={right.brand}"],
+        )
 
     left_amount_known = left.total_amount_min is not None and left.total_amount_max is not None
     right_amount_known = right.total_amount_min is not None and right.total_amount_max is not None
@@ -362,10 +476,10 @@ def compare(
         and abs(left.total_amount - right.total_amount) < .01
     )
     if amounts_known and not compatible_amount:
-        return MatchResult(
-            level="compatible_variant", confidence=.9,
-            explanation="Samme produktfamilie, men forskellig samlet pakkestørrelse.",
-            direct_price_comparison=False, left=left, right=right,
+        return result(
+            "compatible_variant", .9,
+            "Samme produktfamilie, men forskellig samlet pakkestørrelse.",
+            conflicts=["amount"],
         )
 
     if learned == "same_item":
@@ -380,10 +494,19 @@ def compare(
         level, confidence, explanation = "not_same", .8, "For lidt fælles produktinformation."
 
     both_amounts_missing = not left_amount_known and not right_amount_known
-    return MatchResult(
-        level=level, confidence=confidence, explanation=explanation,
-        direct_price_comparison=level == "same_item" and (compatible_amount or (both_amounts_missing and left.normalized == right.normalized)),
-        left=left, right=right,
+    evidence = []
+    if left.canonical_id and left.canonical_id == right.canonical_id:
+        evidence.append(f"canonical:{left.canonical_id}")
+    if left.canonical_family and left.canonical_family == right.canonical_family:
+        evidence.append(f"family:{left.canonical_family}")
+    if left.brand and left.brand == right.brand:
+        evidence.append(f"brand:{left.brand}")
+    if compatible_amount:
+        evidence.append("amount:compatible")
+    return result(
+        level, confidence, explanation,
+        direct=level == "same_item" and (compatible_amount or (both_amounts_missing and left.normalized == right.normalized)),
+        evidence=evidence,
     )
 
 
@@ -414,8 +537,102 @@ async def product_feedback(request: FeedbackRequest) -> dict[str, Any]:
             canonical = left.canonical_id or right.canonical_id or "product:" + normalize(left.product).replace(" ", "-")
             store.setdefault("aliases", {})[left.normalized] = canonical
             store.setdefault("aliases", {})[right.normalized] = canonical
+            family = left.canonical_family or right.canonical_family
+            if family:
+                store.setdefault("families", {})[left.normalized] = family
+                store.setdefault("families", {})[right.normalized] = family
         _save_store(store)
     return {"ok": True, "decision": request.decision}
+
+
+IMAGE_PRICE_RE = re.compile(r"\b\d{1,4}(?:[,.]\d{1,2})?\s*(?:kr\.?|-)?\b", re.IGNORECASE)
+IMAGE_NOISE_RE = re.compile(
+    r"^(?:spar|tilbud|frit valg|kun|pr\.?\s*(?:stk|kg|pakke)|maks?\.?|gælder)\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_image_candidate(value: str) -> str:
+    value = re.sub(r"\b\d+(?:[,.]\d+)?\s*(?:kg|g|ml|cl|l|stk|pk)\b", " ", value, flags=re.IGNORECASE)
+    value = IMAGE_PRICE_RE.sub(" ", value)
+    value = re.sub(r"\b(?:frit valg|udvalgte varianter|flere varianter)\b.*$", " ", value, flags=re.IGNORECASE)
+    value = " ".join(value.strip(" .,:;*-/").split())
+    return value.title() if value.isupper() else value
+
+
+def interpret_image_evidence(request: ImageEvidenceRequest) -> ImageEvidenceResponse:
+    """Turn local Apple Vision text into conservative product suggestions.
+
+    The image never reaches QNAP. Candidates that contradict the advertised
+    family are discarded, and every surviving result still requires a tap.
+    """
+    observations = [value for value in request.observations if value.confidence >= 0.35]
+    observations.sort(key=lambda value: value.confidence, reverse=True)
+    observed_text = " | ".join(dict.fromkeys(value.text for value in observations))
+    offer_analysis = analyze(request.offer_name)
+    shared_brand = normalize(request.brand or offer_analysis.brand or "") or None
+    existing = {normalize(value) for value in request.existing_variants}
+    candidates: dict[str, tuple[str, float, list[str]]] = {}
+
+    for observation in observations:
+        line = _clean_image_candidate(observation.text)
+        if len(line) < 3 or IMAGE_NOISE_RE.search(line):
+            continue
+        extracted = extract_variants("image", line, None)
+        names = [value.name for value in extracted] if len(extracted) > 1 else [line]
+        for raw_name in names:
+            name = _clean_image_candidate(raw_name)
+            if len(name.split()) < 1 or len(name) > 100:
+                continue
+            analysis = analyze(name)
+            if shared_brand and not analysis.brand:
+                name = f"{shared_brand.title()} {name}"
+                analysis = analyze(name)
+            normalized_name = analysis.normalized
+            if normalized_name in existing or normalized_name == offer_analysis.normalized:
+                continue
+            match = compare(request.offer_name, name)
+            same_family = bool(
+                offer_analysis.canonical_family
+                and offer_analysis.canonical_family == analysis.canonical_family
+            )
+            same_brand = bool(offer_analysis.brand and offer_analysis.brand == analysis.brand)
+            if match.level == "not_same" and not same_family and not same_brand:
+                continue
+            match_weight = {
+                "same_item": 1.0,
+                "compatible_variant": 0.92,
+                "probably_same": 0.82,
+                "not_same": 0.58,
+            }[match.level]
+            confidence = max(0.35, min(0.98, observation.confidence * match_weight))
+            evidence = ["source:apple-vision", f"ocr:{observation.confidence:.2f}", *match.evidence]
+            previous = candidates.get(normalized_name)
+            if previous is None or confidence > previous[1]:
+                candidates[normalized_name] = (name, confidence, evidence)
+
+    variants: list[RecognizedImageVariant] = []
+    for name, confidence, evidence in sorted(candidates.values(), key=lambda value: (-value[1], value[0].casefold()))[:12]:
+        match = compare(request.offer_name, name)
+        variants.append(RecognizedImageVariant(
+            name=name,
+            confidence=round(confidence, 3),
+            match_level=match.level,
+            explanation=match.explanation,
+            evidence=evidence,
+        ))
+    overall = sum(value.confidence for value in variants) / len(variants) if variants else 0.0
+    return ImageEvidenceResponse(
+        observed_text=observed_text,
+        variants=variants,
+        confidence=round(overall, 3),
+        requires_confirmation=True,
+    )
+
+
+@router.post("/image-evidence", response_model=ImageEvidenceResponse)
+async def image_evidence(request: ImageEvidenceRequest) -> ImageEvidenceResponse:
+    return interpret_image_evidence(request)
 
 
 @router.get("/preferences", response_model=FamilyPreferencesResponse)

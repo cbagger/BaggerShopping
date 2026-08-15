@@ -1,6 +1,14 @@
 import asyncio
 
-from app.product_identity import analyze, compare, product_feedback, FeedbackRequest
+from app.product_identity import (
+    ImageEvidenceRequest,
+    ImageTextObservation,
+    FeedbackRequest,
+    analyze,
+    compare,
+    interpret_image_evidence,
+    product_feedback,
+)
 
 
 def test_extracts_brand_type_and_total_amount():
@@ -82,3 +90,71 @@ def test_feedback_is_global_and_never_match_wins(monkeypatch, tmp_path):
 
     assert compare(request.left, request.right).level == "not_same"
     assert "fælles produktviden" in compare(request.left, request.right).explanation
+
+
+def test_v2_recognizes_compound_bread_family_and_explains_evidence():
+    analysis = analyze("Schulstad Det Gode Solsikkerugbrød")
+    result = compare("Schulstad brød", "Schulstad Det Gode Solsikkerugbrød")
+
+    assert analysis.canonical_family == "bread"
+    assert "family:bread" in analysis.evidence
+    assert result.level == "probably_same"
+    assert "family:bread" in result.evidence
+
+
+def test_v2_keeps_different_brands_as_compatible_family_not_same_item():
+    result = compare("Coca-Cola 1,5 l", "Pepsi 1,5 l")
+
+    assert result.level == "compatible_variant"
+    assert result.direct_price_comparison is False
+    assert "brand:coca cola!=pepsi" in result.conflicts
+    assert "family:cola" in result.evidence
+
+
+def test_v2_type_conflict_wins_before_shared_family_or_different_brand():
+    result = compare("Coca-Cola 1,5 l", "Pepsi Zero 1,5 l")
+
+    assert result.level == "not_same"
+    assert any(value.startswith("types:") for value in result.conflicts)
+
+
+def test_v2_keeps_concrete_milk_types_separate():
+    result = compare("Arla sødmælk", "Arla letmælk")
+
+    assert result.level == "not_same"
+    assert "type:whole_milk" in result.left.evidence
+    assert "type:low_fat_milk" in result.right.evidence
+
+
+def test_image_evidence_finds_packaging_variants_and_rejects_neighbour_offer():
+    response = interpret_image_evidence(ImageEvidenceRequest(
+        offer_name="Schulstad brød",
+        existing_variants=[],
+        observations=[
+            ImageTextObservation(text="DET GODE SOLSIKKERUGBRØD", confidence=.97),
+            ImageTextObservation(text="LEVEBRØD SANDWICH", confidence=.94),
+            ImageTextObservation(text="12 KR", confidence=.99),
+            ImageTextObservation(text="LAMBI TOILETPAPIR", confidence=.99),
+        ],
+    ))
+
+    assert [value.name for value in response.variants] == [
+        "Schulstad Det Gode Solsikkerugbrød",
+        "Schulstad Levebrød Sandwich",
+    ]
+    assert all(value.match_level == "probably_same" for value in response.variants)
+    assert response.requires_confirmation is True
+    assert response.confidence > .7
+
+
+def test_image_evidence_never_repeats_existing_structured_variant():
+    response = interpret_image_evidence(ImageEvidenceRequest(
+        offer_name="Lambi toiletpapir eller køkkenruller",
+        existing_variants=["Lambi toiletpapir"],
+        observations=[
+            ImageTextObservation(text="LAMBI TOILETPAPIR", confidence=.99),
+            ImageTextObservation(text="LAMBI KØKKENRULLER", confidence=.96),
+        ],
+    ))
+
+    assert [value.name for value in response.variants] == ["Lambi Køkkenruller"]
