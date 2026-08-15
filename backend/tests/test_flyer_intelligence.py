@@ -1,11 +1,14 @@
 import asyncio
+from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 from app.flyer_intelligence import (
     assess_quality,
     box_from_mapping,
     box_from_polygon,
+    clear_feedback_store_cache,
     couple_offers,
     extract_ocr_regions,
     extract_variants,
@@ -14,7 +17,7 @@ from app.flyer_intelligence import (
     save_feedback_store,
     text_for_hotspot,
 )
-from app.meny_flyer import Offer, OfferVariant
+from app.meny_flyer import Offer, OfferVariant, Publication
 from app import mobile_offers
 
 
@@ -65,6 +68,29 @@ def test_layout_engine_converts_tjek_portrait_polygon_to_page_coordinates():
     assert box.x == pytest.approx(0.1)
     assert box.y == pytest.approx(0.2 / (2 ** 0.5))
     assert box.height == pytest.approx(0.6 / (2 ** 0.5))
+
+
+def test_layout_engine_keeps_normalized_rounding_as_normalized_coordinates():
+    box = box_from_mapping(
+        {"x": 0.2, "y": 0.1, "width": 0.8001, "height": 0.2},
+        source="ipaper-marker",
+    )
+
+    assert box is not None
+    assert box.x == pytest.approx(0.2)
+    assert box.width == pytest.approx(0.8)
+
+
+def test_layout_engine_rejects_material_page_overshoot_and_invalid_scale():
+    assert box_from_mapping(
+        {"x": 0.8, "y": 0.2, "width": 0.4, "height": 0.2},
+        source="ipaper-marker",
+    ) is None
+    assert box_from_mapping(
+        {"left": 180, "top": 20, "width": 30, "height": 20},
+        source="schwarz-product-link",
+    ) is None
+    assert box_from_polygon([[0.1, 0.1], [0.2, 0.2]], vertical_scale=0) is None
 
 
 def test_ocr_layout_engine_attaches_only_text_from_the_selected_offer_region():
@@ -176,15 +202,104 @@ def test_learning_store_applies_cautious_source_level_adjustment(tmp_path):
     assert adjustment.variant_reports == 1
 
 
+def test_publication_feedback_does_not_penalize_other_editions():
+    store = {
+        "version": 2,
+        "sources": {"netto|tjek-catalog": {"wrong_position": 1}},
+        "publications": {
+            "netto|tjek-catalog|week-34": {"wrong_position": 1},
+        },
+        "reports": [],
+    }
+
+    affected = learned_adjustment(store, "Netto", "tjek-catalog", "week-34")
+    unaffected = learned_adjustment(store, "Netto", "tjek-catalog", "week-35")
+
+    assert affected.position_reports == 1
+    assert unaffected.position_reports == 0
+    assert affected.score < 0
+    assert unaffected.score == 0
+
+
+def test_feedback_store_cache_avoids_repeated_disk_reads(monkeypatch, tmp_path):
+    path = tmp_path / "quality.json"
+    path.write_text('{"version": 1, "sources": {}, "reports": []}', encoding="utf-8")
+    clear_feedback_store_cache(path)
+    original_read_text = Path.read_text
+    reads = 0
+
+    def counted_read_text(file_path, *args, **kwargs):
+        nonlocal reads
+        if file_path == path:
+            reads += 1
+        return original_read_text(file_path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counted_read_text)
+    first = load_feedback_store(path)
+    second = load_feedback_store(path)
+
+    assert reads == 1
+    assert first == second
+    assert first["version"] == 2
+    assert first["publications"] == {}
+
+    first["sources"]["mutated-locally"] = {"correct": 99}
+    isolated = load_feedback_store(path)
+    assert "mutated-locally" not in isolated["sources"]
+
+    isolated["sources"]["netto|tjek-catalog"] = {"correct": 1}
+    save_feedback_store(path, isolated)
+    refreshed = load_feedback_store(path)
+    assert refreshed["sources"]["netto|tjek-catalog"]["correct"] == 1
+    assert reads == 1
+
+
 def test_quality_feedback_endpoint_persists_anonymous_learning_signal(monkeypatch, tmp_path):
     path = tmp_path / "quality.json"
     monkeypatch.setattr(mobile_offers, "_QUALITY_STORE_PATH", str(path))
+    publication = Publication(
+        id="week-34", retailer="Netto", title="Uge 34",
+        source_url="https://netto.test", content_source="tjek-publication",
+        structured_offers=[offer(id="bread")],
+    )
+
+    async def publications():
+        return [publication]
+
+    monkeypatch.setattr(mobile_offers, "_publications", publications)
     request = mobile_offers.FlyerQualityFeedbackRequest(
-        publication_id="week-34", offer_id="bread", retailer="Netto",
-        quality_source="tjek-catalog", decision="wrong_variants", page_number=10,
+        publication_id="week-34", offer_id="bread", retailer="Forkert butik",
+        quality_source="forkert-kilde", decision="wrong_variants", page_number=99,
     )
     response = asyncio.run(mobile_offers.flyer_quality_feedback(request))
     store = load_feedback_store(path)
     assert response["ok"] is True
     assert store["sources"]["netto|tjek-catalog"]["wrong_variants"] == 1
+    assert store["publications"]["netto|tjek-catalog|week-34"]["wrong_variants"] == 1
     assert store["reports"][0]["offer_id"] == "bread"
+    assert store["reports"][0]["retailer"] == "Netto"
+    assert store["reports"][0]["quality_source"] == "tjek-catalog"
+    assert store["reports"][0]["page_number"] == 10
+    assert response["publication_key"] == "netto|tjek-catalog|week-34"
+
+
+def test_quality_feedback_rejects_offer_not_bound_to_publication(monkeypatch, tmp_path):
+    monkeypatch.setattr(mobile_offers, "_QUALITY_STORE_PATH", str(tmp_path / "quality.json"))
+    publication = Publication(
+        id="week-34", retailer="Netto", title="Uge 34",
+        source_url="https://netto.test", structured_offers=[offer(id="bread")],
+    )
+
+    async def publications():
+        return [publication]
+
+    monkeypatch.setattr(mobile_offers, "_publications", publications)
+    request = mobile_offers.FlyerQualityFeedbackRequest(
+        publication_id="week-34", offer_id="not-in-flyer", retailer="Netto",
+        quality_source="tjek-catalog", decision="wrong_position",
+    )
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(mobile_offers.flyer_quality_feedback(request))
+
+    assert error.value.status_code == 404

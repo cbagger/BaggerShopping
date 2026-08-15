@@ -3,6 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
+import time
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence, TYPE_CHECKING
@@ -23,6 +26,9 @@ MEASURE_ONLY_RE = re.compile(
     r"^[\d\s.,x×%+\-/]+(?:g|kg|ml|cl|l|liter|stk|pk|pakker?)?\.?$",
     re.IGNORECASE,
 )
+_FEEDBACK_CACHE_TTL_SECONDS = 1.0
+_feedback_cache_lock = threading.RLock()
+_feedback_cache: dict[Path, tuple[float, tuple[int, int] | None, dict]] = {}
 
 
 class HotspotBox(BaseModel):
@@ -98,15 +104,27 @@ def box_from_mapping(value: object, *, source: str = "native") -> HotspotBox | N
         height = _number(candidate.get("height", candidate.get("h")))
         if None in (x, y, width, height) or width <= 0 or height <= 0:
             continue
-        if max(x, y, width, height) > 1:
+        # Values up to 1.01 are treated as normalized coordinates so harmless
+        # provider rounding (1.0001) cannot accidentally shrink a box by 100.
+        # Larger values identify a percentage-based schema consistently.
+        if max(x, y, width, height) > 1.01:
+            if max(x, y, width, height) > 100.5:
+                continue
             x, y, width, height = x / 100, y / 100, width / 100, height / 100
-        if x < -0.01 or y < -0.01 or x >= 1 or y >= 1:
+        if x < -0.01 or y < -0.01 or x >= 1.01 or y >= 1.01:
             continue
         x, y = max(0.0, x), max(0.0, y)
+        # Only tiny edge overshoots are safe to clamp. A rectangle extending
+        # materially outside the page is a scale/coordinate error and must not
+        # drive either a '+' marker or image recognition crop.
+        if x + width > 1.015 or y + height > 1.015:
+            continue
         width, height = min(width, 1 - x), min(height, 1 - y)
         if width < 0.008 or height < 0.008:
             continue
         area = width * height
+        if area > 0.92:
+            continue
         confidence = 0.97 if source in {"native", "tjek-polygon", "ipaper-marker"} else 0.82
         if area > 0.65:
             confidence -= 0.25
@@ -125,6 +143,8 @@ def box_from_polygon(
     vertical_scale: float = 1.0,
     source: str = "native-polygon",
 ) -> HotspotBox | None:
+    if vertical_scale <= 0 or vertical_scale != vertical_scale:
+        return None
     parsed: list[tuple[float, float]] = []
     for point in points:
         if len(point) < 2:
@@ -454,42 +474,113 @@ def couple_offers(offers: Sequence["Offer"]) -> list["Offer"]:
     return sorted(result, key=lambda value: (value.page_number or 0, value.hotspot_y or 0, value.hotspot_x or 0))
 
 
-def feedback_key(retailer: str, quality_source: str) -> str:
-    return f"{_space(retailer).casefold()}|{_space(quality_source).casefold() or 'unknown'}"
+def feedback_key(retailer: str, quality_source: str, publication_id: str | None = None) -> str:
+    key = f"{_space(retailer).casefold()}|{_space(quality_source).casefold() or 'unknown'}"
+    publication = _space(publication_id).casefold()
+    return f"{key}|{publication}" if publication else key
+
+
+def _empty_feedback_store() -> dict:
+    return {"version": 2, "sources": {}, "publications": {}, "reports": []}
+
+
+def _normalize_feedback_store(payload: object) -> dict:
+    if not isinstance(payload, dict):
+        return _empty_feedback_store()
+    result = deepcopy(payload)
+    result["version"] = 2
+    for key, default in (("sources", {}), ("publications", {}), ("reports", [])):
+        if not isinstance(result.get(key), type(default)):
+            result[key] = default
+        else:
+            result.setdefault(key, default)
+    return result
+
+
+def _feedback_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+        return stat.st_mtime_ns, stat.st_size
+    except OSError:
+        return None
+
+
+def clear_feedback_store_cache(path: str | Path | None = None) -> None:
+    with _feedback_cache_lock:
+        if path is None:
+            _feedback_cache.clear()
+        else:
+            _feedback_cache.pop(Path(path), None)
 
 
 def load_feedback_store(path: str | Path) -> dict:
     file_path = Path(path)
-    if not file_path.exists():
-        return {"version": 1, "sources": {}, "reports": []}
-    try:
-        payload = json.loads(file_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"version": 1, "sources": {}, "reports": []}
-    return payload if isinstance(payload, dict) else {"version": 1, "sources": {}, "reports": []}
+    now = time.monotonic()
+    with _feedback_cache_lock:
+        cached = _feedback_cache.get(file_path)
+        if cached is not None and now - cached[0] < _FEEDBACK_CACHE_TTL_SECONDS:
+            return deepcopy(cached[2])
+        signature = _feedback_signature(file_path)
+        if cached is not None and cached[1] == signature:
+            _feedback_cache[file_path] = (now, signature, cached[2])
+            return deepcopy(cached[2])
+        if signature is None:
+            payload = _empty_feedback_store()
+        else:
+            try:
+                payload = _normalize_feedback_store(json.loads(file_path.read_text(encoding="utf-8")))
+            except (OSError, json.JSONDecodeError):
+                payload = _empty_feedback_store()
+        _feedback_cache[file_path] = (now, signature, payload)
+        return deepcopy(payload)
 
 
 def save_feedback_store(path: str | Path, payload: dict) -> None:
     file_path = Path(path)
+    normalized = _normalize_feedback_store(payload)
     file_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = file_path.with_suffix(file_path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+    temporary.write_text(json.dumps(normalized, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     temporary.replace(file_path)
+    signature = _feedback_signature(file_path)
+    with _feedback_cache_lock:
+        _feedback_cache[file_path] = (time.monotonic(), signature, deepcopy(normalized))
 
 
-def learned_adjustment(store: dict, retailer: str, quality_source: str) -> LearningAdjustment:
-    row = store.get("sources", {}).get(feedback_key(retailer, quality_source), {})
+def _learning_score(row: dict) -> float:
     correct = int(row.get("correct", 0))
     wrong_position = int(row.get("wrong_position", 0))
     wrong_variants = int(row.get("wrong_variants", 0))
     total = correct + wrong_position + wrong_variants
     # Bayesian prior prevents one report from radically changing all markers
     # from a retailer/source combination.
-    score = ((correct + 4) / (total + 8) - 0.5) * 0.16 if total else 0.0
+    return ((correct + 4) / (total + 8) - 0.5) * 0.16 if total else 0.0
+
+
+def learned_adjustment(
+    store: dict,
+    retailer: str,
+    quality_source: str,
+    publication_id: str | None = None,
+) -> LearningAdjustment:
+    source_row = store.get("sources", {}).get(feedback_key(retailer, quality_source), {})
+    scoped_row = store.get("publications", {}).get(
+        feedback_key(retailer, quality_source, publication_id), {},
+    ) if publication_id else {}
+    source_score = _learning_score(source_row)
+    scoped_score = _learning_score(scoped_row)
+    # A bad marker in one weekly edition must never lower confidence in every
+    # future edition. Cross-publication learning may provide a small positive
+    # prior; negative corrections stay bound to the concrete publication.
+    positive_source_score = max(0.0, source_score)
+    score = positive_source_score * 0.35
+    if scoped_row:
+        score = positive_source_score * 0.25 + scoped_score * 0.75
+    count_row = scoped_row if publication_id else source_row
     return LearningAdjustment(
         score=max(-0.08, min(0.08, score)),
-        position_reports=wrong_position,
-        variant_reports=wrong_variants,
+        position_reports=int(count_row.get("wrong_position", 0)),
+        variant_reports=int(count_row.get("wrong_variants", 0)),
     )
 
 
