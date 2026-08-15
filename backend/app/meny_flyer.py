@@ -344,6 +344,10 @@ DOMAIN_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 QUERY_ALIASES: dict[str, tuple[str, ...]] = {
     "sodavand": ("cola", "coca-cola", "fanta", "sprite", "pepsi", "schweppes", "squash"),
+    # Cola is both a literal flavour and a grocery family.  Keep the expansion
+    # deliberately narrow so a search for cola can find the familiar cola
+    # brands without turning into a generic soft-drink search.
+    "cola": ("coca-cola", "pepsi", "harboe cola", "jolly cola"),
 }
 
 # Most Danish grocery words legitimately occur in compounds (skummetmælk,

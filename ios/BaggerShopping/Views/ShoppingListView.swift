@@ -203,21 +203,29 @@ struct ShoppingListView: View {
                         } else {
                             if sortByRetailer {
                                 ForEach(retailerGroups) { retailerGroup in
-                                    ForEach(retailerGroup.categories) { categoryGroup in
-                                        Section {
+                                    Section {
+                                        ForEach(retailerGroup.categories) { categoryGroup in
+                                            Label(
+                                                "\(categoryGroup.category.rawValue) · \(categoryGroup.items.count)",
+                                                systemImage: categoryGroup.category.icon
+                                            )
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(.secondary)
+                                            .listRowBackground(Color.clear)
+                                            .listRowInsets(EdgeInsets(top: 12, leading: 20, bottom: 5, trailing: 20))
+
                                             ForEach(categoryGroup.items, id: \.stableID) { item in
                                                 itemRow(item, showCategory: false)
                                             }
-                                        } header: {
-                                            Label(
-                                                retailerCategoryHeader(retailerGroup, categoryGroup),
-                                                systemImage: categoryGroup.category.icon
-                                            )
-                                        } footer: {
-                                            if retailerGroup.retailer != nil,
-                                               categoryGroup.id == retailerGroup.categories.last?.id {
-                                                Text("Husk varer øverst der ikke er dedikeret til én butik")
-                                            }
+                                        }
+                                    } header: {
+                                        Label(
+                                            "\(retailerGroup.retailer ?? "Uden butik") · \(retailerGroup.count)",
+                                            systemImage: retailerGroup.retailer == nil ? "shippingbox" : "storefront"
+                                        )
+                                    } footer: {
+                                        if retailerGroup.retailer != nil {
+                                            Text("Husk varer øverst der ikke er dedikeret til én butik")
                                         }
                                     }
                                 }
@@ -353,14 +361,6 @@ struct ShoppingListView: View {
                 )
         }
         .buttonStyle(.plain)
-    }
-
-    private func retailerCategoryHeader(
-        _ retailerGroup: RetailerGroup,
-        _ categoryGroup: CategoryGroup
-    ) -> String {
-        let retailer = retailerGroup.retailer ?? "Uden butik"
-        return "\(retailer) · \(categoryGroup.category.rawValue) · \(categoryGroup.items.count)"
     }
 
     @ViewBuilder

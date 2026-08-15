@@ -21,11 +21,14 @@ struct StructuredVariantPickerView: View {
 
     private var options: [Option] {
         guard case .variants(let available) = offer.choiceState else { return [] }
-        let matching = offer.variants.filter(\.matchesQuery).map(\.name)
-        let names = matching.isEmpty ? available : matching
-        return names
+        return available
             .map { name in Option(name: name, variant: offer.variants.first { $0.name == name }) }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .sorted {
+                if ($0.variant?.matchesQuery == true) != ($1.variant?.matchesQuery == true) {
+                    return $0.variant?.matchesQuery == true
+                }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
     }
 
     var body: some View {
@@ -54,7 +57,7 @@ struct StructuredVariantPickerView: View {
 
                 Section("Vælg variant") {
                     if options.isEmpty {
-                        Text("Varianterne kan ikke opdeles sikkert. Du kan bruge kampagnens navn eller skrive den konkrete vare.")
+                        Text("Varianterne kan ikke opdeles sikkert. Du kan bruge kampagnens navn eller skrive din ønskede variant.")
                             .font(.subheadline).foregroundStyle(.secondary)
                     }
                     ForEach(options) { option in
@@ -76,6 +79,17 @@ struct StructuredVariantPickerView: View {
                     }
                 }
 
+                Section("Et andet valg") {
+                    Button("\(selectionVerb) uden bestemt variant") {
+                        choose(offer.shoppingItemName(variant: nil))
+                    }
+                    TextField("Skriv din ønskede variant", text: $customName)
+                    Button(selectionVerb) {
+                        choose(offer.shoppingItemName(customVariant: customName))
+                    }
+                    .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
                 Section("Familiens valg") {
                     Toggle("Husk denne variant for familien", isOn: $rememberForFamily)
                     if rememberForFamily {
@@ -92,17 +106,6 @@ struct StructuredVariantPickerView: View {
                     if let preferenceMessage {
                         Text(preferenceMessage).font(.caption).foregroundStyle(.secondary)
                     }
-                }
-
-                Section(options.isEmpty ? "Vælg varenavn" : "Et andet valg") {
-                    Button("\(selectionVerb) uden bestemt variant") {
-                        choose(offer.shoppingItemName(variant: nil))
-                    }
-                    TextField("Skriv den konkrete vare", text: $customName)
-                    Button("\(selectionVerb) skrevet variant") {
-                        choose(offer.shoppingItemName(customVariant: customName))
-                    }
-                    .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
             .navigationTitle("Vælg vare")
