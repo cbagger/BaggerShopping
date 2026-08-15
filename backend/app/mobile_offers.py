@@ -314,9 +314,36 @@ def _search_match_result(item_name: str, offer: Offer) -> tuple[int, Offer, Matc
     matching_ids = {
         variant.id for variant in offer.variants
         if _contains_query_term(variant.name, terms)
+        and (
+            query_domain is None
+            or _product_domain(variant.name) in {None, query_domain}
+        )
     }
 
-    if product_match or brand_match or raw_match or matching_ids:
+    # Product names, brands and structured variants are authoritative direct
+    # matches. Raw advert/OCR text is useful too, but only when the identity or
+    # grocery domain agrees; otherwise neighboring legal/recipe text can leak
+    # an unrelated offer into the result list.
+    raw_identity = compare(item_name, offer.raw_text) if raw_match else None
+    offer_domains = {
+        value for candidate in [offer.product_name, *(variant.name for variant in offer.variants)]
+        if (value := _product_domain(candidate)) is not None
+    }
+    trusted_product_match = bool(
+        product_match and (
+            query_domain is None
+            or not offer_domains
+            or query_domain in offer_domains
+        )
+    )
+    trusted_raw_match = bool(
+        raw_match and (
+            (raw_identity is not None and raw_identity.level != "not_same")
+            or (query_domain is not None and query_domain in offer_domains)
+        )
+    )
+
+    if trusted_product_match or brand_match or trusted_raw_match or matching_ids:
         matched = offer.model_copy(deep=True)
         matched.variants = [
             variant.model_copy(update={"matches_query": variant.id in matching_ids})
@@ -333,13 +360,13 @@ def _search_match_result(item_name: str, offer: Offer) -> tuple[int, Offer, Matc
                 "confidence": .82,
                 "explanation": "Direkte tekstmatch i tilbuddet eller en af dets varianter.",
             })
-        score = 150 if matching_ids else 145 if product_match or brand_match else 125
+        score = 150 if matching_ids else 145 if trusted_product_match or brand_match else 125
         score, identity = apply_family_preference(item_name, offer.product_name, score, identity)
         if score <= 0:
             return None
         return score, matched, identity
 
-    return _matched_offer(item_name, offer)
+    return _matched_offer(item_name, offer, preserve_variants=True)
 
 
 def _search_deduplication_key(offer: Offer) -> tuple:
@@ -351,7 +378,12 @@ def _search_deduplication_key(offer: Offer) -> tuple:
     )
 
 
-def _matched_offer(item_name: str, offer: Offer) -> tuple[int, Offer, MatchResult] | None:
+def _matched_offer(
+    item_name: str,
+    offer: Offer,
+    *,
+    preserve_variants: bool = False,
+) -> tuple[int, Offer, MatchResult] | None:
     score, identity = _offer_match_result(item_name, offer)
     if score < _MATCH_THRESHOLD or offer.price is None:
         return None
@@ -366,7 +398,13 @@ def _matched_offer(item_name: str, offer: Offer) -> tuple[int, Offer, MatchResul
         # If the campaign heading itself is the match, retaining the campaign
         # variants is more informative than throwing them away. Otherwise only
         # expose the variants that actually matched the list item.
-        if relevant:
+        if preserve_variants:
+            relevant_ids = {variant.id for variant in relevant}
+            matched.variants = [
+                variant.model_copy(update={"matches_query": variant.id in relevant_ids})
+                for variant in matched.variants
+            ]
+        elif relevant:
             matched.variants = relevant
     return score, matched, identity
 
@@ -448,6 +486,9 @@ async def search_offers(
     q: str = Query(min_length=1, max_length=100),
     retailer: str | None = Query(default=None, max_length=40),
 ):
+    term = " ".join(q.split())
+    if not term:
+        raise HTTPException(status_code=400, detail="Skriv et søgeord")
     selected = {value.strip().casefold() for value in (retailer or "").split(",") if value.strip()}
     items = [
         p for p in await _publications()
@@ -462,7 +503,7 @@ async def search_offers(
         # intentionally narrows variants for indexing; using those copies as
         # response objects was the reason Tilbud lost choices visible in Aviser.
         for offer in publication.structured_offers:
-            match = _search_match_result(q, offer)
+            match = _search_match_result(term, offer)
             if match is not None:
                 score, matched, identity = match
                 key = _search_deduplication_key(matched)
@@ -483,7 +524,7 @@ async def search_offers(
     ]
     return {
         "ok": True,
-        "query": q,
+        "query": term,
         "retailer": items[0].retailer if len({item.retailer for item in items}) == 1 else "Alle butikker",
         "publication": _publication_payload(items[0]) if len(items) == 1 else None,
         "offer_count": len(offers),

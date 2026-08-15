@@ -2,6 +2,17 @@ import XCTest
 @testable import BaggerShopping
 
 final class OfferSearchRankerTests: XCTestCase {
+    func testAPIClientRejectsWhitespaceOnlySearchBeforeNetworking() async {
+        do {
+            _ = try await APIClient().searchOffers(query: "   \n ")
+            XCTFail("Expected an empty-search error")
+        } catch APIClient.APIError.emptySearch {
+            // Expected: no token or network access should be attempted.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
     func testButterCoreMatchesRankAboveUnrelatedCompounds() {
         let exact = OfferSearchRanker.textConfidence(query: "Smør", candidate: "Lurpak Smør Saltet")
         let spreadable = OfferSearchRanker.textConfidence(query: "Smør", candidate: "Kærgården smørbar")

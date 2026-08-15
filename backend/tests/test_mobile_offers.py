@@ -2,8 +2,12 @@ import asyncio
 from datetime import date
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
 from app import mobile_offers
-from app.meny_flyer import parse_enrichment_chunks, parse_meny_flyer_html
+from app.meny_flyer import Offer, OfferVariant, parse_enrichment_chunks, parse_meny_flyer_html
+from app.product_identity import compare
 
 
 def test_search_without_retailer_searches_all_current_publications(monkeypatch):
@@ -99,6 +103,65 @@ def test_cola_family_search_keeps_campaign_choices_and_marks_relevant_variants(m
     variants = response["offers"][0]["variants"]
     assert [value["name"] for value in variants] == ["Coca-Cola", "Pepsi Max", "Fanta Orange"]
     assert [value["name"] for value in variants if value["matches_query"]] == ["Coca-Cola", "Pepsi Max"]
+
+
+def test_search_rejects_whitespace_only_query_before_fetching_publications(monkeypatch):
+    async def should_not_fetch():
+        raise AssertionError("empty searches must not fetch flyers")
+
+    monkeypatch.setattr(mobile_offers, "_publications", should_not_fetch)
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(mobile_offers.search_offers(q="   \n ", retailer=None))
+
+    assert error.value.status_code == 400
+    assert error.value.detail == "Skriv et søgeord"
+
+
+def test_raw_advert_text_cannot_leak_an_unrelated_offer_into_search():
+    offer = Offer(
+        id="paper", retailer="SPAR", publication_id="week", publication_title="Uge",
+        product_name="Floralys toiletpapir", price=20,
+        source_url="https://example.test", raw_text="Kan indeholde spor af mælk",
+        variants=[OfferVariant(id="paper-1", name="Floralys toiletpapir")],
+    )
+
+    assert mobile_offers._search_match_result("mælk", offer) is None
+
+
+def test_literal_substring_match_cannot_override_a_concrete_domain_conflict():
+    offer = Offer(
+        id="candy", retailer="MENY", publication_id="week", publication_title="Uge",
+        product_name="Salte fisk slik", price=15,
+        source_url="https://example.test", raw_text="",
+        variants=[OfferVariant(id="candy-1", name="Salte fisk slik")],
+    )
+
+    assert mobile_offers._search_match_result("fisk", offer) is None
+
+
+def test_search_semantic_fallback_preserves_all_campaign_variants(monkeypatch):
+    offer = Offer(
+        id="bread", retailer="REMA 1000", publication_id="week", publication_title="Uge",
+        product_name="Schulstad brød", price=12,
+        source_url="https://example.test", raw_text="",
+        variants=[
+            OfferVariant(id="sunflower", name="Schulstad Solsikkerugbrød"),
+            OfferVariant(id="sandwich", name="Schulstad Sandwich"),
+            OfferVariant(id="rye", name="Schulstad Levebrød"),
+        ],
+    )
+    identity = compare("brød", "Schulstad brød")
+    monkeypatch.setattr(mobile_offers, "_offer_match_result", lambda *_: (65, identity))
+
+    result = mobile_offers._matched_offer("brød", offer, preserve_variants=True)
+
+    assert result is not None
+    assert [variant.name for variant in result[1].variants] == [
+        "Schulstad Solsikkerugbrød", "Schulstad Sandwich", "Schulstad Levebrød",
+    ]
+    assert [variant.name for variant in result[1].variants if variant.matches_query] == [
+        "Schulstad Solsikkerugbrød", "Schulstad Levebrød",
+    ]
 
 
 def test_publication_offers_returns_current_publication_when_client_id_is_stale(monkeypatch):

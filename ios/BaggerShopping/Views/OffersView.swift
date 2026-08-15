@@ -197,7 +197,7 @@ struct OffersView: View {
             // The server has already combined literal, alias and identity
             // matching.  Reapplying the strict identity level here discarded
             // valid literal hits such as Schulstad and Coca-Cola.
-            offers = response.offers
+            offers = OfferSearchRanker.rank(response.offers, for: term)
         } catch {
             guard !Task.isCancelled else { return }
             offers = []

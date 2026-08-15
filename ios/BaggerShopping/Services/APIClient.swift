@@ -8,6 +8,7 @@ struct APIClient {
         case missingToken
         case invalidResponse
         case missingItemID
+        case emptySearch
         case server(Int, String)
 
         var errorDescription: String? {
@@ -15,6 +16,7 @@ struct APIClient {
             case .missingToken: return "Mobil-API token mangler."
             case .invalidResponse: return "Ugyldigt svar fra Bagger Shopping."
             case .missingItemID: return "Varen mangler et Samsung-ID."
+            case .emptySearch: return "Skriv et søgeord."
             case let .server(code, message): return "Serverfejl \(code): \(message)"
             }
         }
@@ -235,7 +237,9 @@ struct APIClient {
     }
 
     func searchOffers(query: String, retailers: [String] = []) async throws -> OfferSearchResponse {
-        var queryItems = [URLQueryItem(name: "q", value: query)]
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !term.isEmpty else { throw APIError.emptySearch }
+        var queryItems = [URLQueryItem(name: "q", value: term)]
         if !retailers.isEmpty {
             queryItems.append(URLQueryItem(name: "retailer", value: retailers.joined(separator: ",")))
         }
