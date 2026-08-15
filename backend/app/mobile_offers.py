@@ -221,7 +221,8 @@ def _offer_payload(
 ) -> dict:
     payload = offer.model_dump()
     learning = learned_adjustment(
-        load_feedback_store(_QUALITY_STORE_PATH), offer.retailer, offer.quality_source,
+        load_feedback_store(_QUALITY_STORE_PATH), offer.retailer,
+        offer.quality_source, offer.publication_id,
     )
     payload["quality_score"] = round(max(0.0, min(1.0, offer.quality_score + learning.score)), 3)
     payload["hotspot_confidence"] = round(max(
@@ -257,13 +258,34 @@ def _offer_payload(
 @router.post("/quality/feedback")
 async def flyer_quality_feedback(request: FlyerQualityFeedbackRequest):
     """Persist anonymous source-quality feedback shared across families."""
+    publications = await _publications()
+    publication = next(
+        (value for value in publications if value.id == request.publication_id), None,
+    )
+    if publication is None:
+        raise HTTPException(status_code=404, detail="Tilbudsavisen findes ikke længere")
+    authoritative_offer = next(
+        (value for value in publication.structured_offers if value.id == request.offer_id), None,
+    ) if request.offer_id else None
+    if request.decision != "missing_offer" and authoritative_offer is None:
+        raise HTTPException(status_code=404, detail="Tilbuddet findes ikke i den valgte avis")
+    retailer = authoritative_offer.retailer if authoritative_offer else publication.retailer
+    quality_source = (
+        authoritative_offer.quality_source
+        if authoritative_offer else publication.content_source or "unknown"
+    )
+    page_number = authoritative_offer.page_number if authoritative_offer else request.page_number
     created_at = int(time.time())
     async with _quality_store_lock:
         store = load_feedback_store(_QUALITY_STORE_PATH)
-        key = feedback_key(request.retailer, request.quality_source)
-        source = store.setdefault("sources", {}).setdefault(key, {})
-        source[request.decision] = int(source.get(request.decision, 0)) + 1
-        source["updated_at"] = created_at
+        source_key = feedback_key(retailer, quality_source)
+        publication_key = feedback_key(
+            retailer, quality_source, request.publication_id,
+        )
+        for bucket, key in (("sources", source_key), ("publications", publication_key)):
+            row = store.setdefault(bucket, {}).setdefault(key, {})
+            row[request.decision] = int(row.get(request.decision, 0)) + 1
+            row["updated_at"] = created_at
         reports = store.setdefault("reports", [])
         reports.append({
             "id": stable_report_id(
@@ -272,16 +294,21 @@ async def flyer_quality_feedback(request: FlyerQualityFeedbackRequest):
             ),
             "publication_id": request.publication_id,
             "offer_id": request.offer_id,
-            "retailer": request.retailer,
-            "quality_source": request.quality_source,
+            "retailer": retailer,
+            "quality_source": quality_source,
             "decision": request.decision,
-            "page_number": request.page_number,
+            "page_number": page_number,
             "note": request.note,
             "created_at": created_at,
         })
         store["reports"] = reports[-1000:]
         save_feedback_store(_QUALITY_STORE_PATH, store)
-    return {"ok": True, "decision": request.decision, "source_key": key}
+    return {
+        "ok": True,
+        "decision": request.decision,
+        "source_key": source_key,
+        "publication_key": publication_key,
+    }
 
 
 @router.get("/quality/status")
@@ -290,8 +317,10 @@ async def flyer_quality_status():
     return {
         "ok": True,
         "source_count": len(store.get("sources", {})),
+        "publication_count": len(store.get("publications", {})),
         "report_count": len(store.get("reports", [])),
         "sources": store.get("sources", {}),
+        "publications": store.get("publications", {}),
     }
 
 

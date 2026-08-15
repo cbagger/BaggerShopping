@@ -36,6 +36,24 @@ struct OfferImageEvidenceResponse: Codable, Hashable {
     }
 }
 
+enum OfferImageGeometry {
+    static func validatedHotspot(for offer: GroceryOffer) -> CGRect? {
+        guard let x = offer.hotspotX, let y = offer.hotspotY,
+              let width = offer.hotspotWidth, let height = offer.hotspotHeight,
+              x.isFinite, y.isFinite, width.isFinite, height.isFinite,
+              x >= 0, y >= 0, width >= 0.008, height >= 0.008,
+              x < 1, y < 1,
+              x + width <= 1.015, y + height <= 1.015,
+              width * height <= 0.92 else { return nil }
+        return CGRect(
+            x: x,
+            y: y,
+            width: min(width, 1 - x),
+            height: min(height, 1 - y)
+        )
+    }
+}
+
 actor OfferImageRecognitionService {
     static let shared = OfferImageRecognitionService()
 
@@ -48,7 +66,8 @@ actor OfferImageRecognitionService {
     private var cache: [String: OfferImageEvidenceResponse] = [:]
 
     func recognize(offer: GroceryOffer) async throws -> OfferImageEvidenceResponse {
-        if let cached = cache[offer.id] { return cached }
+        let cacheKey = "\(offer.publicationID)|\(offer.id)|\(offer.imageURL?.absoluteString ?? "missing")"
+        if let cached = cache[cacheKey] { return cached }
         guard let url = offer.imageURL else { throw RecognitionError.missingImage }
         let (data, response) = try await URLSession.shared.data(from: url)
         guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode,
@@ -62,14 +81,14 @@ actor OfferImageRecognitionService {
                 ok: true, observedText: "", variants: [], confidence: 0,
                 requiresConfirmation: true
             )
-            cache[offer.id] = empty
+            cache[cacheKey] = empty
             return empty
         }
         let result = try await APIClient().analyzeOfferImage(
             offer: offer,
             observations: observations
         )
-        cache[offer.id] = result
+        cache[cacheKey] = result
         return result
     }
 
@@ -77,10 +96,13 @@ actor OfferImageRecognitionService {
         // Tjek/Schwarz normally provide a dedicated offer crop. MENY/iPaper
         // supplies a full page, so crop around the authoritative hotspot first.
         if offer.qualitySignals.contains("offer-crop") { return image }
-        guard let x = offer.hotspotX, let y = offer.hotspotY,
-              let width = offer.hotspotWidth, let height = offer.hotspotHeight else {
-            return image
+        guard let hotspot = OfferImageGeometry.validatedHotspot(for: offer) else {
+            throw RecognitionError.invalidCrop
         }
+        let x = hotspot.minX
+        let y = hotspot.minY
+        let width = hotspot.width
+        let height = hotspot.height
         let marginX = max(0.025, width * 0.18)
         let marginY = max(0.025, height * 0.18)
         let normalized = CGRect(
