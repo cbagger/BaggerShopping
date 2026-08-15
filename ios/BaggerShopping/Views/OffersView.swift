@@ -52,39 +52,47 @@ struct OffersView: View {
                         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
 
                         FlowLayout(spacing: 8) {
-                                ForEach(retailers, id: \.self) { retailer in
-                                    Button {
-                                        if selectedRetailers.contains(retailer) { selectedRetailers.remove(retailer) }
-                                        else { selectedRetailers.insert(retailer) }
-                                    } label: {
-                                        Text(retailer)
-                                            .font(.subheadline.weight(selectedRetailers.contains(retailer) ? .semibold : .regular))
-                                            .foregroundStyle(selectedRetailers.contains(retailer) ? Color.white : Color.primary)
-                                            .padding(.horizontal, 13)
-                                            .padding(.vertical, 8)
-                                            .background(
-                                                selectedRetailers.contains(retailer) ? Color.accentColor : Color(uiColor: .secondarySystemGroupedBackground),
-                                                in: Capsule()
-                                            )
-                                    }
-                                    .buttonStyle(.plain)
+                            ForEach(retailers, id: \.self) { retailer in
+                                Button {
+                                    if selectedRetailers.contains(retailer) { selectedRetailers.remove(retailer) }
+                                    else { selectedRetailers.insert(retailer) }
+                                } label: {
+                                    Text(retailer)
+                                        .font(.subheadline.weight(selectedRetailers.contains(retailer) ? .semibold : .regular))
+                                        .foregroundStyle(selectedRetailers.contains(retailer) ? Color.white : Color.primary)
+                                        .padding(.horizontal, 13)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            selectedRetailers.contains(retailer) ? Color.accentColor : Color(uiColor: .secondarySystemGroupedBackground),
+                                            in: Capsule()
+                                        )
                                 }
+                                .buttonStyle(.plain)
+                            }
                         }
                         Text(selectedRetailers.isEmpty ? "Søger i alle butikker" : "Søger i \(selectedRetailers.count) valgte butikker")
                             .font(.caption).foregroundStyle(.secondary)
-                        .onChange(of: selectedRetailers) {
-                            scheduleFilterSearch()
-                        }
+                            .onChange(of: selectedRetailers) {
+                                scheduleFilterSearch()
+                            }
                     }
 
-                    if isLoading {
+                    if isLoading && offers.isEmpty {
                         HStack { Spacer(); ProgressView("Søger …"); Spacer() }
                             .padding(.top, 32)
-                    } else if let errorMessage {
+                    } else if let errorMessage, offers.isEmpty {
                         ContentUnavailableView("Kunne ikke hente tilbud", systemImage: "wifi.exclamationmark", description: Text(errorMessage))
                     } else if hasSearched && offers.isEmpty {
                         ContentUnavailableView("Ingen tilbud fundet", systemImage: "magnifyingglass", description: Text("\"\(query)\" findes ikke i de valgte aktuelle eller kommende aviser."))
                     } else {
+                        if isLoading {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("Opdaterer søgeresultater …")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         ForEach(offers) { offer in
                             OfferCard(
                                 offer: offer,
@@ -148,8 +156,13 @@ struct OffersView: View {
     }
 
     private func add(_ itemName: String, from offer: GroceryOffer) {
+        let knownOffers = selectedRetailers.isEmpty ? offers : []
         Task {
-            let cheaper = await OfferPriceGuard().cheaperOffers(for: itemName, than: offer)
+            let cheaper = await OfferPriceGuard().cheaperOffers(
+                for: itemName,
+                than: offer,
+                knownOffers: knownOffers
+            )
             if !cheaper.isEmpty {
                 pendingCheaperAddition = PendingOfferAddition(
                     itemName: itemName,
@@ -185,23 +198,31 @@ struct OffersView: View {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let retailerSnapshot = selectedRetailers
         guard !term.isEmpty else { return }
-        isLoading = true
+
         hasSearched = true
         errorMessage = nil
         addedOfferID = nil
+
+        let cached = OfferSearchCache.load(query: term, retailers: retailerSnapshot)
+        if let cached {
+            offers = OfferSearchRanker.rank(cached.offers, for: term)
+        }
+        isLoading = cached == nil
         defer { isLoading = false }
+
         do {
             let response = try await api.searchOffers(query: term, retailers: Array(retailerSnapshot))
             guard term == query.trimmingCharacters(in: .whitespacesAndNewlines),
                   retailerSnapshot == selectedRetailers else { return }
-            // The server has already combined literal, alias and identity
-            // matching.  Reapplying the strict identity level here discarded
-            // valid literal hits such as Schulstad and Coca-Cola.
+            OfferSearchCache.save(response.offers, query: term, retailers: retailerSnapshot)
             offers = OfferSearchRanker.rank(response.offers, for: term)
+            errorMessage = nil
         } catch {
             guard !Task.isCancelled else { return }
-            offers = []
-            errorMessage = error.localizedDescription
+            if cached == nil {
+                offers = []
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
