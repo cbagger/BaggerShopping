@@ -56,8 +56,6 @@ struct FlyersView: View {
             openRequestedFlyerIfAvailable()
         }
         catch {
-            // A recent cached shelf remains useful when refresh fails. Only show
-            // a blocking error when there is nothing usable to display.
             if publications.isEmpty { errorMessage = error.localizedDescription }
         }
     }
@@ -193,13 +191,19 @@ private struct NativeFlyerReader: View {
     let publication: OfferPublication
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var model: AppModel
-    @State private var offers: [GroceryOffer] = []
+    @StateObject private var offerAddActivity = OfferAddActivity.shared
+    @State private var offers: [GroceryOffer]
     @State private var page = 1
     @State private var pendingOffer: GroceryOffer?
     @State private var addedName: String?
     @State private var errorMessage: String?
     @State private var pendingCheaperAddition: PendingOfferAddition?
     private let api = APIClient()
+
+    init(publication: OfferPublication) {
+        self.publication = publication
+        _offers = State(initialValue: FlyerOfferCache.load(publicationID: publication.id)?.offers ?? [])
+    }
 
     var body: some View {
         NavigationStack {
@@ -256,6 +260,22 @@ private struct NativeFlyerReader: View {
                 .presentationDragIndicator(.visible)
             }
         }
+        .overlay {
+            if let message = offerAddActivity.phase.message,
+               offerAddActivity.phase != .added {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text(message)
+                        .font(.subheadline.weight(.semibold))
+                        .multilineTextAlignment(.center)
+                }
+                .padding(.horizontal, 22)
+                .padding(.vertical, 18)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .shadow(radius: 12, y: 4)
+                .allowsHitTesting(false)
+            }
+        }
         .preferredColorScheme(.light)
     }
 
@@ -300,8 +320,14 @@ private struct NativeFlyerReader: View {
     }
 
     @MainActor private func loadOffers() async {
-        do { offers = try await api.fetchOffers(publicationID: publication.id).offers }
-        catch { errorMessage = error.localizedDescription }
+        do {
+            let fetched = try await api.fetchOffers(publicationID: publication.id).offers
+            offers = fetched
+            FlyerOfferCache.save(fetched, publicationID: publication.id)
+            errorMessage = nil
+        } catch {
+            if offers.isEmpty { errorMessage = error.localizedDescription }
+        }
     }
 
     private func report(_ offer: GroceryOffer, decision: String) {
