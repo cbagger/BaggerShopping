@@ -152,9 +152,11 @@ struct ProductIdentityMatch: Codable, Hashable {
     let confidence: Double
     let explanation: String
     let directPriceComparison: Bool
+    let evidence: [String]?
+    let conflicts: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case level, confidence, explanation
+        case level, confidence, explanation, evidence, conflicts
         case directPriceComparison = "direct_price_comparison"
     }
 }
@@ -166,9 +168,11 @@ struct ProductIdentityCompareResponse: Codable {
     let directPriceComparison: Bool
     let left: ProductIdentityAnalysis
     let right: ProductIdentityAnalysis
+    let evidence: [String]?
+    let conflicts: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case level, confidence, explanation, left, right
+        case level, confidence, explanation, left, right, evidence, conflicts
         case directPriceComparison = "direct_price_comparison"
     }
 }
@@ -185,6 +189,8 @@ struct ProductIdentityAnalysis: Codable, Hashable {
     let unitPriceMin: Double?
     let unitPriceMax: Double?
     let unitPriceUnit: String?
+    let canonicalFamily: String?
+    let evidence: [String]?
 
     enum CodingKeys: String, CodingKey {
         case brand, product, variant, flavours, types
@@ -194,6 +200,8 @@ struct ProductIdentityAnalysis: Codable, Hashable {
         case unitPriceMin = "unit_price_min"
         case unitPriceMax = "unit_price_max"
         case unitPriceUnit = "unit_price_unit"
+        case canonicalFamily = "canonical_family"
+        case evidence
     }
 }
 
