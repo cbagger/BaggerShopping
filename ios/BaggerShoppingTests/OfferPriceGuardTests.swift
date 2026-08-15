@@ -32,6 +32,28 @@ final class OfferPriceGuardTests: XCTestCase {
         XCTAssertNil(pepsi.matchingSelectedItemName("Coca Cola sodavand"))
     }
 
+    func testRegularCocaColaCannotReplaceSelectedZeroVariant() throws {
+        let regular = try decodeOffer(
+            id: "regular", retailer: "Netto", price: 10,
+            productName: "Coca-Cola", variants: ["Coca-Cola"],
+            brand: "coca cola", canonicalFamily: "cola"
+        )
+        let zero = try decodeOffer(
+            id: "zero", retailer: "føtex", price: 15,
+            productName: "Coca-Cola Zero", variants: ["Coca-Cola Zero"],
+            brand: "coca cola", canonicalFamily: "cola", types: ["zero"]
+        )
+
+        let result = OfferPriceGuard().cheaperOffers(
+            from: [regular],
+            for: "Coca-Cola Zero",
+            than: zero
+        )
+
+        XCTAssertTrue(result.isEmpty)
+        XCTAssertNil(regular.matchingSelectedItemName("Coca-Cola Zero"))
+    }
+
     func testMixedCampaignReturnsConcreteCocaColaVariant() throws {
         let rema = try decodeOffer(
             productName: "Coca-Cola, Fanta, Tuborg Squash eller Schweppes",
@@ -175,13 +197,14 @@ final class OfferPriceGuardTests: XCTestCase {
         variants: [String],
         brand: String? = nil,
         canonicalFamily: String? = nil,
+        types: [String] = [],
         unitPrice: Double? = nil,
         unitPriceUnit: String? = nil
     ) throws -> GroceryOffer {
         var identity: [String: Any] = [
             "product": productName,
             "flavours": [],
-            "types": [],
+            "types": types,
             "pack_count": 1
         ]
         if let brand { identity["brand"] = brand }
