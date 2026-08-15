@@ -8,14 +8,6 @@ struct PendingOfferAddition: Identifiable {
 }
 
 struct OfferPriceGuard {
-    private struct ComparisonBasis {
-        let price: Double
-        let unitPrice: Double?
-        let unitPriceUnit: String?
-        let quantity: Double?
-        let unit: String?
-    }
-
     private let api = APIClient()
 
     func cheaperOffers(
@@ -78,51 +70,22 @@ struct OfferPriceGuard {
         for itemName: String,
         than selected: GroceryOffer
     ) -> [GroceryOffer] {
-        guard let selectedBasis = comparisonBasis(for: itemName, in: selected) else { return [] }
+        guard let selectedPrice = selected.price else { return [] }
 
+        // Variant/package weights are not reliable enough yet to compare on
+        // kr./kg, kr./l or parsed quantities. First prove that the candidate is
+        // the same concrete item/variant, then compare the shelf price only.
+        // This intentionally lets an exact Bakkedal 12 kr. offer beat the same
+        // Bakkedal variant at 14,95 kr. even if their parsed weight metadata is
+        // missing, ranged or contradictory.
         return sortedUnique(offers.filter { candidate in
             guard candidate.id != selected.id || candidate.publicationID != selected.publicationID,
                   candidate.matchingSelectedItemName(itemName) != nil,
-                  let candidateBasis = comparisonBasis(for: itemName, in: candidate) else {
+                  let candidatePrice = candidate.price else {
                 return false
             }
-
-            // Compare the concrete variant the user chose, not the campaign's
-            // aggregate quantity. This is critical for mixed offers such as
-            // “AMA fedtstof eller Bakkedal smørbar”, where Bakkedal may be 200 g
-            // even though the campaign itself spans several package sizes.
-            if let selectedUnitPrice = selectedBasis.unitPrice,
-               let candidateUnitPrice = candidateBasis.unitPrice,
-               selectedBasis.unitPriceUnit == candidateBasis.unitPriceUnit {
-                return candidateUnitPrice < selectedUnitPrice
-            }
-
-            if let selectedQuantity = selectedBasis.quantity,
-               let candidateQuantity = candidateBasis.quantity,
-               let selectedUnit = selectedBasis.unit,
-               let candidateUnit = candidateBasis.unit {
-                let sameUnit = selectedUnit.caseInsensitiveCompare(candidateUnit) == .orderedSame
-                if sameUnit, abs(selectedQuantity - candidateQuantity) < 0.0001 {
-                    return candidateBasis.price < selectedBasis.price
-                }
-                return false
-            }
-
-            return candidateBasis.price < selectedBasis.price
+            return candidatePrice < selectedPrice
         })
-    }
-
-    private func comparisonBasis(for itemName: String, in offer: GroceryOffer) -> ComparisonBasis? {
-        guard let price = offer.price else { return nil }
-        let variant = offer.matchingSelectedVariant(itemName)
-        let identity = variant?.identity ?? offer.productIdentity
-        return ComparisonBasis(
-            price: price,
-            unitPrice: identity?.unitPrice,
-            unitPriceUnit: identity?.unitPriceUnit,
-            quantity: variant?.quantity ?? offer.quantity,
-            unit: variant?.unit ?? offer.unit
-        )
     }
 
     private func offerKey(_ offer: GroceryOffer) -> String {
@@ -135,9 +98,6 @@ struct OfferPriceGuard {
             }
             .values
             .sorted {
-                let leftUnit = $0.productIdentity?.unitPrice ?? .greatestFiniteMagnitude
-                let rightUnit = $1.productIdentity?.unitPrice ?? .greatestFiniteMagnitude
-                if leftUnit != rightUnit { return leftUnit < rightUnit }
                 let leftPrice = $0.price ?? .greatestFiniteMagnitude
                 let rightPrice = $1.price ?? .greatestFiniteMagnitude
                 if leftPrice != rightPrice { return leftPrice < rightPrice }
