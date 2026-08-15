@@ -55,9 +55,21 @@ final class AppModel: ObservableObject {
             // Do not let a response that started before an optimistic mutation
             // resurrect a row that the user has just added, changed or deleted.
             guard revision == listMutationRevision else { return }
-            shoppingList = list
-            mutatingItemIDs = mutatingItemIDs.intersection(Set(list.items.map(\.stableID)))
-            ShoppingListCache.save(list)
+
+            // A DELETE is optimistic: the row disappears locally before Samsung
+            // has necessarily removed it from its next read. A mutating id that
+            // is absent from the local list is therefore a deletion tombstone.
+            // Filter those ids from refresh responses until the short grace
+            // period ends, so deleted rows never flash back into the UI.
+            let pendingDeletionIDs = Set(mutatingItemIDs.filter { stableID in
+                !(shoppingList?.items.contains(where: { $0.stableID == stableID }) ?? false)
+            })
+            let visibleItems = list.items.filter { !pendingDeletionIDs.contains($0.stableID) }
+            let visibleList = replacingItems(in: list, with: visibleItems)
+            shoppingList = visibleList
+            let visibleIDs = Set(visibleItems.map(\.stableID))
+            mutatingItemIDs = mutatingItemIDs.intersection(visibleIDs.union(pendingDeletionIDs))
+            ShoppingListCache.save(visibleList)
             await syncSharedOfferMetadata()
             errorMessage = nil
         } catch {
@@ -227,6 +239,16 @@ final class AppModel: ObservableObject {
         reconciliationTasks.removeValue(forKey: key)?.cancel()
     }
 
+    private func scheduleDeletionTombstoneRelease(_ stableID: String) {
+        Task { @MainActor [weak self] in
+            // Samsung Food can briefly return the deleted row after DELETE has
+            // succeeded. Keeping the tombstone outside the mutation queue means
+            // subsequent rapid deletes can continue immediately.
+            try? await Task.sleep(for: .seconds(8))
+            self?.mutatingItemIDs.remove(stableID)
+        }
+    }
+
     func setChecked(_ item: ShoppingItem, checked: Bool) async {
         guard item.id != nil else { return }
         let previous = shoppingList
@@ -293,7 +315,6 @@ final class AppModel: ObservableObject {
 
         let key = item.stableID
         mutatingItemIDs.insert(key)
-        defer { mutatingItemIDs.remove(key) }
         do {
             try await api.deleteItem(item)
             offerMetadata.removeValue(forKey: offerRetailerNameKey(item.name))
@@ -305,7 +326,9 @@ final class AppModel: ObservableObject {
             } catch {
                 errorMessage = "Varen er slettet, men tilbudsoplysningerne kunne ikke fjernes fra den fælles metadata endnu: \(error.localizedDescription)"
             }
+            scheduleDeletionTombstoneRelease(key)
         } catch {
+            mutatingItemIDs.remove(key)
             shoppingList = previous
             if let previous { ShoppingListCache.save(previous) }
             errorMessage = error.localizedDescription
@@ -316,6 +339,8 @@ final class AppModel: ObservableObject {
         guard let checked = shoppingList?.items.filter(\.checked), !checked.isEmpty else { return }
         let previous = shoppingList
         checked.forEach { cancelReconciliation(for: $0.name) }
+        let deletionIDs = Set(checked.map(\.stableID))
+        mutatingItemIDs.formUnion(deletionIDs)
         listMutationRevision &+= 1
         if let list = shoppingList {
             let updated = replacingItems(in: list, with: list.items.filter { !$0.checked })
@@ -330,7 +355,9 @@ final class AppModel: ObservableObject {
             }
             saveOfferMetadata()
             errorMessage = nil
+            deletionIDs.forEach(scheduleDeletionTombstoneRelease)
         } catch {
+            mutatingItemIDs.subtract(deletionIDs)
             shoppingList = previous
             if let previous { ShoppingListCache.save(previous) }
             errorMessage = error.localizedDescription
