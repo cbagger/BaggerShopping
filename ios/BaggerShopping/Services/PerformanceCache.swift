@@ -25,6 +25,77 @@ enum FlyerPublicationCache {
     }
 }
 
+struct CachedFlyerOffers: Codable {
+    let savedAt: Date
+    let offers: [GroceryOffer]
+}
+
+enum FlyerOfferCache {
+    private static let prefix = "kurv-cached-flyer-offers-v1-"
+
+    static func save(_ offers: [GroceryOffer], publicationID: String) {
+        guard !offers.isEmpty else { return }
+        let cached = CachedFlyerOffers(savedAt: Date(), offers: offers)
+        guard let data = try? JSONEncoder().encode(cached) else { return }
+        UserDefaults.standard.set(data, forKey: key(publicationID))
+    }
+
+    static func load(publicationID: String, maxAge: TimeInterval = 6 * 60 * 60) -> CachedFlyerOffers? {
+        guard
+            let data = UserDefaults.standard.data(forKey: key(publicationID)),
+            let cached = try? JSONDecoder().decode(CachedFlyerOffers.self, from: data),
+            Date().timeIntervalSince(cached.savedAt) <= maxAge
+        else { return nil }
+        return cached
+    }
+
+    private static func key(_ publicationID: String) -> String {
+        let encoded = Data(publicationID.utf8).base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "=", with: "")
+        return prefix + encoded
+    }
+}
+
+struct CachedOfferSearch: Codable {
+    let savedAt: Date
+    let offers: [GroceryOffer]
+}
+
+enum OfferSearchCache {
+    private static let prefix = "kurv-cached-offer-search-v1-"
+
+    static func save(_ offers: [GroceryOffer], query: String, retailers: Set<String>) {
+        guard !offers.isEmpty else { return }
+        let cached = CachedOfferSearch(savedAt: Date(), offers: offers)
+        guard let data = try? JSONEncoder().encode(cached) else { return }
+        UserDefaults.standard.set(data, forKey: key(query: query, retailers: retailers))
+    }
+
+    static func load(query: String, retailers: Set<String>, maxAge: TimeInterval = 30 * 60) -> CachedOfferSearch? {
+        guard
+            let data = UserDefaults.standard.data(forKey: key(query: query, retailers: retailers)),
+            let cached = try? JSONDecoder().decode(CachedOfferSearch.self, from: data),
+            Date().timeIntervalSince(cached.savedAt) <= maxAge
+        else { return nil }
+        return cached
+    }
+
+    private static func key(query: String, retailers: Set<String>) -> String {
+        let normalized = query
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+        let retailerPart = retailers.sorted().joined(separator: "|")
+        let raw = normalized + "||" + retailerPart
+        let encoded = Data(raw.utf8).base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "=", with: "")
+        return prefix + encoded
+    }
+}
+
 struct CachedSmartOfferMatches: Codable {
     let savedAt: Date
     let matches: [String: [GroceryOffer]]
