@@ -11,14 +11,11 @@ struct StructuredVariantPickerView: View {
     @State private var requireExactVariant = false
     @State private var saving = false
     @State private var preferenceMessage: String?
-    @State private var recognizedVariants: [RecognizedImageVariant] = []
-    @State private var recognizingImage = false
     private let api = APIClient()
 
     private struct Option: Identifiable {
         let name: String
         let variant: OfferVariant?
-        let imageVariant: RecognizedImageVariant?
         var id: String { name }
     }
 
@@ -29,23 +26,14 @@ struct StructuredVariantPickerView: View {
         } else {
             available = offer.variants.map(\.name)
         }
-        var result = available.map { name in
-            Option(
-                name: name,
-                variant: offer.variants.first { $0.name == name },
-                imageVariant: nil
-            )
-        }
-        for value in recognizedVariants where !result.contains(where: {
-            $0.name.localizedCaseInsensitiveCompare(value.name) == .orderedSame
-        }) {
-            result.append(Option(name: value.name, variant: nil, imageVariant: value))
-        }
-        return result
+        return available
+            .map { name in
+                Option(
+                    name: name,
+                    variant: offer.variants.first { $0.name == name }
+                )
+            }
             .sorted {
-                if ($0.imageVariant != nil) != ($1.imageVariant != nil) {
-                    return $0.imageVariant != nil
-                }
                 if ($0.variant?.matchesQuery == true) != ($1.variant?.matchesQuery == true) {
                     return $0.variant?.matchesQuery == true
                 }
@@ -78,10 +66,7 @@ struct StructuredVariantPickerView: View {
                 }
 
                 Section("Vælg variant") {
-                    if recognizingImage {
-                        Label("Genkender produkter på billedet…", systemImage: "viewfinder")
-                            .font(.subheadline).foregroundStyle(.secondary)
-                    } else if options.isEmpty {
+                    if options.isEmpty {
                         Text("Varianterne kan ikke opdeles sikkert. Du kan bruge kampagnens navn eller skrive din ønskede variant.")
                             .font(.subheadline).foregroundStyle(.secondary)
                     }
@@ -94,20 +79,9 @@ struct StructuredVariantPickerView: View {
                                     if option.variant?.matchesQuery == true {
                                         Label("Bedste match", systemImage: "checkmark.circle.fill")
                                             .font(.caption2.weight(.semibold)).foregroundStyle(.green)
-                                    } else if let imageVariant = option.imageVariant {
-                                        Label(
-                                            "Fundet på billedet · \(Int(imageVariant.confidence * 100))%",
-                                            systemImage: "viewfinder.circle.fill"
-                                        )
-                                        .font(.caption2.weight(.semibold)).foregroundStyle(.blue)
                                     }
                                 }
-                                if let imageVariant = option.imageVariant {
-                                    Text(imageVariant.explanation)
-                                        .font(.caption).foregroundStyle(.secondary)
-                                } else {
-                                    identityChips(option.variant?.identity)
-                                }
+                                identityChips(option.variant?.identity)
                                 unitPrice(option.variant?.identity)
                             }
                             .padding(.vertical, 5)
@@ -147,10 +121,7 @@ struct StructuredVariantPickerView: View {
             .navigationTitle("Vælg vare")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuller") { dismiss() } } }
-            .task {
-                await loadPreference()
-                await recognizeImageVariantsIfNeeded()
-            }
+            .task { await loadPreference() }
         }
     }
 
@@ -256,16 +227,5 @@ struct StructuredVariantPickerView: View {
         preferenceMessage = preference.mode == "any_variant"
             ? "Familien accepterer allerede alle varianter."
             : "Familien foretrækker: \(preference.preferredName)"
-    }
-
-    @MainActor private func recognizeImageVariantsIfNeeded() async {
-        guard offer.imageURL != nil,
-              offer.variants.count < 2 || offer.variantConfidence < 0.90 || offer.hasUnresolvedVariantLanguage else {
-            return
-        }
-        recognizingImage = true
-        defer { recognizingImage = false }
-        guard let result = try? await OfferImageRecognitionService.shared.recognize(offer: offer) else { return }
-        recognizedVariants = result.variants.filter { $0.confidence >= 0.45 }
     }
 }
