@@ -399,6 +399,15 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
             content.body = "Du har \(storeItems.count) \(noun) her · \(categorySummary)\(unassignedSuffix)\(cacheSuffix)"
         }
 
+        if let metadata = loadMetadataCache(),
+           let reminder = MemberPriceGeofenceReminder.message(
+                retailer: retailer,
+                storeItems: storeItems,
+                metadata: metadata
+           ) {
+            content.body += "\n\(reminder)"
+        }
+
         content.sound = .default
         content.userInfo = ["route": "shopping-list", "retailer": retailer]
 
