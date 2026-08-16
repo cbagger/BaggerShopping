@@ -233,9 +233,12 @@ struct ShoppingListView: View {
             }
         }
         .listStyle(.plain)
-        .listSectionSpacing(.compact)
+        .listSectionSpacing(.custom(6))
         .scrollContentBackground(.hidden)
         .background(Color(uiColor: .systemGroupedBackground))
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Color.clear.frame(height: 76)
+        }
         .refreshable {
             await model.refresh()
             await model.syncSharedCategories()
@@ -279,19 +282,66 @@ struct ShoppingListView: View {
     }
 
     private var sortModeRow: some View {
-        Picker("Vis liste efter", selection: $sortByRetailer) {
-            Text("Kategori").tag(false)
-            Text("Butik").tag(true)
+        HStack(spacing: 4) {
+            sortModeButton(
+                title: "Kategori",
+                systemImage: "square.grid.2x2",
+                selected: !sortByRetailer
+            ) {
+                setSortMode(byRetailer: false)
+            }
+
+            sortModeButton(
+                title: "Butik",
+                systemImage: "storefront",
+                selected: sortByRetailer
+            ) {
+                setSortMode(byRetailer: true)
+            }
         }
-        .pickerStyle(.segmented)
-        .onChange(of: sortByRetailer) { _, byRetailer in
+        .padding(3)
+        .background(
+            Color(uiColor: .secondarySystemGroupedBackground),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 0, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+
+    private func sortModeButton(
+        title: String,
+        systemImage: String,
+        selected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.caption.weight(.semibold))
+                Text(title)
+                    .font(.subheadline.weight(selected ? .semibold : .medium))
+            }
+            .foregroundStyle(selected ? Color.primary : Color.secondary)
+            .frame(maxWidth: .infinity)
+            .frame(height: 30)
+            .background(
+                selected ? Color.primary.opacity(0.10) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func setSortMode(byRetailer: Bool) {
+        guard sortByRetailer != byRetailer else { return }
+        withAnimation(.easeInOut(duration: 0.18)) {
+            sortByRetailer = byRetailer
             if !byRetailer {
                 selectedRetailerFilters.removeAll()
             }
         }
-        .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: sortByRetailer ? 3 : 6, trailing: 16))
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
     }
 
     private var retailerFiltersRow: some View {
@@ -318,7 +368,7 @@ struct ShoppingListView: View {
             }
             .padding(.horizontal, 1)
         }
-        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 5, trailing: 0))
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 2, trailing: 0))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
     }
@@ -342,7 +392,7 @@ struct ShoppingListView: View {
             Color(uiColor: .secondarySystemGroupedBackground),
             in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
-        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 6, trailing: 16))
+        .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 5, trailing: 16))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
     }
@@ -381,7 +431,7 @@ struct ShoppingListView: View {
                 Color(uiColor: .secondarySystemGroupedBackground),
                 in: RoundedRectangle(cornerRadius: 16, style: .continuous)
             )
-            .listRowInsets(EdgeInsets(top: 7, leading: 16, bottom: showCheckedItems ? 3 : 14, trailing: 16))
+            .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: showCheckedItems ? 3 : 12, trailing: 16))
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
 
@@ -405,7 +455,7 @@ struct ShoppingListView: View {
                 }
                 .buttonStyle(.plain)
                 .background(Color.red.opacity(0.07), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 14, trailing: 16))
+                .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 12, trailing: 16))
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
             }
@@ -419,17 +469,17 @@ struct ShoppingListView: View {
                 .foregroundStyle(Color.accentColor)
             Text(title)
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(Color.primary.opacity(0.88))
                 .textCase(nil)
             Text("\(count)")
                 .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.secondary.opacity(0.92))
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.055), in: Capsule())
+                .background(Color.primary.opacity(0.065), in: Capsule())
         }
-        .padding(.top, 4)
-        .padding(.bottom, 2)
+        .padding(.top, 1)
+        .padding(.bottom, 1)
     }
 
     private func addNewItem() {
