@@ -24,9 +24,9 @@ struct ShoppingListView: View {
 
     private struct RetailerGroup: Identifiable {
         let retailer: String?
-        let categories: [CategoryGroup]
+        let items: [ShoppingItem]
         var id: String { retailer ?? "__without-retailer__" }
-        var count: Int { categories.reduce(0) { $0 + $1.items.count } }
+        var count: Int { items.count }
     }
 
     @EnvironmentObject private var model: AppModel
@@ -38,6 +38,7 @@ struct ShoppingListView: View {
     @State private var renameTarget: ShoppingItemRenameTarget?
     @State private var offerTarget: ShoppingItemOfferTarget?
     @State private var offerPreviewTarget: ShoppingItemOfferPreviewTarget?
+    @State private var showCheckedItems = false
     @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
 
     private let retailerFilterOptions = [
@@ -51,6 +52,18 @@ struct ShoppingListView: View {
 
     private var checkedItems: [ShoppingItem] {
         model.shoppingList?.items.filter(\.checked) ?? []
+    }
+
+    private var offerReadyCount: Int {
+        activeItems.reduce(into: 0) { count, item in
+            if model.offerRetailer(for: item) != nil || !smartOffers.matches(for: item).isEmpty {
+                count += 1
+            }
+        }
+    }
+
+    private var retailerCount: Int {
+        Set(activeItems.compactMap { model.assignedRetailer(for: $0) }).count
     }
 
     private var offerMatchSignature: String {
@@ -84,15 +97,24 @@ struct ShoppingListView: View {
     private var retailerGroups: [RetailerGroup] {
         let grouped = Dictionary(grouping: activeItems) { model.assignedRetailer(for: $0) }
         return grouped.map { retailer, items in
-            RetailerGroup(retailer: retailer, categories: categoryGroups(for: items))
+            RetailerGroup(
+                retailer: retailer,
+                items: items.sorted { lhs, rhs in
+                    let lhsCategory = model.category(for: lhs)
+                    let rhsCategory = model.category(for: rhs)
+                    if lhsCategory.sortOrder != rhsCategory.sortOrder {
+                        return lhsCategory.sortOrder < rhsCategory.sortOrder
+                    }
+                    return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+                }
+            )
         }
         .filter { group in
             guard let retailer = group.retailer else { return true }
-            return selectedRetailerFilters.isEmpty
-                || selectedRetailerFilters.contains(retailer)
+            return selectedRetailerFilters.isEmpty || selectedRetailerFilters.contains(retailer)
         }
         .sorted { lhs, rhs in
-            if lhs.retailer == nil { return rhs.retailer != nil }
+            if lhs.retailer == nil { return true }
             if rhs.retailer == nil { return false }
             return lhs.retailer!.localizedCaseInsensitiveCompare(rhs.retailer!) == .orderedAscending
         }
@@ -124,161 +146,7 @@ struct ShoppingListView: View {
                 } else if model.isLoading && model.shoppingList == nil {
                     ProgressView("Henter indkøbsliste…")
                 } else if model.shoppingList != nil {
-                    List {
-                        Section {
-                            HStack(spacing: 10) {
-                                TextField("Tilføj vare", text: $newItem)
-                                    .textInputAutocapitalization(.sentences)
-                                    .submitLabel(.done)
-                                    .onSubmit { addNewItem() }
-
-                                Button(action: addNewItem) {
-                                    Image(systemName: "plus.circle.fill")
-                                        .font(.title3)
-                                }
-                                .disabled(newItem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            }
-                            Button {
-                                withAnimation {
-                                    sortByRetailer.toggle()
-                                    if !sortByRetailer { selectedRetailerFilters.removeAll() }
-                                }
-                            } label: {
-                                Label(
-                                    "Sorter efter butik",
-                                    systemImage: sortByRetailer ? "checkmark.circle.fill" : "storefront"
-                                )
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(sortByRetailer ? Color.white : Color.primary)
-                                .padding(.horizontal, 13)
-                                .padding(.vertical, 8)
-                                .background(
-                                    sortByRetailer ? Color.accentColor : Color(uiColor: .secondarySystemGroupedBackground),
-                                    in: Capsule()
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
-
-                            if sortByRetailer {
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 8) {
-                                        retailerFilterButton(
-                                            title: "Alle",
-                                            selected: selectedRetailerFilters.isEmpty
-                                        ) {
-                                            withAnimation { selectedRetailerFilters.removeAll() }
-                                        }
-
-                                        ForEach(retailerFilterOptions, id: \.self) { retailer in
-                                            retailerFilterButton(
-                                                title: retailer,
-                                                selected: selectedRetailerFilters.contains(retailer)
-                                            ) {
-                                                withAnimation {
-                                                    if selectedRetailerFilters.contains(retailer) {
-                                                        selectedRetailerFilters.remove(retailer)
-                                                    } else {
-                                                        selectedRetailerFilters.insert(retailer)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    .padding(.horizontal, 2)
-                                }
-                                .listRowBackground(Color.clear)
-                                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                            }
-                        }
-
-                        if activeItems.isEmpty {
-                            Section {
-                                ContentUnavailableView(
-                                    "Listen er tom",
-                                    systemImage: "cart.badge.checkmark",
-                                    description: Text("Tilføj varer her eller direkte fra Samsung Food på køleskabet.")
-                                )
-                            }
-                        } else {
-                            if sortByRetailer {
-                                ForEach(retailerGroups) { retailerGroup in
-                                    Section {
-                                        ForEach(retailerGroup.categories) { categoryGroup in
-                                            Label(
-                                                "\(categoryGroup.category.rawValue) · \(categoryGroup.items.count)",
-                                                systemImage: categoryGroup.category.icon
-                                            )
-                                            .font(.subheadline.weight(.semibold))
-                                            .foregroundStyle(.secondary)
-                                            .listRowBackground(Color.clear)
-                                            .listRowInsets(EdgeInsets(top: 12, leading: 20, bottom: 5, trailing: 20))
-
-                                            ForEach(categoryGroup.items, id: \.stableID) { item in
-                                                itemRow(item, showCategory: false)
-                                            }
-                                        }
-                                    } header: {
-                                        Label(
-                                            "\(retailerGroup.retailer ?? "Uden butik") · \(retailerGroup.count)",
-                                            systemImage: retailerGroup.retailer == nil ? "shippingbox" : "storefront"
-                                        )
-                                    } footer: {
-                                        if retailerGroup.retailer != nil {
-                                            Text("Husk varer øverst der ikke er dedikeret til én butik")
-                                        }
-                                    }
-                                }
-                            } else if !upcomingItems.isEmpty {
-                                Section {
-                                    ForEach(upcomingItems, id: \.stableID) { item in
-                                        itemRow(item, showCategory: false)
-                                    }
-                                } header: {
-                                    Label("Kommende tilbud · \(upcomingItems.count)", systemImage: "calendar.badge.clock")
-                                } footer: {
-                                    Text("Disse priser gælder ikke endnu.")
-                                }
-                            }
-
-                            if !sortByRetailer {
-                                ForEach(groupedActiveItems) { group in
-                                    Section {
-                                        ForEach(group.items, id: \.stableID) { item in
-                                            itemRow(item, showCategory: false)
-                                        }
-                                    } header: {
-                                        Label("\(group.category.rawValue) · \(group.items.count)", systemImage: group.category.icon)
-                                    }
-                                }
-                            }
-                        }
-
-                        if !checkedItems.isEmpty {
-                            Section {
-                                ForEach(checkedItems, id: \.stableID) { item in
-                                    itemRow(item, showCategory: true)
-                                }
-
-                                Button(role: .destructive) {
-                                    mutationQueue.enqueue {
-                                        await model.clearChecked()
-                                    }
-                                } label: {
-                                    Label("Ryd købte varer", systemImage: "trash")
-                                }
-                            } header: {
-                                Text("Købt · \(checkedItems.count)")
-                            }
-                        }
-                    }
-                    .listStyle(.insetGrouped)
-                    .refreshable {
-                        await model.refresh()
-                        await model.syncSharedCategories()
-                        await smartOffers.refresh(items: activeItems, model: model)
-                    }
+                    shoppingListContent
                 } else {
                     ContentUnavailableView(
                         "Ingen liste",
@@ -288,6 +156,7 @@ struct ShoppingListView: View {
                 }
             }
             .navigationTitle("Indkøbsliste")
+            .navigationBarTitleDisplayMode(.large)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -338,6 +207,343 @@ struct ShoppingListView: View {
         }
     }
 
+    private var shoppingListContent: some View {
+        List {
+            overviewRow
+            addItemRow
+
+            if sortByRetailer {
+                retailerFiltersRow
+            }
+
+            if activeItems.isEmpty {
+                emptyActiveRow
+            } else if sortByRetailer {
+                ForEach(retailerGroups) { group in
+                    Section {
+                        ForEach(group.items, id: \.stableID) { item in
+                            itemRow(item, showCategory: true)
+                        }
+                    } header: {
+                        sectionHeader(
+                            group.retailer ?? "Uden butik",
+                            count: group.count,
+                            icon: group.retailer == nil ? "shippingbox" : "storefront"
+                        )
+                    }
+                }
+            } else {
+                if !upcomingItems.isEmpty {
+                    Section {
+                        ForEach(upcomingItems, id: \.stableID) { item in
+                            itemRow(item, showCategory: false)
+                        }
+                    } header: {
+                        sectionHeader("Kommende tilbud", count: upcomingItems.count, icon: "calendar.badge.clock")
+                    }
+                }
+
+                ForEach(groupedActiveItems) { group in
+                    Section {
+                        ForEach(group.items, id: \.stableID) { item in
+                            itemRow(item, showCategory: false)
+                        }
+                    } header: {
+                        sectionHeader(group.category.rawValue, count: group.items.count, icon: group.category.icon)
+                    }
+                }
+            }
+
+            if !checkedItems.isEmpty {
+                checkedItemsSection
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color(uiColor: .systemGroupedBackground))
+        .refreshable {
+            await model.refresh()
+            await model.syncSharedCategories()
+            await smartOffers.refresh(items: activeItems, model: model)
+        }
+    }
+
+    private var overviewRow: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("\(activeItems.count)")
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+
+                Text(activeItems.count == 1 ? "vare mangler" : "varer mangler")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 8)
+
+                if model.isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Opdaterer indkøbslisten")
+                }
+            }
+
+            HStack(spacing: 8) {
+                if offerReadyCount > 0 {
+                    summaryPill(
+                        "\(offerReadyCount) med tilbud",
+                        icon: "tag.fill",
+                        foreground: Color.accentColor,
+                        background: Color.accentColor.opacity(0.11)
+                    )
+                }
+
+                if retailerCount > 0 {
+                    summaryPill(
+                        retailerCount == 1 ? "1 butik" : "\(retailerCount) butikker",
+                        icon: "storefront.fill",
+                        foreground: .secondary,
+                        background: Color.primary.opacity(0.055)
+                    )
+                }
+
+                if !checkedItems.isEmpty {
+                    summaryPill(
+                        "\(checkedItems.count) købt",
+                        icon: "checkmark.circle.fill",
+                        foreground: .secondary,
+                        background: Color.primary.opacity(0.055)
+                    )
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            Divider()
+                .opacity(0.55)
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    sortByRetailer.toggle()
+                    if !sortByRetailer { selectedRetailerFilters.removeAll() }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: sortByRetailer ? "storefront.fill" : "square.grid.2x2.fill")
+                        .foregroundStyle(Color.accentColor)
+                    Text(sortByRetailer ? "Viser efter butik" : "Viser efter kategori")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Text("Skift")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(16)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.primary.opacity(0.055), lineWidth: 1)
+        }
+        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 6, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+
+    private var addItemRow: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "plus")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 28, height: 28)
+                .background(Color.accentColor.opacity(0.11), in: Circle())
+
+            TextField("Tilføj vare", text: $newItem)
+                .font(.body.weight(.medium))
+                .textInputAutocapitalization(.sentences)
+                .submitLabel(.done)
+                .onSubmit { addNewItem() }
+
+            if !newItem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Button(action: addNewItem) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.title2)
+                        .symbolRenderingMode(.hierarchical)
+                }
+                .buttonStyle(.plain)
+                .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(
+            Color(uiColor: .secondarySystemGroupedBackground),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+
+    private var retailerFiltersRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                retailerFilterButton(title: "Alle", selected: selectedRetailerFilters.isEmpty) {
+                    withAnimation { selectedRetailerFilters.removeAll() }
+                }
+
+                ForEach(retailerFilterOptions, id: \.self) { retailer in
+                    retailerFilterButton(
+                        title: retailer,
+                        selected: selectedRetailerFilters.contains(retailer)
+                    ) {
+                        withAnimation {
+                            if selectedRetailerFilters.contains(retailer) {
+                                selectedRetailerFilters.remove(retailer)
+                            } else {
+                                selectedRetailerFilters.insert(retailer)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 1)
+        }
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 0))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+
+    private var emptyActiveRow: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.title2)
+                .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Alt er købt")
+                    .font(.headline)
+                Text("Tilføj en vare ovenfor, når der mangler noget igen.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(
+            Color(uiColor: .secondarySystemGroupedBackground),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+
+    private var checkedItemsSection: some View {
+        Section {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showCheckedItems.toggle()
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                    Text("Købt")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text("\(checkedItems.count)")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.primary.opacity(0.055), in: Capsule())
+                    Spacer()
+                    Image(systemName: showCheckedItems ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                Color(uiColor: .secondarySystemGroupedBackground),
+                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            )
+            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: showCheckedItems ? 4 : 18, trailing: 16))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+
+            if showCheckedItems {
+                ForEach(checkedItems, id: \.stableID) { item in
+                    itemRow(item, showCategory: true)
+                }
+
+                Button(role: .destructive) {
+                    mutationQueue.enqueue {
+                        await model.clearChecked()
+                    }
+                } label: {
+                    HStack {
+                        Spacer()
+                        Label("Ryd købte varer", systemImage: "trash")
+                            .font(.subheadline.weight(.semibold))
+                        Spacer()
+                    }
+                    .padding(.vertical, 11)
+                }
+                .buttonStyle(.plain)
+                .background(Color.red.opacity(0.07), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .listRowInsets(EdgeInsets(top: 3, leading: 16, bottom: 18, trailing: 16))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            }
+        }
+    }
+
+    private func sectionHeader(_ title: String, count: Int, icon: String) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .textCase(nil)
+            Text("\(count)")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Color.primary.opacity(0.055), in: Capsule())
+        }
+        .padding(.top, 8)
+        .padding(.bottom, 3)
+    }
+
+    private func summaryPill(
+        _ text: String,
+        icon: String,
+        foreground: Color,
+        background: Color
+    ) -> some View {
+        Label(text, systemImage: icon)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(background, in: Capsule())
+    }
+
     private func addNewItem() {
         let value = newItem
         guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
@@ -356,10 +562,10 @@ struct ShoppingListView: View {
     ) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.caption.weight(selected ? .semibold : .regular))
+                .font(.caption.weight(selected ? .semibold : .medium))
                 .foregroundStyle(selected ? Color.white : Color.primary)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 7)
+                .padding(.vertical, 8)
                 .background(
                     selected ? Color.accentColor : Color(uiColor: .secondarySystemGroupedBackground),
                     in: Capsule()
@@ -375,35 +581,42 @@ struct ShoppingListView: View {
                 Task { await model.setChecked(item, checked: !item.checked) }
             } label: {
                 Image(systemName: item.checked ? "checkmark.circle.fill" : "circle")
-                    .font(.title3)
+                    .font(.title2)
+                    .foregroundStyle(item.checked ? Color.secondary : Color.accentColor)
                     .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(.plain)
             .disabled(item.id == nil)
             .accessibilityLabel(item.checked ? "Markér som ikke købt" : "Markér som købt")
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(item.name)
+                    .font(.body.weight(item.checked ? .regular : .semibold))
                     .strikethrough(item.checked)
                     .foregroundStyle(item.checked ? .secondary : .primary)
+                    .lineLimit(2)
 
                 if let retailer = model.offerRetailer(for: item) {
                     Button {
                         showOfferPreview(for: item)
                     } label: {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "tag.fill")
                             Text(retailer).lineLimit(1)
                             if let price = model.offerPrice(for: item) {
                                 Text("·")
                                 Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
+                                    .monospacedDigit()
                             }
                             if model.offerMetadataReference(for: item)?.offerID != nil {
                                 Image(systemName: "photo")
                             }
                         }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.accentColor.opacity(0.10), in: Capsule())
                     }
                     .buttonStyle(.plain)
                     .disabled(model.offerMetadataReference(for: item)?.offerID == nil)
@@ -417,16 +630,14 @@ struct ShoppingListView: View {
                     Button {
                         showOfferPreview(for: item)
                     } label: {
-                        HStack(spacing: 4) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "calendar.badge.exclamationmark")
                             Text(expired.retailer).lineLimit(1)
                             if let price = expired.price {
                                 Text("·")
                                 Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
                             }
                             Text("· Udløbet")
-                            if model.offerMetadataReference(for: item)?.offerID != nil {
-                                Image(systemName: "photo")
-                            }
                         }
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.red)
@@ -442,11 +653,14 @@ struct ShoppingListView: View {
                             offerTarget = ShoppingItemOfferTarget(item: item)
                         } label: {
                             Label(
-                                matches.count == 1 ? "1 tilbud fundet" : "\(matches.count) tilbud fundet",
+                                matches.count == 1 ? "1 tilbud" : "\(matches.count) tilbud",
                                 systemImage: "tag"
                             )
-                            .font(.caption2.weight(.semibold))
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(Color.accentColor.opacity(0.08), in: Capsule())
                         }
                         .buttonStyle(.plain)
                     }
@@ -455,7 +669,7 @@ struct ShoppingListView: View {
                 if showCategory {
                     let category = model.category(for: item)
                     Label(category.rawValue, systemImage: category.icon)
-                        .font(.caption)
+                        .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -465,10 +679,11 @@ struct ShoppingListView: View {
             if let quantity = item.quantity, quantity > 1, let displayQuantity = item.displayQuantity {
                 Text(displayQuantity)
                     .font(.caption.weight(.bold))
-                    .foregroundStyle(.white)
+                    .monospacedDigit()
+                    .foregroundStyle(Color.accentColor)
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(.blue, in: Capsule())
+                    .padding(.vertical, 5)
+                    .background(Color.accentColor.opacity(0.10), in: Capsule())
                     .accessibilityLabel("Antal \(displayQuantity)")
             }
 
@@ -513,8 +728,11 @@ struct ShoppingListView: View {
                         }
                     }
                 } label: {
-                    Image(systemName: "ellipsis.circle")
+                    Image(systemName: "ellipsis")
+                        .font(.body.weight(.semibold))
                         .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 32)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Indstillinger for \(item.name)")
@@ -524,6 +742,12 @@ struct ShoppingListView: View {
                 ProgressView().controlSize(.small)
             }
         }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 11)
+        .background(
+            Color(uiColor: .secondarySystemGroupedBackground),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
         .contentShape(Rectangle())
         .simultaneousGesture(
             LongPressGesture(minimumDuration: 0.55)
@@ -548,6 +772,9 @@ struct ShoppingListView: View {
                 }
             }
         }
+        .listRowInsets(EdgeInsets(top: 3, leading: 16, bottom: 3, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
 
     private func showOfferPreview(for item: ShoppingItem) {
