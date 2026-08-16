@@ -49,6 +49,9 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         lastNotificationResult = UserDefaults.standard.string(forKey: "geofence-last-notification-result")
         lastListFetchResult = UserDefaults.standard.string(forKey: "geofence-last-list-fetch-result")
 
+        // Never trust a persisted INSIDE value across a cold launch. sync(stores:)
+        // immediately asks Core Location for the current state of enabled stores.
+        MemberPricePresence.clear()
         refreshRegionDiagnostics()
         Task { await refreshNotificationAuthorization() }
     }
@@ -69,6 +72,10 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
             uniqueKeysWithValues: stores.map { ("store:\($0.id.uuidString)", $0.name) }
         )
 
+        // Presence must be re-proven by Core Location after every monitoring
+        // sync. A stale INSIDE state must never surface an activation reminder.
+        MemberPricePresence.clear()
+
         for region in manager.monitoredRegions where region.identifier.hasPrefix("store:") {
             manager.stopMonitoring(for: region)
         }
@@ -86,6 +93,17 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         }
 
         refreshRegionDiagnostics()
+        refreshPresence()
+    }
+
+    func refreshPresence() {
+        guard authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse else {
+            MemberPricePresence.clear()
+            return
+        }
+        for region in manager.monitoredRegions where region.identifier.hasPrefix("store:") {
+            manager.requestState(for: region)
+        }
     }
 
     func runDiagnostics() async {
@@ -102,10 +120,7 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
             manager.requestLocation()
         }
 
-        for region in manager.monitoredRegions where region.identifier.hasPrefix("store:") {
-            manager.requestState(for: region)
-        }
-
+        refreshPresence()
         refreshRegionDiagnostics()
     }
 
@@ -153,6 +168,11 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         Task { @MainActor in
             self.authorizationStatus = manager.authorizationStatus
+            if manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse {
+                self.refreshPresence()
+            } else {
+                MemberPricePresence.clear()
+            }
         }
     }
 
@@ -162,6 +182,7 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     ) {
         Task { @MainActor in
             self.refreshRegionDiagnostics()
+            self.manager.requestState(for: region)
         }
     }
 
@@ -172,6 +193,9 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     ) {
         Task { @MainActor in
             let regionName = region.map { self.displayName(for: $0.identifier) } ?? "ukendt region"
+            if region != nil {
+                MemberPricePresence.setInside(false, storeName: regionName)
+            }
             self.lastMonitoringError = "\(regionName): \(error.localizedDescription)"
             self.refreshRegionDiagnostics()
         }
@@ -181,9 +205,11 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         guard region.identifier.hasPrefix("store:") else { return }
 
         Task { @MainActor in
-            let message = "\(self.displayName(for: region.identifier)) – \(Self.timestamp())"
+            let storeName = self.displayName(for: region.identifier)
+            let message = "\(storeName) – \(Self.timestamp())"
             self.lastEnterEvent = message
             UserDefaults.standard.set(message, forKey: "geofence-last-enter-event")
+            MemberPricePresence.setInside(true, storeName: storeName)
             self.setRegionState(identifier: region.identifier, state: "INSIDE")
             await self.handleStoreEntry(regionIdentifier: region.identifier)
         }
@@ -193,9 +219,11 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         guard region.identifier.hasPrefix("store:") else { return }
 
         Task { @MainActor in
-            let message = "\(self.displayName(for: region.identifier)) – \(Self.timestamp())"
+            let storeName = self.displayName(for: region.identifier)
+            let message = "\(storeName) – \(Self.timestamp())"
             self.lastExitEvent = message
             UserDefaults.standard.set(message, forKey: "geofence-last-exit-event")
+            MemberPricePresence.setInside(false, storeName: storeName)
             self.setRegionState(identifier: region.identifier, state: "OUTSIDE")
         }
     }
@@ -216,6 +244,8 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         }
 
         Task { @MainActor in
+            let storeName = self.displayName(for: region.identifier)
+            MemberPricePresence.setInside(state == .inside, storeName: storeName)
             self.setRegionState(identifier: region.identifier, state: stateText)
             self.lastStateCheck = "Senest opdateret \(Self.timestamp())"
         }
