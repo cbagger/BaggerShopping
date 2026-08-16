@@ -314,6 +314,10 @@ private struct OfferCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
+                    if offer.memberPrice != nil {
+                        MemberPriceBadge(offer: offer, compact: true)
+                    }
+
                     if let from = offer.validFrom, let until = offer.validUntil {
                         Text("Gyldig \(from)–\(until)")
                             .font(.caption2)

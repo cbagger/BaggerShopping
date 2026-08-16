@@ -15,7 +15,9 @@ import time
 from typing import Iterable, Sequence
 
 from . import flyer_intelligence as _fi
+from . import meny_flyer as _mf
 from . import product_identity as _pi
+from .member_pricing import detect_member_pricing
 from .variant_extractor_v2 import extract_variants_v2 as _extract_variants_v2
 
 
@@ -136,6 +138,38 @@ _fi.couple_offers = _recall_first_couple_offers
 # Patching the shared function here makes Tjek/Schwarz adapters use v2 without
 # changing their provider-specific geometry and source handling.
 _fi.extract_variants = _extract_variants_v2
+
+
+# Keep membership pricing as presentation metadata instead of mutating the
+# provider-specific Offer objects. The source price may itself be a club price;
+# the public payload must then restore the ordinary shelf price as `price` and
+# expose the club price separately. Detection is text/structure-only and is
+# intentionally independent of retailer-specific image colours or OCR vision.
+_original_offer_model_dump = _mf.Offer.model_dump
+
+
+def _member_price_aware_offer_model_dump(self, *args, **kwargs):
+    payload = _original_offer_model_dump(self, *args, **kwargs)
+    text = " ".join(filter(None, (self.product_name, self.raw_text)))
+    pricing = detect_member_pricing(
+        retailer=self.retailer,
+        price=self.price,
+        normal_price=self.normal_price,
+        text=text,
+    )
+    if pricing is None:
+        return payload
+
+    payload["price"] = pricing.ordinary_price
+    payload["member_price"] = pricing.member_price
+    payload["member_price_label"] = pricing.label
+    payload["member_price_app"] = pricing.app_name
+    payload["member_price_requires_activation"] = pricing.requires_activation
+    payload["member_price_source"] = pricing.source
+    return payload
+
+
+_mf.Offer.model_dump = _member_price_aware_offer_model_dump
 
 
 # Product identity is used hundreds of times while one Tilbud search is ranked.

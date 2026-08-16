@@ -16,7 +16,7 @@ struct OfferPriceGuard {
         knownOffers: [GroceryOffer] = []
     ) async -> [GroceryOffer] {
         await OfferAddActivity.shared.beginChecking()
-        guard selected.price != nil else {
+        guard selected.price != nil || selected.memberPrice != nil else {
             await OfferAddActivity.shared.beginAdding()
             return []
         }
@@ -70,18 +70,20 @@ struct OfferPriceGuard {
         for itemName: String,
         than selected: GroceryOffer
     ) -> [GroceryOffer] {
-        guard let selectedPrice = selected.price else { return [] }
+        // The ordinary shelf price remains the selected offer's baseline. If
+        // the selected offer has no ordinary price, its known membership price
+        // is the only honest baseline available. Candidate membership prices
+        // are allowed to win, but the UI marks them explicitly as membership
+        // prices before the user chooses one.
+        guard let selectedPrice = selected.price ?? selected.memberPrice else { return [] }
 
         // Variant/package weights are not reliable enough yet to compare on
         // kr./kg, kr./l or parsed quantities. First prove that the candidate is
-        // the same concrete item/variant, then compare the shelf price only.
-        // This intentionally lets an exact Bakkedal 12 kr. offer beat the same
-        // Bakkedal variant at 14,95 kr. even if their parsed weight metadata is
-        // missing, ranged or contradictory.
+        // the same concrete item/variant, then compare listed shelf prices only.
         return sortedUnique(offers.filter { candidate in
             guard candidate.id != selected.id || candidate.publicationID != selected.publicationID,
                   candidate.matchingSelectedItemName(itemName) != nil,
-                  let candidatePrice = candidate.price else {
+                  let candidatePrice = candidate.lowestListedPrice else {
                 return false
             }
             return candidatePrice < selectedPrice
@@ -98,8 +100,8 @@ struct OfferPriceGuard {
             }
             .values
             .sorted {
-                let leftPrice = $0.price ?? .greatestFiniteMagnitude
-                let rightPrice = $1.price ?? .greatestFiniteMagnitude
+                let leftPrice = $0.lowestListedPrice ?? .greatestFiniteMagnitude
+                let rightPrice = $1.lowestListedPrice ?? .greatestFiniteMagnitude
                 if leftPrice != rightPrice { return leftPrice < rightPrice }
                 return $0.retailer.localizedCaseInsensitiveCompare($1.retailer) == .orderedAscending
             }

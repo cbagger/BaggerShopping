@@ -560,6 +560,11 @@ struct ShoppingListView: View {
                     .buttonStyle(.plain)
                     .disabled(model.offerMetadataReference(for: item)?.offerID == nil)
 
+                    if let offer = model.offerMetadataReference(for: item)?.offerSnapshot,
+                       offer.memberPrice != nil {
+                        MemberPriceBadge(offer: offer, compact: true)
+                    }
+
                     if !item.checked, let status = offerStatus(for: item) {
                         Label(status.label, systemImage: status.icon)
                             .font(.caption2.weight(.semibold))
