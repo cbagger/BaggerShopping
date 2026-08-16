@@ -69,8 +69,7 @@ struct FlyersView: View {
             publications = fetched
             FlyerPublicationCache.save(fetched)
             openRequestedFlyerIfAvailable()
-        }
-        catch {
+        } catch {
             if publications.isEmpty { errorMessage = error.localizedDescription }
         }
     }
@@ -249,7 +248,8 @@ private struct NativeFlyerReader: View {
                     .overlay(alignment: .topTrailing) {
                         Text("\(page) / \(publication.pageImageURLs.count)")
                             .font(.caption.bold())
-                            .padding(.horizontal, 10).padding(.vertical, 6)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
                             .background(.ultraThinMaterial, in: Capsule())
                             .padding(12)
                     }
@@ -257,16 +257,31 @@ private struct NativeFlyerReader: View {
             }
             .navigationTitle(publication.retailer)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Luk", systemImage: "xmark") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Luk", systemImage: "xmark") { dismiss() }
+                }
+            }
             .task { await loadOffers() }
             .sheet(item: $pendingOffer) { offer in
-                StructuredVariantPickerView(offer: offer, selectionVerb: "Tilføj") { name in add(name, from: offer); pendingOffer = nil }
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
+                StructuredVariantPickerView(offer: offer, selectionVerb: "Tilføj") { name in
+                    add(name, from: offer)
+                    pendingOffer = nil
+                }
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
             }
-            .alert("Kunne ikke hente avisens varer", isPresented: Binding(
-                get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } }
-            )) { Button("OK") { errorMessage = nil } } message: { Text(errorMessage ?? "") }
+            .alert(
+                "Kunne ikke hente avisens varer",
+                isPresented: Binding(
+                    get: { errorMessage != nil },
+                    set: { if !$0 { errorMessage = nil } }
+                )
+            ) {
+                Button("OK") { errorMessage = nil }
+            } message: {
+                Text(errorMessage ?? "")
+            }
             .sheet(item: $pendingCheaperAddition) { pending in
                 CheaperOffersSheet(pending: pending) { offer in
                     addWithoutPriceCheck(pending.itemName, from: offer)
@@ -305,14 +320,19 @@ private struct NativeFlyerReader: View {
 
     private func choose(_ offer: GroceryOffer) {
         switch offer.choiceState {
-        case .direct(let variant): add(offer.shoppingItemName(variant: variant), from: offer)
-        case .variants, .unspecified: pendingOffer = offer
+        case .direct(let variant):
+            add(offer.shoppingItemName(variant: variant), from: offer)
+        case .variants, .unspecified:
+            pendingOffer = offer
         }
     }
 
     private func add(_ name: String, from selectedOffer: GroceryOffer? = nil) {
-        let offer = selectedOffer ?? pendingOffer ?? offers.first { $0.variants.contains(where: { $0.name == name }) }
+        let offer = selectedOffer
+            ?? pendingOffer
+            ?? offers.first { $0.variants.contains(where: { $0.name == name }) }
         guard let offer else { return }
+
         Task {
             let cheaper = await OfferPriceGuard().cheaperOffers(for: name, than: offer)
             if !cheaper.isEmpty {
@@ -386,6 +406,7 @@ private struct FlyerPageCanvas: View {
     let select: (GroceryOffer) -> Void
     let report: (GroceryOffer, String) -> Void
     let size: CGSize
+    let hotspotsEnabled: Bool
 
     var body: some View {
         ZStack {
@@ -397,10 +418,16 @@ private struct FlyerPageCanvas: View {
                         .resizable()
                         .scaledToFit()
                         .frame(width: size.width, height: size.height)
-                        .overlay { hotspots(in: size) }
+                        .overlay {
+                            hotspots(in: size)
+                                .allowsHitTesting(hotspotsEnabled)
+                        }
                 } else if phase.error != nil {
-                    ContentUnavailableView("Siden kunne ikke hentes", systemImage: "photo.badge.exclamationmark")
-                        .foregroundStyle(.white)
+                    ContentUnavailableView(
+                        "Siden kunne ikke hentes",
+                        systemImage: "photo.badge.exclamationmark"
+                    )
+                    .foregroundStyle(.white)
                 } else {
                     ProgressView()
                         .tint(.white)
@@ -411,17 +438,51 @@ private struct FlyerPageCanvas: View {
         .frame(width: size.width, height: size.height)
     }
 
+    func withHotspotsEnabled(_ enabled: Bool) -> FlyerPageCanvas {
+        FlyerPageCanvas(
+            url: url,
+            offers: offers,
+            select: select,
+            report: report,
+            size: size,
+            hotspotsEnabled: enabled
+        )
+    }
+
+    func hotspotHitRects() -> [CGRect] {
+        let layout = hotspotLayout(in: size)
+        let buttonSize: CGFloat = 44
+
+        return offers.compactMap { offer in
+            guard let x = offer.hotspotX,
+                  let y = offer.hotspotY,
+                  let w = offer.hotspotWidth,
+                  let h = offer.hotspotHeight else { return nil }
+
+            let centerX = layout.offsetX + layout.width * (x + w / 2)
+            let centerY = layout.offsetY + layout.height * (y + h / 2)
+            return CGRect(
+                x: centerX - buttonSize / 2,
+                y: centerY - buttonSize / 2,
+                width: buttonSize,
+                height: buttonSize
+            )
+        }
+    }
+
     @ViewBuilder private func hotspots(in container: CGSize) -> some View {
-        let ratio = 694.0 / 1007.0
-        let width = min(container.width, container.height * ratio)
-        let height = width / ratio
-        let offsetX = (container.width - width) / 2
-        let offsetY = (container.height - height) / 2
+        let layout = hotspotLayout(in: container)
+        let buttonSize: CGFloat = 44
 
         ZStack(alignment: .topLeading) {
             ForEach(offers) { offer in
-                if let x = offer.hotspotX, let y = offer.hotspotY,
-                   let w = offer.hotspotWidth, let h = offer.hotspotHeight {
+                if let x = offer.hotspotX,
+                   let y = offer.hotspotY,
+                   let w = offer.hotspotWidth,
+                   let h = offer.hotspotHeight {
+                    let centerX = layout.offsetX + layout.width * (x + w / 2)
+                    let centerY = layout.offsetY + layout.height * (y + h / 2)
+
                     Button { select(offer) } label: {
                         Image(systemName: "plus")
                             .font(.caption.bold())
@@ -433,18 +494,29 @@ private struct FlyerPageCanvas: View {
                                     : Color.orange.opacity(0.90),
                                 in: Circle()
                             )
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .frame(width: buttonSize, height: buttonSize)
                             .contentShape(Rectangle())
                     }
-                    .frame(width: max(44, width * w), height: max(44, height * h))
-                    .offset(x: offsetX + width * x, y: offsetY + height * y)
+                    .buttonStyle(.plain)
+                    .frame(width: buttonSize, height: buttonSize)
+                    .offset(
+                        x: centerX - buttonSize / 2,
+                        y: centerY - buttonSize / 2
+                    )
                     .accessibilityLabel("Tilføj \(offer.productName)")
-                    .accessibilityValue(offer.hotspotConfidence >= 0.75 ? "Sikker placering" : "Usikker placering")
+                    .accessibilityValue(
+                        offer.hotspotConfidence >= 0.75
+                            ? "Sikker placering"
+                            : "Usikker placering"
+                    )
                     .contextMenu {
                         Button("Rapportér forkert placering", systemImage: "scope") {
                             report(offer, "wrong_position")
                         }
-                        Button("Rapportér forkerte varianter", systemImage: "square.stack.3d.up.slash") {
+                        Button(
+                            "Rapportér forkerte varianter",
+                            systemImage: "square.stack.3d.up.slash"
+                        ) {
                             report(offer, "wrong_variants")
                         }
                     }
@@ -452,6 +524,23 @@ private struct FlyerPageCanvas: View {
             }
         }
         .frame(width: container.width, height: container.height, alignment: .topLeading)
+    }
+
+    private func hotspotLayout(in container: CGSize) -> (
+        width: CGFloat,
+        height: CGFloat,
+        offsetX: CGFloat,
+        offsetY: CGFloat
+    ) {
+        let ratio = 694.0 / 1007.0
+        let width = min(container.width, container.height * ratio)
+        let height = width / ratio
+        return (
+            width,
+            height,
+            (container.width - width) / 2,
+            (container.height - height) / 2
+        )
     }
 }
 
@@ -469,7 +558,8 @@ private struct ZoomableFlyerPage: UIViewRepresentable {
                 offers: offers,
                 select: select,
                 report: report,
-                size: size
+                size: size,
+                hotspotsEnabled: true
             )
         )
     }
@@ -485,7 +575,11 @@ private struct ZoomableFlyerPage: UIViewRepresentable {
         scrollView.backgroundColor = .black
         scrollView.contentInsetAdjustmentBehavior = .never
         scrollView.clipsToBounds = true
+        scrollView.isMultipleTouchEnabled = true
+        scrollView.delaysContentTouches = true
+        scrollView.canCancelContentTouches = true
         scrollView.panGestureRecognizer.isEnabled = false
+        scrollView.pinchGestureRecognizer?.cancelsTouchesInView = true
 
         let hostedView = context.coordinator.hostingController.view!
         hostedView.backgroundColor = .clear
@@ -498,7 +592,21 @@ private struct ZoomableFlyerPage: UIViewRepresentable {
             action: #selector(Coordinator.handleDoubleTap(_:))
         )
         doubleTap.numberOfTapsRequired = 2
+        doubleTap.cancelsTouchesInView = true
+        doubleTap.delegate = context.coordinator
         scrollView.addGestureRecognizer(doubleTap)
+        context.coordinator.doubleTapGesture = doubleTap
+
+        let twoFingerGuard = UILongPressGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleTwoFingerGuard(_:))
+        )
+        twoFingerGuard.minimumPressDuration = 0
+        twoFingerGuard.numberOfTouchesRequired = 2
+        twoFingerGuard.cancelsTouchesInView = true
+        twoFingerGuard.delegate = context.coordinator
+        scrollView.addGestureRecognizer(twoFingerGuard)
+        context.coordinator.twoFingerGuard = twoFingerGuard
         context.coordinator.scrollView = scrollView
 
         return scrollView
@@ -516,7 +624,8 @@ private struct ZoomableFlyerPage: UIViewRepresentable {
                 offers: offers,
                 select: select,
                 report: report,
-                size: size
+                size: size,
+                hotspotsEnabled: true
             )
         )
 
@@ -525,38 +634,93 @@ private struct ZoomableFlyerPage: UIViewRepresentable {
         scrollView.panGestureRecognizer.isEnabled = scrollView.zoomScale > 1.01
     }
 
-    final class Coordinator: NSObject, UIScrollViewDelegate {
+    final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate {
         let hostingController: UIHostingController<FlyerPageCanvas>
         weak var scrollView: UIScrollView?
+        weak var doubleTapGesture: UITapGestureRecognizer?
+        weak var twoFingerGuard: UILongPressGestureRecognizer?
         var canvasSize: CGSize
+        private var canvas: FlyerPageCanvas
+        private var hotspotsEnabled = true
 
         init(canvas: FlyerPageCanvas) {
-            hostingController = UIHostingController(rootView: canvas)
-            canvasSize = canvas.size
+            self.canvas = canvas
+            self.canvasSize = canvas.size
+            self.hostingController = UIHostingController(
+                rootView: canvas.withHotspotsEnabled(true)
+            )
+            super.init()
         }
 
         func update(canvas: FlyerPageCanvas) {
+            self.canvas = canvas
             canvasSize = canvas.size
-            hostingController.rootView = canvas
+            renderCanvas()
         }
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? {
             hostingController.view
         }
 
-        func scrollViewDidZoom(_ scrollView: UIScrollView) {
-            scrollView.panGestureRecognizer.isEnabled = scrollView.zoomScale > 1.01
+        func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) {
+            setHotspotsEnabled(false)
+            scrollView.panGestureRecognizer.isEnabled = true
         }
 
-        func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
-            scrollView.panGestureRecognizer.isEnabled = scale > 1.01
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            let zoomed = scrollView.zoomScale > 1.01
+            if zoomed {
+                setHotspotsEnabled(false)
+            }
+            scrollView.panGestureRecognizer.isEnabled = zoomed
+        }
+
+        func scrollViewDidEndZooming(
+            _ scrollView: UIScrollView,
+            with view: UIView?,
+            atScale scale: CGFloat
+        ) {
+            let zoomed = scale > 1.01
+            scrollView.panGestureRecognizer.isEnabled = zoomed
+            setHotspotsEnabled(!zoomed)
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldReceive touch: UITouch
+        ) -> Bool {
+            guard gestureRecognizer === doubleTapGesture else { return true }
+            let point = touch.location(in: hostingController.view)
+            return !canvas.hotspotHitRects().contains(where: { $0.contains(point) })
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            guard let twoFingerGuard else { return false }
+            return gestureRecognizer === twoFingerGuard
+                || otherGestureRecognizer === twoFingerGuard
+        }
+
+        @objc func handleTwoFingerGuard(_ gesture: UILongPressGestureRecognizer) {
+            switch gesture.state {
+            case .began, .changed:
+                setHotspotsEnabled(false)
+            case .ended, .cancelled, .failed:
+                reenableHotspotsIfAtRest(after: 0.08)
+            default:
+                break
+            }
         }
 
         @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
             guard let scrollView else { return }
+            setHotspotsEnabled(false)
 
             if scrollView.zoomScale > scrollView.minimumZoomScale + 0.01 {
                 scrollView.setZoomScale(scrollView.minimumZoomScale, animated: true)
+                reenableHotspotsIfAtRest(after: 0.35)
                 return
             }
 
@@ -565,13 +729,35 @@ private struct ZoomableFlyerPage: UIViewRepresentable {
             let width = scrollView.bounds.width / targetScale
             let height = scrollView.bounds.height / targetScale
             let zoomRect = CGRect(
-                x: point.x - (width / 2),
-                y: point.y - (height / 2),
+                x: point.x - width / 2,
+                y: point.y - height / 2,
                 width: width,
                 height: height
             )
             scrollView.panGestureRecognizer.isEnabled = true
             scrollView.zoom(to: zoomRect, animated: true)
+        }
+
+        private func setHotspotsEnabled(_ enabled: Bool) {
+            guard hotspotsEnabled != enabled else { return }
+            hotspotsEnabled = enabled
+            renderCanvas()
+        }
+
+        private func renderCanvas() {
+            hostingController.rootView = canvas.withHotspotsEnabled(hotspotsEnabled)
+        }
+
+        private func reenableHotspotsIfAtRest(after delay: TimeInterval) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self,
+                      let scrollView = self.scrollView,
+                      scrollView.zoomScale <= scrollView.minimumZoomScale + 0.01,
+                      scrollView.pinchGestureRecognizer?.state != .began,
+                      scrollView.pinchGestureRecognizer?.state != .changed else { return }
+                self.setHotspotsEnabled(true)
+                scrollView.panGestureRecognizer.isEnabled = false
+            }
         }
     }
 }
