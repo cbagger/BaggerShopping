@@ -13,7 +13,7 @@ struct OfferPreviewSheet: View {
                     .background(Color(uiColor: .secondarySystemBackground))
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text(offer.productName).font(.title3.bold())
                     HStack {
                         Text(offer.retailer)
@@ -25,6 +25,10 @@ struct OfferPreviewSheet: View {
                         }
                     }
                     .foregroundStyle(.secondary)
+
+                    if offer.memberPrice != nil {
+                        MemberPriceBadge(offer: offer)
+                    }
                 }
 
                 Text("Tryk udenfor eller på Luk for at gå tilbage til tilbuddene.")
