@@ -48,7 +48,7 @@ final class MemberPriceTests: XCTestCase {
         XCTAssertEqual(result.first?.memberPrice, 15)
     }
 
-    func testGeofenceReminderUsesProgramNameOnlyForMatchingStoreItems() throws {
+    func testShoppingListReminderUsesProgramNameOnlyForMatchingStoreItems() throws {
         let offer = try decodeOffer(
             id: "lidl-member",
             retailer: "Lidl",
@@ -81,7 +81,7 @@ final class MemberPriceTests: XCTestCase {
         )!
 
         XCTAssertEqual(
-            MemberPriceGeofenceReminder.message(
+            MemberPriceReminder.message(
                 retailer: "Lidl",
                 storeItems: [item],
                 metadata: [metadata],
@@ -90,11 +90,49 @@ final class MemberPriceTests: XCTestCase {
             "Husk at aktivere tilbuddet i Lidl Plus."
         )
         XCTAssertNil(
-            MemberPriceGeofenceReminder.message(
+            MemberPriceReminder.message(
                 retailer: "MENY",
                 storeItems: [item],
                 metadata: [metadata],
                 now: now
+            )
+        )
+    }
+
+    func testMemberPriceReminderIsNeverAddedToGeofenceNotification() throws {
+        let offer = try decodeOffer(
+            id: "meny-member",
+            retailer: "MENY",
+            productName: "Pågen gifflar",
+            price: 16,
+            memberPrice: 9.95,
+            label: "MENY medlemspris",
+            app: "MENY-appen"
+        )
+        let metadata = OfferMetadataDTO(
+            itemName: "Pågen gifflar",
+            retailer: "MENY",
+            price: 16,
+            validFrom: "14.08.2026",
+            validUntil: "20.08.2026",
+            offerID: offer.id,
+            publicationID: offer.publicationID,
+            matchedItemName: "Pågen gifflar",
+            offerSnapshot: offer
+        )
+        let item = ShoppingItem(
+            id: "item-1",
+            name: "Pågen gifflar",
+            checked: false,
+            quantity: nil,
+            unit: nil
+        )
+
+        XCTAssertNil(
+            MemberPriceGeofenceReminder.message(
+                retailer: "MENY",
+                storeItems: [item],
+                metadata: [metadata]
             )
         )
     }

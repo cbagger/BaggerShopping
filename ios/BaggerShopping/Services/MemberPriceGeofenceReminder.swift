@@ -1,6 +1,9 @@
 import Foundation
 
-enum MemberPriceGeofenceReminder {
+/// Builds the activation reminder shown inside the shopping list under a store.
+/// This is deliberately presentation logic for the in-app shopping experience,
+/// not notification copy.
+enum MemberPriceReminder {
     static func message(
         retailer: String,
         storeItems: [ShoppingItem],
@@ -76,5 +79,23 @@ enum MemberPriceGeofenceReminder {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(whereSeparator: { $0.isWhitespace })
             .joined(separator: " ")
+    }
+}
+
+/// Kept as a compatibility shim for the existing geofence call site. Member
+/// price activation reminders must never be appended to arrival notifications;
+/// they are shown persistently under the retailer heading in the shopping list.
+enum MemberPriceGeofenceReminder {
+    static func message(
+        retailer: String,
+        storeItems: [ShoppingItem],
+        metadata: [OfferMetadataDTO],
+        now: Date = Date()
+    ) -> String? {
+        _ = retailer
+        _ = storeItems
+        _ = metadata
+        _ = now
+        return nil
     }
 }
