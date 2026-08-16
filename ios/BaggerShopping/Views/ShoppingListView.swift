@@ -478,8 +478,9 @@ struct ShoppingListView: View {
                 .padding(.vertical, 3)
                 .background(Color.primary.opacity(0.065), in: Capsule())
         }
-        .padding(.top, 1)
-        .padding(.bottom, 1)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 5)
+        .background(Color(uiColor: .systemGroupedBackground))
     }
 
     private func addNewItem() {

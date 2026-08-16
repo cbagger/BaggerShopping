@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct FlyersView: View {
     @EnvironmentObject private var navigation: AppNavigation
@@ -16,24 +17,38 @@ struct FlyersView: View {
                 } else if let errorMessage, publications.isEmpty {
                     ContentUnavailableView("Kunne ikke hente aviser", systemImage: "wifi.exclamationmark", description: Text(errorMessage))
                 } else {
-                    ScrollView {
-                        LazyVGrid(
-                            columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)],
-                            alignment: .leading,
-                            spacing: 24
-                        ) {
-                            ForEach(Array(publications.enumerated()), id: \.element.id) { _, publication in
-                                Button { selectedPublication = publication } label: {
-                                    FlyerCoverCard(publication: publication)
+                    GeometryReader { geometry in
+                        let horizontalPadding: CGFloat = 18
+                        let columnSpacing: CGFloat = 14
+                        let cardWidth = max(
+                            0,
+                            floor((geometry.size.width - (horizontalPadding * 2) - columnSpacing) / 2)
+                        )
+
+                        ScrollView {
+                            LazyVGrid(
+                                columns: [
+                                    GridItem(.fixed(cardWidth), spacing: columnSpacing, alignment: .top),
+                                    GridItem(.fixed(cardWidth), spacing: columnSpacing, alignment: .top)
+                                ],
+                                alignment: .center,
+                                spacing: 24
+                            ) {
+                                ForEach(Array(publications.enumerated()), id: \.element.id) { _, publication in
+                                    Button { selectedPublication = publication } label: {
+                                        FlyerCoverCard(publication: publication, width: cardWidth)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .frame(width: cardWidth)
                                 }
-                                .buttonStyle(.plain)
                             }
+                            .frame(maxWidth: .infinity)
+                            .padding(.horizontal, horizontalPadding)
+                            .padding(.vertical, 12)
+                            .padding(.bottom, 88)
                         }
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 12)
-                        .padding(.bottom, 88)
+                        .refreshable { await load() }
                     }
-                    .refreshable { await load() }
                 }
             }
             .navigationTitle("Aviser")
@@ -77,6 +92,7 @@ struct FlyersView: View {
 
 private struct FlyerCoverCard: View {
     let publication: OfferPublication
+    let width: CGFloat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -90,6 +106,8 @@ private struct FlyerCoverCard: View {
                             image
                                 .resizable()
                                 .scaledToFill()
+                                .frame(width: width, height: 240)
+                                .clipped()
                         } else if phase.error != nil {
                             Image(systemName: "newspaper")
                                 .font(.largeTitle)
@@ -104,10 +122,8 @@ private struct FlyerCoverCard: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: 240)
+            .frame(width: width, height: 240)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .clipped()
             .overlay {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .stroke(.black.opacity(0.08), lineWidth: 1)
@@ -119,33 +135,40 @@ private struct FlyerCoverCard: View {
                     .font(.headline)
                     .foregroundStyle(.primary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.82)
 
                 Spacer(minLength: 4)
 
-                Text(weekLabel)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if let weekLabel {
+                    Text(weekLabel)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
+            .frame(width: width)
 
             Label(expiryLabel, systemImage: "clock")
                 .font(.subheadline)
                 .foregroundStyle(expiryColor)
                 .lineLimit(1)
+                .minimumScaleFactor(0.82)
+                .frame(width: width, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(width: width, alignment: .leading)
+        .clipped()
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityHint("Åbner tilbudsavisen")
     }
 
-    private var weekLabel: String {
+    private var weekLabel: String? {
         let lowercased = publication.title.lowercased()
-        guard let range = lowercased.range(of: "uge") else { return publication.title }
+        guard let range = lowercased.range(of: "uge") else { return nil }
         let suffix = lowercased[range.upperBound...]
             .drop(while: { !$0.isNumber })
         let digits = suffix.prefix(while: { $0.isNumber })
-        guard digits.count >= 2 else { return publication.title }
+        guard !digits.isEmpty else { return nil }
         return "Uge \(digits.prefix(2))"
     }
 
@@ -344,16 +367,48 @@ private struct FlyerPage: View {
 
     var body: some View {
         GeometryReader { proxy in
+            ZoomableFlyerPage(
+                url: url,
+                offers: offers,
+                select: select,
+                report: report,
+                size: proxy.size
+            )
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .background(Color.black)
+        }
+    }
+}
+
+private struct FlyerPageCanvas: View {
+    let url: URL
+    let offers: [GroceryOffer]
+    let select: (GroceryOffer) -> Void
+    let report: (GroceryOffer, String) -> Void
+    let size: CGSize
+
+    var body: some View {
+        ZStack {
+            Color.black
+
             AsyncImage(url: url) { phase in
                 if let image = phase.image {
-                    image.resizable().scaledToFit()
-                        .overlay { hotspots(in: proxy.size) }
+                    image
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: size.width, height: size.height)
+                        .overlay { hotspots(in: size) }
                 } else if phase.error != nil {
                     ContentUnavailableView("Siden kunne ikke hentes", systemImage: "photo.badge.exclamationmark")
-                } else { ProgressView() }
+                        .foregroundStyle(.white)
+                } else {
+                    ProgressView()
+                        .tint(.white)
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(width: size.width, height: size.height)
         }
+        .frame(width: size.width, height: size.height)
     }
 
     @ViewBuilder private func hotspots(in container: CGSize) -> some View {
@@ -362,6 +417,7 @@ private struct FlyerPage: View {
         let height = width / ratio
         let offsetX = (container.width - width) / 2
         let offsetY = (container.height - height) / 2
+
         ZStack(alignment: .topLeading) {
             ForEach(offers) { offer in
                 if let x = offer.hotspotX, let y = offer.hotspotY,
@@ -380,21 +436,142 @@ private struct FlyerPage: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .contentShape(Rectangle())
                     }
-                        .frame(width: max(44, width * w), height: max(44, height * h))
-                        .offset(x: offsetX + width * x, y: offsetY + height * y)
-                        .accessibilityLabel("Tilføj \(offer.productName)")
-                        .accessibilityValue(offer.hotspotConfidence >= 0.75 ? "Sikker placering" : "Usikker placering")
-                        .contextMenu {
-                            Button("Rapportér forkert placering", systemImage: "scope") {
-                                report(offer, "wrong_position")
-                            }
-                            Button("Rapportér forkerte varianter", systemImage: "square.stack.3d.up.slash") {
-                                report(offer, "wrong_variants")
-                            }
+                    .frame(width: max(44, width * w), height: max(44, height * h))
+                    .offset(x: offsetX + width * x, y: offsetY + height * y)
+                    .accessibilityLabel("Tilføj \(offer.productName)")
+                    .accessibilityValue(offer.hotspotConfidence >= 0.75 ? "Sikker placering" : "Usikker placering")
+                    .contextMenu {
+                        Button("Rapportér forkert placering", systemImage: "scope") {
+                            report(offer, "wrong_position")
                         }
+                        Button("Rapportér forkerte varianter", systemImage: "square.stack.3d.up.slash") {
+                            report(offer, "wrong_variants")
+                        }
+                    }
                 }
             }
         }
         .frame(width: container.width, height: container.height, alignment: .topLeading)
+    }
+}
+
+private struct ZoomableFlyerPage: UIViewRepresentable {
+    let url: URL
+    let offers: [GroceryOffer]
+    let select: (GroceryOffer) -> Void
+    let report: (GroceryOffer, String) -> Void
+    let size: CGSize
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            canvas: FlyerPageCanvas(
+                url: url,
+                offers: offers,
+                select: select,
+                report: report,
+                size: size
+            )
+        )
+    }
+
+    func makeUIView(context: Context) -> UIScrollView {
+        let scrollView = UIScrollView(frame: .zero)
+        scrollView.delegate = context.coordinator
+        scrollView.minimumZoomScale = 1
+        scrollView.maximumZoomScale = 4
+        scrollView.bouncesZoom = true
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.backgroundColor = .black
+        scrollView.contentInsetAdjustmentBehavior = .never
+        scrollView.clipsToBounds = true
+        scrollView.panGestureRecognizer.isEnabled = false
+
+        let hostedView = context.coordinator.hostingController.view!
+        hostedView.backgroundColor = .clear
+        hostedView.frame = CGRect(origin: .zero, size: size)
+        scrollView.addSubview(hostedView)
+        scrollView.contentSize = size
+
+        let doubleTap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleDoubleTap(_:))
+        )
+        doubleTap.numberOfTapsRequired = 2
+        scrollView.addGestureRecognizer(doubleTap)
+        context.coordinator.scrollView = scrollView
+
+        return scrollView
+    }
+
+    func updateUIView(_ scrollView: UIScrollView, context: Context) {
+        let sizeChanged = context.coordinator.canvasSize != size
+        if sizeChanged {
+            scrollView.setZoomScale(1, animated: false)
+        }
+
+        context.coordinator.update(
+            canvas: FlyerPageCanvas(
+                url: url,
+                offers: offers,
+                select: select,
+                report: report,
+                size: size
+            )
+        )
+
+        context.coordinator.hostingController.view.frame = CGRect(origin: .zero, size: size)
+        scrollView.contentSize = size
+        scrollView.panGestureRecognizer.isEnabled = scrollView.zoomScale > 1.01
+    }
+
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        let hostingController: UIHostingController<FlyerPageCanvas>
+        weak var scrollView: UIScrollView?
+        var canvasSize: CGSize
+
+        init(canvas: FlyerPageCanvas) {
+            hostingController = UIHostingController(rootView: canvas)
+            canvasSize = canvas.size
+        }
+
+        func update(canvas: FlyerPageCanvas) {
+            canvasSize = canvas.size
+            hostingController.rootView = canvas
+        }
+
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? {
+            hostingController.view
+        }
+
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            scrollView.panGestureRecognizer.isEnabled = scrollView.zoomScale > 1.01
+        }
+
+        func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
+            scrollView.panGestureRecognizer.isEnabled = scale > 1.01
+        }
+
+        @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
+            guard let scrollView else { return }
+
+            if scrollView.zoomScale > scrollView.minimumZoomScale + 0.01 {
+                scrollView.setZoomScale(scrollView.minimumZoomScale, animated: true)
+                return
+            }
+
+            let targetScale = min(2.25, scrollView.maximumZoomScale)
+            let point = gesture.location(in: hostingController.view)
+            let width = scrollView.bounds.width / targetScale
+            let height = scrollView.bounds.height / targetScale
+            let zoomRect = CGRect(
+                x: point.x - (width / 2),
+                y: point.y - (height / 2),
+                width: width,
+                height: height
+            )
+            scrollView.panGestureRecognizer.isEnabled = true
+            scrollView.zoom(to: zoomRect, animated: true)
+        }
     }
 }
