@@ -11,7 +11,7 @@ from .member_pricing_v3 import (
     has_membership_signal,
 )
 
-_PRICE_TOKEN = r"\d{1,4}(?:[,.]\d{2}|\s*(?:[,.]|:)\s*[-–])?|\d{1,4}\s*kr\.?)"
+_PRICE_TOKEN = r"(?:\d{1,4}[,.]\d{2}|\d{1,4}\s*(?:[,.]|:)\s*[-–]|\d{1,4}\s*kr\.?|\d{1,4})"
 _EXPLICIT_ORDINARY_RE = re.compile(
     r"\b(?:pris\s+ikke[-\s]?medlem|ikke[-\s]?medlems?pris|normal[-\s]?pris|almindelig\s+pris)\b"
     rf"[^\d]{{0,18}}(?P<price>{_PRICE_TOKEN})",
