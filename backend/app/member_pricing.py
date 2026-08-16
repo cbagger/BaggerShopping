@@ -15,7 +15,7 @@ _MARKER_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 _PROGRAM_PATTERNS: tuple[tuple[re.Pattern[str], str, str | None], ...] = (
     (re.compile(r"\blidl\s*plus\b", re.IGNORECASE), "Lidl Plus", "Lidl Plus"),
-    (re.compile(r"\bnetto\s*(?:\+|plus)\b", re.IGNORECASE), "Netto+", "Netto+"),
+    (re.compile(r"\bnetto\s*(?:\+|plus\b)", re.IGNORECASE), "Netto+", "Netto+"),
     (re.compile(r"\b(?:føtex|foetex)\s*plus\b", re.IGNORECASE), "føtex Plus", "føtex Plus"),
     (re.compile(r"\bbilka\s*plus\b", re.IGNORECASE), "Bilka Plus", "Bilka Plus"),
     (re.compile(r"\bcoop\s*(?:medlem|plus|app)\b", re.IGNORECASE), "Coop medlemspris", "Coop"),
@@ -45,9 +45,8 @@ class MemberPricing:
 
 
 def _price_value(match: re.Match[str]) -> float | None:
-    raw = match.group(0).casefold().replace("kr", "").replace(".", ".").strip()
-    raw = raw.replace(",", ".").replace(".-", ".00").replace(".-", ".00")
-    raw = raw.replace("-", "0") if raw.endswith("-") else raw
+    raw = match.group(0).casefold().replace("kr", "").strip()
+    raw = raw.replace(",", ".").replace(".-", ".00")
     if match.group("space"):
         parts = match.group("space").split()
         raw = f"{parts[0]}.{parts[1]}"
@@ -70,9 +69,27 @@ def _program(text: str, retailer: str) -> tuple[str | None, str | None, re.Match
         if match := pattern.search(text):
             return label, app_name, match
 
+    # Only infer a programme name after a membership marker has been observed.
+    # The retailer itself is never enough to turn an ordinary offer into a club
+    # offer; this mapping merely gives an already-proven Plus price its proper
+    # customer-facing programme name.
     retailer_key = retailer.casefold().strip()
-    if retailer_key == "meny" and re.search(r"\bmedlems?[-\s]?pris\b", text, re.IGNORECASE):
-        return "MENY medlemspris", "MENY-appen", None
+    plus_match = re.search(r"\bplus[-\s]?pris\b", text, re.IGNORECASE)
+    if plus_match is not None:
+        plus_programs = {
+            "lidl": ("Lidl Plus", "Lidl Plus"),
+            "netto": ("Netto+", "Netto+"),
+            "føtex": ("føtex Plus", "føtex Plus"),
+            "foetex": ("føtex Plus", "føtex Plus"),
+            "bilka": ("Bilka Plus", "Bilka Plus"),
+        }
+        if retailer_key in plus_programs:
+            label, app_name = plus_programs[retailer_key]
+            return label, app_name, plus_match
+
+    member_match = re.search(r"\bmedlems?[-\s]?pris\b", text, re.IGNORECASE)
+    if retailer_key == "meny" and member_match is not None:
+        return "MENY medlemspris", "MENY-appen", member_match
     return None, None, None
 
 
