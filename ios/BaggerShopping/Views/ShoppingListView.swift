@@ -54,18 +54,6 @@ struct ShoppingListView: View {
         model.shoppingList?.items.filter(\.checked) ?? []
     }
 
-    private var offerReadyCount: Int {
-        activeItems.reduce(into: 0) { count, item in
-            if model.offerRetailer(for: item) != nil || !smartOffers.matches(for: item).isEmpty {
-                count += 1
-            }
-        }
-    }
-
-    private var retailerCount: Int {
-        Set(activeItems.compactMap { model.assignedRetailer(for: $0) }).count
-    }
-
     private var offerMatchSignature: String {
         activeItems
             .map { item in
@@ -209,8 +197,8 @@ struct ShoppingListView: View {
 
     private var shoppingListContent: some View {
         List {
-            overviewRow
             addItemRow
+            sortModeRow
 
             if sortByRetailer {
                 retailerFiltersRow
@@ -268,95 +256,6 @@ struct ShoppingListView: View {
         }
     }
 
-    private var overviewRow: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("\(activeItems.count)")
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-
-                Text(activeItems.count == 1 ? "vare mangler" : "varer mangler")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-
-                Spacer(minLength: 8)
-
-                if model.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel("Opdaterer indkøbslisten")
-                }
-            }
-
-            HStack(spacing: 8) {
-                if offerReadyCount > 0 {
-                    summaryPill(
-                        "\(offerReadyCount) med tilbud",
-                        icon: "tag.fill",
-                        foreground: Color.accentColor,
-                        background: Color.accentColor.opacity(0.11)
-                    )
-                }
-
-                if retailerCount > 0 {
-                    summaryPill(
-                        retailerCount == 1 ? "1 butik" : "\(retailerCount) butikker",
-                        icon: "storefront.fill",
-                        foreground: .secondary,
-                        background: Color.primary.opacity(0.055)
-                    )
-                }
-
-                if !checkedItems.isEmpty {
-                    summaryPill(
-                        "\(checkedItems.count) købt",
-                        icon: "checkmark.circle.fill",
-                        foreground: .secondary,
-                        background: Color.primary.opacity(0.055)
-                    )
-                }
-
-                Spacer(minLength: 0)
-            }
-
-            Divider()
-                .opacity(0.55)
-
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    sortByRetailer.toggle()
-                    if !sortByRetailer { selectedRetailerFilters.removeAll() }
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: sortByRetailer ? "storefront.fill" : "square.grid.2x2.fill")
-                        .foregroundStyle(Color.accentColor)
-                    Text(sortByRetailer ? "Viser efter butik" : "Viser efter kategori")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    Text("Skift")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.tertiary)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(16)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(Color.primary.opacity(0.055), lineWidth: 1)
-        }
-        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 6, trailing: 16))
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
-    }
-
     private var addItemRow: some View {
         HStack(spacing: 10) {
             Image(systemName: "plus")
@@ -387,7 +286,38 @@ struct ShoppingListView: View {
             Color(uiColor: .secondarySystemGroupedBackground),
             in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
-        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 10, trailing: 16))
+        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+
+    private var sortModeRow: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                sortByRetailer.toggle()
+                if !sortByRetailer { selectedRetailerFilters.removeAll() }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: sortByRetailer ? "storefront.fill" : "square.grid.2x2.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+
+                Text(sortByRetailer ? "Viser efter butik" : "Viser efter kategori")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+
+                Spacer()
+
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 2, leading: 20, bottom: sortByRetailer ? 3 : 10, trailing: 20))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
     }
@@ -528,20 +458,6 @@ struct ShoppingListView: View {
         }
         .padding(.top, 8)
         .padding(.bottom, 3)
-    }
-
-    private func summaryPill(
-        _ text: String,
-        icon: String,
-        foreground: Color,
-        background: Color
-    ) -> some View {
-        Label(text, systemImage: icon)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(foreground)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 6)
-            .background(background, in: Capsule())
     }
 
     private func addNewItem() {
