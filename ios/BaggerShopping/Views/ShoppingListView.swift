@@ -202,7 +202,8 @@ struct ShoppingListView: View {
                         sectionHeader(
                             group.retailer ?? "Uden butik",
                             count: group.count,
-                            icon: group.retailer == nil ? "shippingbox" : "storefront"
+                            icon: group.retailer == nil ? "shippingbox" : "storefront",
+                            reminder: memberPriceReminder(for: group)
                         )
                     }
                 }
@@ -462,21 +463,46 @@ struct ShoppingListView: View {
         }
     }
 
-    private func sectionHeader(_ title: String, count: Int, icon: String) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: icon)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(Color.accentColor)
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.primary.opacity(0.88))
-                .textCase(nil)
-            Text("\(count)")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(Color.secondary.opacity(0.92))
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.065), in: Capsule())
+    private func memberPriceReminder(for group: RetailerGroup) -> String? {
+        guard let retailer = group.retailer else { return nil }
+        let metadata = group.items.compactMap { model.offerMetadataReference(for: $0) }
+        return MemberPriceReminder.message(
+            retailer: retailer,
+            storeItems: group.items,
+            metadata: metadata
+        )
+    }
+
+    private func sectionHeader(
+        _ title: String,
+        count: Int,
+        icon: String,
+        reminder: String? = nil
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 7) {
+                Image(systemName: icon)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.primary.opacity(0.88))
+                    .textCase(nil)
+                Text("\(count)")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(Color.secondary.opacity(0.92))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Color.primary.opacity(0.065), in: Capsule())
+            }
+
+            if let reminder {
+                Label(reminder, systemImage: "tag.fill")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.red)
+                    .textCase(nil)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 5)
