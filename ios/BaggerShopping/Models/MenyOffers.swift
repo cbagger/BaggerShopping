@@ -54,6 +54,11 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
     let brand: String?
     let price: Double?
     let normalPrice: Double?
+    let memberPrice: Double?
+    let memberPriceLabel: String?
+    let memberPriceApp: String?
+    let memberPriceRequiresActivation: Bool
+    let memberPriceSource: String?
     let quantity: Double?
     let unit: String?
     let unitPrice: String?
@@ -86,6 +91,11 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         case validUntil = "valid_until"
         case productName = "product_name"
         case normalPrice = "normal_price"
+        case memberPrice = "member_price"
+        case memberPriceLabel = "member_price_label"
+        case memberPriceApp = "member_price_app"
+        case memberPriceRequiresActivation = "member_price_requires_activation"
+        case memberPriceSource = "member_price_source"
         case unitPrice = "unit_price"
         case discountPercent = "discount_percent"
         case imageURL = "image_url"
@@ -121,6 +131,11 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         brand = try values.decodeIfPresent(String.self, forKey: .brand)
         price = try values.decodeIfPresent(Double.self, forKey: .price)
         normalPrice = try values.decodeIfPresent(Double.self, forKey: .normalPrice)
+        memberPrice = try values.decodeIfPresent(Double.self, forKey: .memberPrice)
+        memberPriceLabel = try values.decodeIfPresent(String.self, forKey: .memberPriceLabel)
+        memberPriceApp = try values.decodeIfPresent(String.self, forKey: .memberPriceApp)
+        memberPriceRequiresActivation = try values.decodeIfPresent(Bool.self, forKey: .memberPriceRequiresActivation) ?? false
+        memberPriceSource = try values.decodeIfPresent(String.self, forKey: .memberPriceSource)
         quantity = try values.decodeIfPresent(Double.self, forKey: .quantity)
         unit = try values.decodeIfPresent(String.self, forKey: .unit)
         // Parsed unit-price data is intentionally hidden for now. Source flyers
@@ -147,6 +162,21 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         qualitySource = try values.decodeIfPresent(String.self, forKey: .qualitySource) ?? "unknown"
         qualityIssues = try values.decodeIfPresent([String].self, forKey: .qualityIssues) ?? []
         qualitySignals = try values.decodeIfPresent([String].self, forKey: .qualitySignals) ?? []
+    }
+
+    var memberPriceDisplayLabel: String {
+        let label = memberPriceLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return label.isEmpty ? "Medlemspris" : label
+    }
+
+    var lowestListedPrice: Double? {
+        [price, memberPrice].compactMap { $0 }.min()
+    }
+
+    var lowestListedPriceRequiresMembership: Bool {
+        guard let memberPrice else { return false }
+        guard let price else { return true }
+        return memberPrice < price
     }
 }
 
