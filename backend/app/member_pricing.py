@@ -46,16 +46,27 @@ def _number(value: str) -> float | None:
     return round(number, 2) if 0 < number <= 10_000 else None
 
 
-def _program(text: str) -> tuple[str, str | None]:
+def _program(text: str, retailer: str) -> tuple[str, str | None]:
     for pattern, label, app_name in _PROGRAMS:
         if pattern.search(text):
             return label, app_name
+
+    retailer_key = retailer.casefold().strip()
     if re.search(r"\bapp[-\s_]?pris\b", text, re.IGNORECASE):
         return "App-pris", None
     if re.search(r"\bplus[-\s_]?pris\b", text, re.IGNORECASE):
-        return "Pluspris", None
+        known = {
+            "lidl": ("Lidl Plus", "Lidl Plus"),
+            "netto": ("Netto+", "Netto+"),
+            "føtex": ("føtex Plus", "føtex Plus"),
+            "foetex": ("føtex Plus", "føtex Plus"),
+            "bilka": ("Bilka Plus", "Bilka Plus"),
+        }
+        return known.get(retailer_key, ("Pluspris", None))
     if re.search(r"\b(?:kundeklub|klub)[-\s_]?pris\b", text, re.IGNORECASE):
         return "Kundeklubpris", None
+    if retailer_key == "meny" and re.search(r"\bmedlems?[-\s_]?pris\b", text, re.IGNORECASE):
+        return "MENY medlemspris", "MENY-appen"
     return "Medlemspris", None
 
 
@@ -66,7 +77,6 @@ def _explicit_fallback(
     normal_price: float | None,
     text: str,
 ) -> MemberPricing | None:
-    del retailer
     # Tagged page context is deliberately only review evidence. A neighbouring
     # advert must never be rescued into a badge by this fallback.
     if "[kurv-page-context]" in text:
@@ -85,15 +95,13 @@ def _explicit_fallback(
             ordinary = candidate
     if ordinary is None and price is not None and price > member_price + 0.005:
         # Only trust the provider value when it is plausible as a product price.
-        # Very large references (membership fee/unit price) stay unresolved and
-        # are sent to Luna by the gate instead of being shown to the user.
         if not (member_price >= 5 and price > member_price * 4 and price - member_price > 60):
             ordinary = round(price, 2)
     if ordinary is None and normal_price is not None and normal_price > member_price + 0.005:
         if not (member_price >= 5 and normal_price > member_price * 4 and normal_price - member_price > 60):
             ordinary = round(normal_price, 2)
 
-    label, app_name = _program(text)
+    label, app_name = _program(text, retailer)
     return MemberPricing(
         ordinary_price=ordinary,
         member_price=member_price,
@@ -141,7 +149,7 @@ def detect_member_pricing(
             ordinary = explicit
 
     label, app_name = result.label, result.app_name
-    normalized_label, normalized_app = _program(text or "")
+    normalized_label, normalized_app = _program(text or "", retailer)
     if normalized_label != "Medlemspris" or normalized_app is not None:
         label, app_name = normalized_label, normalized_app
 
