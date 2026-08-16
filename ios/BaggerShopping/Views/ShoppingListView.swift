@@ -145,20 +145,6 @@ struct ShoppingListView: View {
             }
             .navigationTitle("Indkøbsliste")
             .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        Task {
-                            await model.refresh()
-                            await model.syncSharedCategories()
-                            await smartOffers.refresh(items: activeItems, model: model)
-                        }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                    .disabled(!model.tokenConfigured || model.isLoading)
-                }
-            }
             .sheet(item: $renameTarget) { target in
                 RenameShoppingItemView(item: target.item)
                     .environmentObject(model)
@@ -247,6 +233,7 @@ struct ShoppingListView: View {
             }
         }
         .listStyle(.plain)
+        .listSectionSpacing(.compact)
         .scrollContentBackground(.hidden)
         .background(Color(uiColor: .systemGroupedBackground))
         .refreshable {
@@ -281,43 +268,28 @@ struct ShoppingListView: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 11)
+        .padding(.vertical, 10)
         .background(
             Color(uiColor: .secondarySystemGroupedBackground),
             in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
-        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 3, trailing: 16))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
     }
 
     private var sortModeRow: some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                sortByRetailer.toggle()
-                if !sortByRetailer { selectedRetailerFilters.removeAll() }
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: sortByRetailer ? "storefront.fill" : "square.grid.2x2.fill")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
-
-                Text(sortByRetailer ? "Viser efter butik" : "Viser efter kategori")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-
-                Spacer()
-
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.horizontal, 4)
-            .contentShape(Rectangle())
+        Picker("Vis liste efter", selection: $sortByRetailer) {
+            Text("Kategori").tag(false)
+            Text("Butik").tag(true)
         }
-        .buttonStyle(.plain)
-        .listRowInsets(EdgeInsets(top: 2, leading: 20, bottom: sortByRetailer ? 3 : 10, trailing: 20))
+        .pickerStyle(.segmented)
+        .onChange(of: sortByRetailer) { _, byRetailer in
+            if !byRetailer {
+                selectedRetailerFilters.removeAll()
+            }
+        }
+        .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: sortByRetailer ? 3 : 6, trailing: 16))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
     }
@@ -346,7 +318,7 @@ struct ShoppingListView: View {
             }
             .padding(.horizontal, 1)
         }
-        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 0))
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 5, trailing: 0))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
     }
@@ -370,7 +342,7 @@ struct ShoppingListView: View {
             Color(uiColor: .secondarySystemGroupedBackground),
             in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
-        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 6, trailing: 16))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
     }
@@ -404,12 +376,12 @@ struct ShoppingListView: View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.vertical, 11)
             .background(
                 Color(uiColor: .secondarySystemGroupedBackground),
                 in: RoundedRectangle(cornerRadius: 16, style: .continuous)
             )
-            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: showCheckedItems ? 4 : 18, trailing: 16))
+            .listRowInsets(EdgeInsets(top: 7, leading: 16, bottom: showCheckedItems ? 3 : 14, trailing: 16))
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
 
@@ -429,11 +401,11 @@ struct ShoppingListView: View {
                             .font(.subheadline.weight(.semibold))
                         Spacer()
                     }
-                    .padding(.vertical, 11)
+                    .padding(.vertical, 10)
                 }
                 .buttonStyle(.plain)
                 .background(Color.red.opacity(0.07), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .listRowInsets(EdgeInsets(top: 3, leading: 16, bottom: 18, trailing: 16))
+                .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 14, trailing: 16))
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
             }
@@ -456,8 +428,8 @@ struct ShoppingListView: View {
                 .padding(.vertical, 3)
                 .background(Color.primary.opacity(0.055), in: Capsule())
         }
-        .padding(.top, 8)
-        .padding(.bottom, 3)
+        .padding(.top, 4)
+        .padding(.bottom, 2)
     }
 
     private func addNewItem() {
@@ -505,7 +477,7 @@ struct ShoppingListView: View {
             .disabled(item.id == nil)
             .accessibilityLabel(item.checked ? "Markér som ikke købt" : "Markér som købt")
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 5) {
                 Text(item.name)
                     .font(.body.weight(item.checked ? .regular : .semibold))
                     .strikethrough(item.checked)
@@ -572,11 +544,11 @@ struct ShoppingListView: View {
                                 matches.count == 1 ? "1 tilbud" : "\(matches.count) tilbud",
                                 systemImage: "tag"
                             )
-                            .font(.caption.weight(.semibold))
+                            .font(.caption2.weight(.semibold))
                             .foregroundStyle(Color.accentColor)
                             .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(Color.accentColor.opacity(0.08), in: Capsule())
+                            .padding(.vertical, 4)
+                            .background(Color.accentColor.opacity(0.045), in: Capsule())
                         }
                         .buttonStyle(.plain)
                     }
@@ -659,7 +631,7 @@ struct ShoppingListView: View {
             }
         }
         .padding(.horizontal, 13)
-        .padding(.vertical, 11)
+        .padding(.vertical, 9)
         .background(
             Color(uiColor: .secondarySystemGroupedBackground),
             in: RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -688,7 +660,7 @@ struct ShoppingListView: View {
                 }
             }
         }
-        .listRowInsets(EdgeInsets(top: 3, leading: 16, bottom: 3, trailing: 16))
+        .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
     }
