@@ -18,6 +18,11 @@ from . import flyer_intelligence as _fi
 from . import meny_flyer as _mf
 from . import product_identity as _pi
 from .member_pricing import detect_member_pricing
+from .member_pricing_sources import (
+    enrich_ipaper_offers,
+    enrich_schwarz_publication,
+    enrich_tjek_offers,
+)
 from .variant_extractor_v2 import extract_variants_v2 as _extract_variants_v2
 
 
@@ -140,11 +145,48 @@ _fi.couple_offers = _recall_first_couple_offers
 _fi.extract_variants = _extract_variants_v2
 
 
+# Membership price recognition needs the text surrounding the actual advert,
+# not a whole-page image recognizer. The provider adapters already carry page
+# text/OCR/structured metadata but historically discarded some of it before an
+# Offer reached the public API. Enrich only raw_text; hotspot geometry, variant
+# extraction and source prices remain untouched.
+_original_parse_enrichment_chunks = _mf.parse_enrichment_chunks
+
+
+def _member_context_parse_enrichment_chunks(publication, chunks):
+    offers = _original_parse_enrichment_chunks(publication, chunks)
+    return enrich_ipaper_offers(publication, offers)
+
+
+_mf.parse_enrichment_chunks = _member_context_parse_enrichment_chunks
+
+# Import after the shared iPaper/variant hooks above so flyer_adapters binds the
+# patched functions at module import time.
+from . import flyer_adapters as _fa  # noqa: E402
+
+_original_parse_tjek_hotspots = _fa.parse_tjek_hotspots
+_original_publication_from_schwarz = _fa._publication_from_schwarz
+
+
+def _member_context_parse_tjek_hotspots(publication, rows, offer_rows=None):
+    offers = _original_parse_tjek_hotspots(publication, rows, offer_rows)
+    return enrich_tjek_offers(offers, rows, offer_rows)
+
+
+def _member_context_publication_from_schwarz(payload, source, reader_url):
+    publication = _original_publication_from_schwarz(payload, source, reader_url)
+    return enrich_schwarz_publication(publication, payload)
+
+
+_fa.parse_tjek_hotspots = _member_context_parse_tjek_hotspots
+_fa._publication_from_schwarz = _member_context_publication_from_schwarz
+
+
 # Keep membership pricing as presentation metadata instead of mutating the
 # provider-specific Offer objects. The source price may itself be a club price;
 # the public payload must then restore the ordinary shelf price as `price` and
 # expose the club price separately. Detection is text/structure-only and is
-# intentionally independent of retailer-specific image colours or OCR vision.
+# intentionally independent of retailer-specific image colours or image vision.
 _original_offer_model_dump = _mf.Offer.model_dump
 
 
@@ -156,6 +198,7 @@ def _member_price_aware_offer_model_dump(self, *args, **kwargs):
         price=self.price,
         normal_price=self.normal_price,
         text=text,
+        unit_price=self.unit_price,
     )
     if pricing is None:
         return payload

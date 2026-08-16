@@ -1,5 +1,47 @@
 import Foundation
 
+/// Conservative persisted geofence presence used by the shopping-list member
+/// reminder. Unknown/stale state is treated as OUTSIDE: Kurv must never tell the
+/// user to activate a store app merely because items are sorted under a store.
+enum MemberPricePresence {
+    private static let keyName = "member-price-inside-stores-v1"
+
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: keyName)
+    }
+
+    static func setInside(_ inside: Bool, storeName: String) {
+        let trimmed = storeName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var stores = Set(UserDefaults.standard.stringArray(forKey: keyName) ?? [])
+        if inside {
+            stores.insert(trimmed)
+        } else {
+            stores = Set(stores.filter { normalized($0) != normalized(trimmed) })
+        }
+        UserDefaults.standard.set(Array(stores).sorted(), forKey: keyName)
+    }
+
+    static func isInside(retailer: String) -> Bool {
+        let retailerKey = normalized(retailer)
+        guard !retailerKey.isEmpty else { return false }
+        return (UserDefaults.standard.stringArray(forKey: keyName) ?? []).contains { storeName in
+            let storeKey = normalized(storeName)
+            return storeKey == retailerKey
+                || storeKey.hasPrefix(retailerKey + " ")
+                || storeKey.hasPrefix(retailerKey + "-")
+        }
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+    }
+}
+
 /// Builds the activation reminder shown inside the shopping list under a store.
 /// This is deliberately presentation logic for the in-app shopping experience,
 /// not notification copy.
@@ -10,6 +52,8 @@ enum MemberPriceReminder {
         metadata: [OfferMetadataDTO],
         now: Date = Date()
     ) -> String? {
+        guard MemberPricePresence.isInside(retailer: retailer) else { return nil }
+
         let activeItemKeys = Set(storeItems.filter { !$0.checked }.map { key($0.name) })
         guard !activeItemKeys.isEmpty else { return nil }
 
@@ -84,7 +128,7 @@ enum MemberPriceReminder {
 
 /// Kept as a compatibility shim for the existing geofence call site. Member
 /// price activation reminders must never be appended to arrival notifications;
-/// they are shown persistently under the retailer heading in the shopping list.
+/// they are shown under the retailer heading only after confirmed geofence entry.
 enum MemberPriceGeofenceReminder {
     static func message(
         retailer: String,

@@ -2,6 +2,16 @@ import XCTest
 @testable import BaggerShopping
 
 final class MemberPriceTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        MemberPricePresence.clear()
+    }
+
+    override func tearDown() {
+        MemberPricePresence.clear()
+        super.tearDown()
+    }
+
     func testOfferKeepsOrdinaryAndMemberPriceSeparate() throws {
         let offer = try decodeOffer(
             id: "meny-member",
@@ -48,30 +58,95 @@ final class MemberPriceTests: XCTestCase {
         XCTAssertEqual(result.first?.memberPrice, 15)
     }
 
-    func testShoppingListReminderUsesProgramNameOnlyForMatchingStoreItems() throws {
+    func testShoppingListReminderRequiresConfirmedPresence() throws {
+        let fixture = try reminderFixture(retailer: "Lidl", app: "Lidl Plus")
+
+        XCTAssertNil(
+            MemberPriceReminder.message(
+                retailer: "Lidl",
+                storeItems: [fixture.item],
+                metadata: [fixture.metadata],
+                now: fixture.now
+            )
+        )
+
+        MemberPricePresence.setInside(true, storeName: "Lidl Skørping")
+        XCTAssertEqual(
+            MemberPriceReminder.message(
+                retailer: "Lidl",
+                storeItems: [fixture.item],
+                metadata: [fixture.metadata],
+                now: fixture.now
+            ),
+            "Husk at aktivere tilbuddet i Lidl Plus."
+        )
+
+        MemberPricePresence.setInside(false, storeName: "Lidl Skørping")
+        XCTAssertNil(
+            MemberPriceReminder.message(
+                retailer: "Lidl",
+                storeItems: [fixture.item],
+                metadata: [fixture.metadata],
+                now: fixture.now
+            )
+        )
+    }
+
+    func testPresenceAtAnotherRetailerNeverShowsReminder() throws {
+        let fixture = try reminderFixture(retailer: "føtex", app: "føtex Plus")
+        MemberPricePresence.setInside(true, storeName: "MENY Skørping")
+
+        XCTAssertNil(
+            MemberPriceReminder.message(
+                retailer: "føtex",
+                storeItems: [fixture.item],
+                metadata: [fixture.metadata],
+                now: fixture.now
+            )
+        )
+    }
+
+    func testMemberPriceReminderIsNeverAddedToGeofenceNotification() throws {
+        let fixture = try reminderFixture(retailer: "MENY", app: "MENY-appen")
+        MemberPricePresence.setInside(true, storeName: "MENY Skørping")
+
+        XCTAssertNil(
+            MemberPriceGeofenceReminder.message(
+                retailer: "MENY",
+                storeItems: [fixture.item],
+                metadata: [fixture.metadata]
+            )
+        )
+    }
+
+    private func reminderFixture(
+        retailer: String,
+        app: String
+    ) throws -> (item: ShoppingItem, metadata: OfferMetadataDTO, now: Date) {
+        let itemName = "Testvare"
         let offer = try decodeOffer(
-            id: "lidl-member",
-            retailer: "Lidl",
-            productName: "Lurpak smør",
+            id: "member-\(retailer)",
+            retailer: retailer,
+            productName: itemName,
             price: 20,
             memberPrice: 15,
-            label: "Lidl Plus",
-            app: "Lidl Plus"
+            label: app,
+            app: app
         )
         let metadata = OfferMetadataDTO(
-            itemName: "Lurpak smør",
-            retailer: "Lidl",
+            itemName: itemName,
+            retailer: retailer,
             price: 20,
             validFrom: "14.08.2026",
             validUntil: "20.08.2026",
             offerID: offer.id,
             publicationID: offer.publicationID,
-            matchedItemName: "Lurpak smør",
+            matchedItemName: itemName,
             offerSnapshot: offer
         )
         let item = ShoppingItem(
             id: "item-1",
-            name: "Lurpak smør",
+            name: itemName,
             checked: false,
             quantity: nil,
             unit: nil
@@ -79,62 +154,7 @@ final class MemberPriceTests: XCTestCase {
         let now = Calendar(identifier: .gregorian).date(
             from: DateComponents(year: 2026, month: 8, day: 16)
         )!
-
-        XCTAssertEqual(
-            MemberPriceReminder.message(
-                retailer: "Lidl",
-                storeItems: [item],
-                metadata: [metadata],
-                now: now
-            ),
-            "Husk at aktivere tilbuddet i Lidl Plus."
-        )
-        XCTAssertNil(
-            MemberPriceReminder.message(
-                retailer: "MENY",
-                storeItems: [item],
-                metadata: [metadata],
-                now: now
-            )
-        )
-    }
-
-    func testMemberPriceReminderIsNeverAddedToGeofenceNotification() throws {
-        let offer = try decodeOffer(
-            id: "meny-member",
-            retailer: "MENY",
-            productName: "Pågen gifflar",
-            price: 16,
-            memberPrice: 9.95,
-            label: "MENY medlemspris",
-            app: "MENY-appen"
-        )
-        let metadata = OfferMetadataDTO(
-            itemName: "Pågen gifflar",
-            retailer: "MENY",
-            price: 16,
-            validFrom: "14.08.2026",
-            validUntil: "20.08.2026",
-            offerID: offer.id,
-            publicationID: offer.publicationID,
-            matchedItemName: "Pågen gifflar",
-            offerSnapshot: offer
-        )
-        let item = ShoppingItem(
-            id: "item-1",
-            name: "Pågen gifflar",
-            checked: false,
-            quantity: nil,
-            unit: nil
-        )
-
-        XCTAssertNil(
-            MemberPriceGeofenceReminder.message(
-                retailer: "MENY",
-                storeItems: [item],
-                metadata: [metadata]
-            )
-        )
+        return (item, metadata, now)
     }
 
     private func decodeOffer(
