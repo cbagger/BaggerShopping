@@ -602,8 +602,7 @@ private struct ZoomableFlyerPage: UIViewRepresentable {
             action: #selector(Coordinator.handleTwoFingerGuard(_:))
         )
         twoFingerGuard.minimumPressDuration = 0
-        twoFingerGuard.minimumNumberOfTouches = 2
-        twoFingerGuard.maximumNumberOfTouches = 2
+        twoFingerGuard.numberOfTouchesRequired = 2
         twoFingerGuard.cancelsTouchesInView = true
         twoFingerGuard.delegate = context.coordinator
         scrollView.addGestureRecognizer(twoFingerGuard)
