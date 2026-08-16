@@ -4,8 +4,16 @@ struct RootView: View {
     @EnvironmentObject private var navigation: AppNavigation
     @EnvironmentObject private var model: AppModel
     @StateObject private var offerAddActivity = OfferAddActivity.shared
+    @State private var geofenceRevision = 0
 
     var body: some View {
+        // Reading this state makes the root tree react immediately when Core
+        // Location changes a monitored store between INSIDE/OUTSIDE. The child
+        // ShoppingListView is rebuilt as a value without resetting its own
+        // @State, so the member-price reminder can appear/disappear while the
+        // user already has the shopping list open.
+        let _ = geofenceRevision
+
         if !model.tokenConfigured || model.onboardingRequired {
             OnboardingView()
         } else {
@@ -41,6 +49,9 @@ struct RootView: View {
                     }
             }
             .id(navigation.rootResetID)
+            .onReceive(model.geofence.objectWillChange) { _ in
+                geofenceRevision &+= 1
+            }
             .overlay {
                 if let message = offerAddActivity.phase.message {
                     VStack(spacing: 12) {
