@@ -76,6 +76,20 @@ services:
       - ./data:/data
     shm_size: "256mb"
 
+  luna-enrichment-worker:
+    build: .
+    container_name: bagger-shopping-luna
+    restart: unless-stopped
+    env_file:
+      - .env
+    command:
+      - python
+      - -m
+      - app.luna_worker
+    volumes:
+      - ./data:/data
+    shm_size: "256mb"
+
   samsung-login-broker:
     build:
       context: .

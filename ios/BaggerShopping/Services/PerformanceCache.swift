@@ -31,9 +31,9 @@ struct CachedFlyerOffers: Codable {
 }
 
 enum FlyerOfferCache {
-    // v2 intentionally invalidates Build 53 payloads where member/ordinary
-    // pricing could be reversed. Publication metadata itself remains reusable.
-    private static let prefix = "kurv-cached-flyer-offers-v2-"
+    // v3 invalidates Build 55 member-price payloads after the generic
+    // role classifier and Luna verification layer were hardened.
+    private static let prefix = "kurv-cached-flyer-offers-v3-"
 
     static func save(_ offers: [GroceryOffer], publicationID: String) {
         guard !offers.isEmpty else { return }
@@ -66,7 +66,7 @@ struct CachedOfferSearch: Codable {
 }
 
 enum OfferSearchCache {
-    private static let prefix = "kurv-cached-offer-search-v2-"
+    private static let prefix = "kurv-cached-offer-search-v3-"
 
     static func save(_ offers: [GroceryOffer], query: String, retailers: Set<String>) {
         guard !offers.isEmpty else { return }
@@ -104,7 +104,7 @@ struct CachedSmartOfferMatches: Codable {
 }
 
 enum SmartOfferMatchCache {
-    private static let key = "kurv-cached-smart-offer-matches-v2"
+    private static let key = "kurv-cached-smart-offer-matches-v3"
 
     static func save(_ matches: [String: [GroceryOffer]]) {
         let cached = CachedSmartOfferMatches(savedAt: Date(), matches: matches)
