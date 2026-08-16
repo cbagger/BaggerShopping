@@ -23,6 +23,7 @@ def _key_words(value: str) -> str:
 
 
 def _structured_context(value: object, path: tuple[str, ...] = ()) -> list[str]:
+    """Expose provider text/member-price metadata without geometry or weights."""
     if isinstance(value, dict):
         result: list[str] = []
         for raw_key, child in value.items():
@@ -50,7 +51,9 @@ def _structured_context(value: object, path: tuple[str, ...] = ()) -> list[str]:
     generic_pre = any(token in joined for token in ("pre price", "preprice", "unit price", "kg price", "liter price"))
     if not memberish or generic_pre:
         return []
-    return [_normalize_space(f"{joined} {value}")]
+    # Add a currency suffix so whole-number structured values such as 25 are
+    # unambiguously prices rather than package sizes or campaign limits.
+    return [_normalize_space(f"{joined} {value} kr")]
 
 
 def _significant_needles(offer: Offer) -> list[str]:
@@ -163,11 +166,22 @@ def enrich_schwarz_publication(publication: Publication, payload: object) -> Pub
         return publication
     flyer = payload.get("flyer") if isinstance(payload.get("flyer"), dict) else {}
     pages = flyer.get("pages") if isinstance(flyer.get("pages"), list) else []
-    products = flyer.get("products") if isinstance(flyer.get("products"), dict) else {}
+    raw_products = flyer.get("products")
+    if isinstance(raw_products, dict):
+        products = {str(key): value for key, value in raw_products.items() if isinstance(value, dict)}
+    elif isinstance(raw_products, list):
+        products = {
+            str(product.get("id")): product
+            for product in raw_products
+            if isinstance(product, dict) and product.get("id")
+        }
+    else:
+        products = {}
+
     enriched: list[Offer] = []
     for offer in publication.structured_offers:
         parts: list[str] = []
-        if offer.id in products and isinstance(products[offer.id], dict):
+        if offer.id in products:
             parts.extend(_structured_context(products[offer.id]))
         if offer.page_number is not None and 0 < offer.page_number <= len(pages):
             page = pages[offer.page_number - 1]
