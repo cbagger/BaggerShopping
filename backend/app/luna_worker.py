@@ -6,7 +6,7 @@ import os
 
 import httpx
 
-from .flyer_adapters import fetch_all_publications
+from . import _original_fetch_all_publications as fetch_all_publications
 from .luna_enrichment import analyze_candidate, collect_candidates, load_config, status_payload
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -39,9 +39,8 @@ async def run_once() -> dict:
     if not os.getenv("OPENAI_API_KEY", "").strip():
         return {"status": "missing-api-key", **status_payload()}
 
-    # The worker fetches exactly the same deterministic flyer data as Kurv.
-    # Luna is never the source of truth for flyer discovery, geometry or basic
-    # app availability; it only verifies candidates selected by the AI gate.
+    # Always scan raw deterministic source facts, not Luna's own cached overlay.
+    # This prevents AI results from changing their own fingerprint/candidacy.
     publications = await fetch_all_publications()
     all_candidates = collect_candidates(publications)
     candidates = _paid_candidates(all_candidates)
