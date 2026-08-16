@@ -58,9 +58,15 @@ def detect_member_pricing(
     if result is None:
         return None
 
+    # A cached high-confidence Luna decision has already passed the confidence
+    # gate. Do not reinterpret it with the same weak provider text that caused
+    # the AI review in the first place.
+    if result.source == "luna-verified":
+        return result
+
     # An explicitly labelled non-member/normal price is stronger evidence than
-    # a provider's generic primary/reference field. This is what separates a
-    # 13 kr non-member product price from a 200 kr Coop membership fee.
+    # a provider's generic primary/reference field. This separates a 13 kr
+    # non-member product price from a 200 kr Coop membership fee.
     ordinary = result.ordinary_price
     if match := _EXPLICIT_ORDINARY_RE.search(text or ""):
         explicit = _number(match.group("price"))
@@ -73,9 +79,7 @@ def detect_member_pricing(
             label, app_name = program_label, program_app
             break
 
-    # A membership/app/club requirement is not the same as having to activate
-    # a coupon. The in-store reminder is enabled only by explicit activation or
-    # clipping language in the advert.
+    # Membership/app access is not the same as explicit coupon activation.
     activation = bool(_EXPLICIT_ACTIVATION_RE.search(text or ""))
     return replace(
         result,
