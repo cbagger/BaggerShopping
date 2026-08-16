@@ -114,10 +114,9 @@ def _unit_price_context(text: str, start: int, end: int) -> bool:
 
 def _membership_fee_context(text: str, start: int, end: int) -> bool:
     left = text[max(0, start - 90):start]
-    around = left
-    if MEMBERSHIP_FEE_RE.search(around) is None:
+    if MEMBERSHIP_FEE_RE.search(left) is None:
         return False
-    return bool(re.search(r"\b(?:koster|beløb|gebyr|oprettelse|medlemskab)\b", around, re.IGNORECASE))
+    return bool(re.search(r"\b(?:koster|beløb|gebyr|oprettelse|medlemskab)\b", left, re.IGNORECASE))
 
 
 def _price_candidates(text: str) -> list[_PriceCandidate]:
@@ -188,7 +187,7 @@ def _generic_label(text: str) -> str:
     return "Medlemspris"
 
 
-def _rank_member_candidate(text: str, prices: list[_PriceCandidate], markers: list[re.Match[str]]) -> _PriceCandidate | None:
+def _rank_member_candidate(prices: list[_PriceCandidate], markers: list[re.Match[str]]) -> _PriceCandidate | None:
     ranked: list[tuple[int, int, _PriceCandidate]] = []
     for marker in markers:
         for candidate in prices:
@@ -243,8 +242,48 @@ def _normal_price_is_plausible(normal_price: float | None, *, price: float | Non
     return True
 
 
+def _luna_override(*, retailer: str, price: float | None, normal_price: float | None, text: str, unit_price: str | None):
+    try:
+        from .luna_enrichment import member_pricing_override
+    except (ImportError, AttributeError):
+        return None
+    try:
+        return member_pricing_override(
+            retailer=retailer,
+            price=price,
+            normal_price=normal_price,
+            text=text,
+            unit_price=unit_price,
+        )
+    except Exception:
+        # Luna is strictly additive. Any config/store problem must fall back to
+        # Kurv's deterministic classifier without affecting the app.
+        return None
+
+
 def detect_member_pricing(*, retailer: str, price: float | None, normal_price: float | None, text: str, unit_price: str | None = None) -> MemberPricing | None:
     compact = " ".join((text or "").replace("\u00ad", "").split())
+    ai = _luna_override(
+        retailer=retailer,
+        price=price,
+        normal_price=normal_price,
+        text=compact,
+        unit_price=unit_price,
+    )
+    if isinstance(ai, dict) and ai.get("authoritative"):
+        member_price = ai.get("member_price")
+        if member_price is None:
+            return None
+        return MemberPricing(
+            ordinary_price=ai.get("ordinary_price"),
+            member_price=float(member_price),
+            label=str(ai.get("member_program") or "Medlemspris"),
+            app_name=ai.get("member_app"),
+            requires_activation=bool(ai.get("requires_activation")),
+            source="luna-verified",
+            primary_price_was_member=_same_price(price, float(member_price)),
+            confidence=float(ai.get("pricing_confidence") or 1.0),
+        )
     if not compact:
         return None
 
@@ -257,7 +296,7 @@ def detect_member_pricing(*, retailer: str, price: float | None, normal_price: f
         return None
 
     prices = _price_candidates(compact)
-    selected = _rank_member_candidate(compact, prices, markers)
+    selected = _rank_member_candidate(prices, markers)
     if selected is None:
         return None
 
@@ -267,11 +306,20 @@ def detect_member_pricing(*, retailer: str, price: float | None, normal_price: f
 
     if price is not None and price > member_price + 0.005:
         source_candidate = next((candidate for candidate in prices if _same_price(candidate.value, price)), None)
-        if source_candidate is None or not (source_candidate.unit_price_context or source_candidate.membership_fee_context or source_candidate.before_role):
+        if source_candidate is None or not (
+            source_candidate.unit_price_context
+            or source_candidate.membership_fee_context
+            or source_candidate.before_role
+        ):
             ordinary_price = round(price, 2)
     else:
         ordinary_price = _ordinary_text_price(prices, member_price=member_price)
-        if ordinary_price is None and _normal_price_is_plausible(normal_price, price=price, member_price=member_price, prices=prices):
+        if ordinary_price is None and _normal_price_is_plausible(
+            normal_price,
+            price=price,
+            member_price=member_price,
+            prices=prices,
+        ):
             ordinary_price = round(normal_price, 2) if normal_price is not None else None
 
     if price is not None and price < member_price - 0.005:
@@ -284,9 +332,22 @@ def detect_member_pricing(*, retailer: str, price: float | None, normal_price: f
         if any(_same_price(candidate.value, ordinary_price) for candidate in unit_candidates):
             ordinary_price = None
 
-    page_only = selected.page_context and not any(not candidate.page_context and candidate.member_role and _same_price(candidate.value, member_price) for candidate in prices)
+    # Whole-page/localized context can nominate an offer for Luna, but is not
+    # safe enough to paint a customer-facing red badge by itself. This blocks
+    # one nearby member badge from leaking to unrelated products on the page.
+    page_only = selected.page_context and not any(
+        not candidate.page_context
+        and candidate.member_role
+        and _same_price(candidate.value, member_price)
+        for candidate in prices
+    )
     source = "page-context-member-price" if page_only else "structured-member-price"
     confidence = 0.72 if page_only else (0.99 if selected.member_role else 0.94)
+
+    # Low-confidence evidence is a Luna review candidate. With Luna disabled,
+    # fail closed and leave Kurv's ordinary deterministic offer untouched.
+    if confidence < 0.96:
+        return None
 
     return MemberPricing(
         ordinary_price=ordinary_price,
