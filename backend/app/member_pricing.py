@@ -34,13 +34,18 @@ _PRICE_RE = re.compile(
     re.IGNORECASE,
 )
 
-_UNIT_PRICE_RE = re.compile(
+_UNIT_PRICE_BEFORE_RE = re.compile(
     r"(?:"
     r"\bpr\.?\s*(?:kg|kilo|l(?:iter)?|100\s*g|100\s*ml)\b"
     r"|\b(?:kg|kilo|liter|l)[-\s]?pris\b"
     r"|\bkr\.?\s*/\s*(?:kg|l)\b"
     r"|\b(?:kg|kilo)\s*max\.?\b"
     r")",
+    re.IGNORECASE,
+)
+_UNIT_PRICE_AFTER_RE = re.compile(
+    r"^\s*(?:kr\.?\s*)?(?:(?:/\s*)|(?:pr\.?\s*))"
+    r"(?:kg|kilo|l(?:iter)?|100\s*g|100\s*ml)\b(?!\s*max)",
     re.IGNORECASE,
 )
 
@@ -86,13 +91,15 @@ def _same_price(left: float | None, right: float | None) -> bool:
 
 
 def _unit_price_context(text: str, start: int, end: int) -> bool:
-    # Unit-price labels often sit immediately before or after the numeric value,
-    # e.g. "Pr. kg max. 166,67". Keep the window deliberately small so a valid
-    # shelf price in the same advert is not discarded because kg-pris appears
-    # elsewhere in the copy.
-    left = max(0, start - 42)
-    right = min(len(text), end + 28)
-    return _UNIT_PRICE_RE.search(text[left:right]) is not None
+    # The label normally precedes the unit value ("Pr. kg max. 166,67").
+    # Looking far ahead would incorrectly mark the preceding shelf price in
+    # "29,- Pr. kg max. 166,67" as a kg price too, so suffix matching is much
+    # stricter and only accepts direct "19,95 /kg" / "19,95 pr. kg" syntax.
+    before = text[max(0, start - 42):start]
+    if _UNIT_PRICE_BEFORE_RE.search(before) is not None:
+        return True
+    after = text[end:min(len(text), end + 22)]
+    return _UNIT_PRICE_AFTER_RE.search(after) is not None
 
 
 def _price_candidates(text: str) -> list[_PriceCandidate]:
@@ -185,9 +192,6 @@ def _normal_price_is_plausible(
     if normal_price is None or normal_price <= member_price + 0.005:
         return False
 
-    # If the same number is explicitly printed in unit-price context, it is not
-    # a shelf/før-price. This is the exact failure mode seen with føtex where
-    # 166,67 kr/kg was supplied as pre_price beside 29/25 kr.
     if any(
         candidate.unit_price_context and _same_price(candidate.value, normal_price)
         for candidate in prices
@@ -195,10 +199,6 @@ def _normal_price_is_plausible(
         return False
 
     reference = price if price is not None and price > 0 else member_price
-    # Provider pre_price occasionally contains a kg/l unit value without a
-    # textual unit label. Prefer "unknown ordinary price" over an implausible
-    # 5–10x shelf price. Genuine discounts above this threshold are rare enough
-    # that they require explicit textual evidence before Kurv displays them.
     if reference >= 5 and normal_price > reference * 4 and normal_price - reference > 60:
         return False
     return True
@@ -247,8 +247,6 @@ def detect_member_pricing(
 
     prices = _price_candidates(compact)
 
-    # Explicit price labels such as "MEDLEMSPRIS 8,95" / "plus pris 25,-"
-    # are stronger than a generic programme logo/name elsewhere in the advert.
     member_price = _rank_member_price(explicit_markers, prices, max_distance=72)
     source = "explicit-member-marker-price"
 
@@ -268,9 +266,6 @@ def detect_member_pricing(
 
     ordinary_price: float | None = None
     if price is not None and price > member_price + 0.005:
-        # The primary structured price is normally the shelf/campaign price.
-        # Reject it only if the flyer itself proves that exact value is a unit
-        # price (pr. kg / literpris etc.).
         primary_is_unit = any(
             candidate.unit_price_context and _same_price(candidate.value, price)
             for candidate in prices
@@ -289,16 +284,12 @@ def detect_member_pricing(
     elif price is None:
         ordinary_price = _ordinary_text_price(prices, member_price=member_price)
 
-    # If the provider's primary price is below the member price, the evidence is
-    # contradictory. Do not swap fields or invent a relationship.
     if price is not None and price < member_price - 0.005:
         return None
 
     if ordinary_price is not None and member_price >= ordinary_price - 0.005:
         return None
 
-    # A separate unit_price string can only invalidate an accidentally matching
-    # ordinary value; it can never create a member or ordinary price.
     if ordinary_price is not None and unit_price:
         unit_candidates = _price_candidates(f"pr. kg {unit_price}")
         if any(_same_price(candidate.value, ordinary_price) for candidate in unit_candidates):
