@@ -182,6 +182,28 @@ _fa.parse_tjek_hotspots = _member_context_parse_tjek_hotspots
 _fa._publication_from_schwarz = _member_context_publication_from_schwarz
 
 
+# Luna is an optional cached overlay, never a flyer-discovery dependency. Keep
+# the raw deterministic fetcher exported for the Luna worker, then let ordinary
+# Kurv consumers see only already-verified cached brand/variant enrichment. The
+# overlay itself makes no network/OpenAI calls, and returns the original objects
+# unchanged while Luna is OFF.
+from .luna_overlay import apply_cached_enrichment as _apply_cached_luna_enrichment  # noqa: E402
+
+_original_fetch_all_publications = _fa.fetch_all_publications
+
+
+async def _luna_aware_fetch_all_publications(*args, **kwargs):
+    publications = await _original_fetch_all_publications(*args, **kwargs)
+    try:
+        return _apply_cached_luna_enrichment(publications)
+    except Exception:
+        # AI telemetry/cache corruption must never reduce normal Kurv function.
+        return publications
+
+
+_fa.fetch_all_publications = _luna_aware_fetch_all_publications
+
+
 # Keep membership pricing as presentation metadata instead of mutating the
 # provider-specific Offer objects. The source price may itself be a club price;
 # the public payload must then restore the ordinary shelf price as `price` and
