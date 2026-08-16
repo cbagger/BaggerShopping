@@ -61,6 +61,9 @@ struct StructuredVariantPickerView: View {
                             }
                         }
                         .font(.subheadline).foregroundStyle(.secondary)
+                        if offer.memberPrice != nil {
+                            MemberPriceBadge(offer: offer, compact: true)
+                        }
                         identityChips(offer.productIdentity)
                     }
                 }
