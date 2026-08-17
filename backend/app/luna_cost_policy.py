@@ -2,33 +2,34 @@ from __future__ import annotations
 
 """Quality-first cost policy for Kurv's visual flyer intelligence.
 
-Live shadow tests changed the cost/quality trade-off:
+The live Build58/59 shadow tests established the final operating principle:
 
-* GPT-5.6 Luna's current API price is low enough that a rich high-detail page
-  audit is affordable for Kurv's weekly flyer volume.
-* Removing reasoning made the model *less* safe: a neighbouring Bilka Plus
-  price leaked into Actimel even though the request became no cheaper.
-* Variant-only proactive crops are still unnecessary. The rich page audit can
-  preserve useful semantic facts for the engines while ``multiple_products``
-  blocks unsafe direct-add.
-* A member price discovered visually without provider membership evidence is
-  valuable, but it must be independently verified by a targeted crop before it
-  may become authoritative. This converts neighbour leakage into a safe,
-  relatively rare second-pass request.
+* keep the rich high-detail page audit because its semantic facts materially
+  improve Kurv's pricing, identity and variant engines;
+* price/member safety always has first priority;
+* a visual-only member price is independently verified by one targeted crop;
+* variant crops are useful when a campaign is clearly multi-product but the
+  rich page pass still cannot provide usable choices;
+* already useful page variants must not trigger a second paid request merely to
+  chase a near-perfect confidence score;
+* variant enrichment is the first paid work to stop when its own monthly slice
+  is exhausted. The global Luna hard budget remains authoritative.
 
-This policy deliberately leaves Build 58's rich page request/schema/validator
-untouched. It patches only the server-side crop gate and crop reasons. Provider
-facts remain untouched and Luna OFF remains authoritative.
+This module deliberately leaves Build58's rich page request/schema/validator
+untouched. It patches only the server-side crop gate/reasons and exposes helpers
+used by the worker to prioritise pricing work before optional variant enrichment.
+Provider facts remain untouched and Luna OFF remains authoritative.
 """
 
-from typing import Any
+from typing import Any, Iterable
 
 from . import luna_semantic_audit as semantic
-from .luna_enrichment import load_config
+from .luna_enrichment import load_config, load_store
 from .member_pricing import has_membership_signal
 
 
 _INSTALLED = False
+_VARIANT_REASON = "page-audit-variant-enrichment"
 
 
 def _provider_has_member_evidence(offer: Any) -> bool:
@@ -80,9 +81,8 @@ def _pricing_is_safe(offer: Any, facts: dict[str, Any], threshold: float) -> boo
     if member is not None:
         if ordinary is None:
             return False
-        # A visual-only member price is exactly the kind of valuable fact Luna
-        # exists to discover, but it is also the failure shape observed in the
-        # no-reasoning Actimel test. Require one targeted crop before applying.
+        # A visual-only member price is valuable but is also the exact failure
+        # shape observed when a neighbouring Becel badge leaked into Actimel.
         if not _provider_has_member_evidence(offer):
             return False
     elif programme:
@@ -91,7 +91,36 @@ def _pricing_is_safe(offer: Any, facts: dict[str, Any], threshold: float) -> boo
     return True
 
 
-def _balanced_server_needs_crop(offer: Any, facts: dict[str, Any], threshold: float) -> bool:
+def _variant_threshold(config: dict[str, Any] | None = None) -> float:
+    config = config or load_config()
+    value = float(config.get("variant_crop_confidence_threshold", 0.80))
+    return min(0.99, max(0.0, value))
+
+
+def _variant_enrichment_needed(
+    facts: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> bool:
+    config = config or load_config()
+    if not bool(config.get("selective_variant_crops", True)):
+        return False
+    if not facts.get("visible") or not facts.get("multiple_products"):
+        return False
+
+    variants = [
+        value.strip()
+        for value in (facts.get("variants") or [])
+        if isinstance(value, str) and value.strip()
+    ]
+    confidence = float(facts.get("variant_confidence") or 0)
+
+    # One readable choice is not enough for a campaign that explicitly covers
+    # multiple products. Otherwise only enrich when confidence is genuinely
+    # weak. This keeps Castello 0.93 / Iskasse 0.88 but enriches Actimel 0.55.
+    return len(variants) < 2 or confidence < _variant_threshold(config)
+
+
+def _pricing_crop_needed(offer: Any, facts: dict[str, Any], threshold: float) -> bool:
     if not facts.get("visible"):
         return True
     if not semantic._price_relation_valid(facts):
@@ -104,28 +133,28 @@ def _balanced_server_needs_crop(offer: Any, facts: dict[str, Any], threshold: fl
         return True
     if _provider_price_conflict(offer, facts, threshold):
         return True
-
-    # New visual-only membership facts are independently verified. This is a
-    # small cost compared with allowing a neighbouring badge/price to leak.
     if facts.get("member_price") is not None and not _provider_has_member_evidence(offer):
         return True
 
-    # Build 58's model may request a crop simply because variant names are too
-    # small. That must not create an automatic paid request when price roles are
-    # already safe. ``multiple_products`` remains available to iOS as the
-    # direct-add blocker and the rich facts remain cached for later/on-demand
-    # variant work.
+    # A model-requested crop is pricing-critical only when the pricing relation
+    # itself is not already safe. Pure variant uncertainty is handled below.
     if facts.get("needs_crop_verification") and not _pricing_is_safe(offer, facts, threshold):
         return True
-
     return False
+
+
+def _balanced_server_needs_crop(offer: Any, facts: dict[str, Any], threshold: float) -> bool:
+    if _pricing_crop_needed(offer, facts, threshold):
+        return True
+    return _variant_enrichment_needed(facts)
 
 
 def _balanced_crop_reasons(offer: Any, facts: dict[str, Any], needs_crop: bool) -> list[str]:
     if not needs_crop:
         return []
 
-    threshold = float(load_config().get("min_apply_confidence", 0.96))
+    config = load_config()
+    threshold = float(config.get("min_apply_confidence", 0.96))
     result: list[str] = []
 
     if not facts.get("visible"):
@@ -145,21 +174,74 @@ def _balanced_crop_reasons(offer: Any, facts: dict[str, Any], needs_crop: bool) 
     if facts.get("needs_crop_verification") and not _pricing_is_safe(offer, facts, threshold):
         result.append("page-audit-pricing-association-uncertain")
 
+    if _variant_enrichment_needed(facts, config):
+        result.append(_VARIANT_REASON)
+
     return list(dict.fromkeys(result)) or ["page-audit-pricing-review"]
+
+
+def is_variant_only_crop(candidate_or_reasons: Any) -> bool:
+    reasons = getattr(candidate_or_reasons, "reasons", candidate_or_reasons)
+    values = {str(reason) for reason in (reasons or ()) if str(reason)}
+    return bool(values) and values == {_VARIANT_REASON}
+
+
+def sort_crop_candidates(candidates: Iterable[Any]) -> list[Any]:
+    """Pricing/member verification first; optional variant enrichment last."""
+    return sorted(
+        candidates,
+        key=lambda item: (
+            1 if is_variant_only_crop(item) else 0,
+            item.offer.retailer.casefold(),
+            item.offer.page_number or 0,
+            item.offer.product_name.casefold(),
+        ),
+    )
+
+
+def variant_crop_spend_dkk(
+    config: dict[str, Any] | None = None,
+    store: dict[str, Any] | None = None,
+) -> float:
+    config = config or load_config()
+    store = store or load_store()
+    total = 0.0
+    for row in store.get("records", {}).values():
+        if not isinstance(row, dict):
+            continue
+        if row.get("analysis_level") != "crop" or row.get("status") != "completed":
+            continue
+        if not is_variant_only_crop(row.get("reasons") or ()):
+            continue
+        usage = row.get("usage") if isinstance(row.get("usage"), dict) else {}
+        total += semantic._usage_cost_dkk(usage, config)
+    return round(total, 6)
+
+
+def variant_crop_budget_allows(
+    config: dict[str, Any] | None = None,
+    store: dict[str, Any] | None = None,
+) -> bool:
+    config = config or load_config()
+    if not bool(config.get("selective_variant_crops", True)):
+        return False
+    cap = max(0.0, float(config.get("variant_crop_max_monthly_dkk", 5.0)))
+    return variant_crop_spend_dkk(config, store) < cap
 
 
 def status_payload() -> dict[str, Any]:
     config = load_config()
     return {
-        "page_mode": "rich-page-audit-cost-balanced-v3",
+        "page_mode": "rich-page-audit-quality-first-v4",
         "page_image_detail": "high",
         "page_reasoning_effort": "low",
-        "proactive_variant_crops": False,
+        "selective_variant_crops": bool(config.get("selective_variant_crops", True)),
+        "variant_crop_confidence_threshold": _variant_threshold(config),
+        "variant_crop_max_monthly_dkk": float(config.get("variant_crop_max_monthly_dkk", 5.0)),
+        "variant_crop_spend_dkk": variant_crop_spend_dkk(config),
+        "variant_crop_budget_available": variant_crop_budget_allows(config),
         "visual_only_member_price_requires_crop": True,
         "recommended_monthly_budget_dkk": float(config.get("recommended_monthly_budget_dkk", 20.0)),
-        # Current public GPT-5.6 Luna standard API prices from OpenAI's
-        # 2026-07-30 price reduction. Persisted accounting config is migrated
-        # explicitly on QNAP so historical usage is not silently rewritten.
         "current_luna_input_usd_per_million": 0.20,
         "current_luna_output_usd_per_million": 1.20,
     }
@@ -171,7 +253,7 @@ def install() -> None:
         return
 
     # Deliberately do NOT patch _page_request_body or _validate_page_output.
-    # Build 58's rich high-detail semantic audit is retained.
+    # Build58's rich high-detail semantic audit remains the primary pass.
     semantic._server_needs_crop = _balanced_server_needs_crop
     semantic._crop_reasons = _balanced_crop_reasons
     _INSTALLED = True

@@ -14,6 +14,12 @@ def _isolated(monkeypatch, tmp_path, **config_updates):
         "enabled": True,
         "apply_results": True,
         "min_apply_confidence": 0.96,
+        "selective_variant_crops": True,
+        "variant_crop_confidence_threshold": 0.80,
+        "variant_crop_max_monthly_dkk": 5.0,
+        "input_usd_per_million": 0.20,
+        "output_usd_per_million": 1.20,
+        "usd_to_dkk": 7.0,
         **config_updates,
     }
     config.write_text(json.dumps(value), encoding="utf-8")
@@ -69,6 +75,13 @@ def _facts(**updates):
     return value
 
 
+class _Crop:
+    def __init__(self, product_name, reasons, page=1):
+        self.reasons = tuple(reasons)
+        self.offer = _offer(product_name=product_name)
+        self.offer.page_number = page
+
+
 def test_plain_safe_price_does_not_crop(monkeypatch, tmp_path):
     _isolated(monkeypatch, tmp_path)
     offer = _offer()
@@ -103,22 +116,80 @@ def test_provider_member_evidence_allows_high_confidence_member_price(monkeypatc
     assert policy._balanced_server_needs_crop(offer, facts, 0.96) is False
 
 
-def test_variant_only_model_crop_is_suppressed_when_pricing_is_safe(monkeypatch, tmp_path):
+def test_castello_like_rich_variants_do_not_crop_at_093(monkeypatch, tmp_path):
     _isolated(monkeypatch, tmp_path)
     offer = _offer(product_name="Castello dessertost")
     facts = _facts(
         product_name="Castello dessertost",
         brand="Castello",
-        ordinary_price=15,
-        member_price=None,
         multiple_products=True,
         variants=["Saga", "Creamy White", "Creamy Blue"],
-        variant_confidence=0.82,
-        pricing_confidence=0.99,
+        variant_confidence=0.93,
         needs_crop_verification=True,
     )
     assert policy._balanced_server_needs_crop(offer, facts, 0.96) is False
-    assert policy._balanced_crop_reasons(offer, facts, False) == []
+
+
+def test_iskasse_like_two_concrete_variants_do_not_crop_at_088(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path)
+    offer = _offer(product_name="Iskasse")
+    facts = _facts(
+        product_name="Iskasse",
+        multiple_products=True,
+        variants=["Mini ananas ispinde", "Mini mix"],
+        variant_confidence=0.88,
+        needs_crop_verification=True,
+    )
+    assert policy._balanced_server_needs_crop(offer, facts, 0.96) is False
+
+
+def test_actimel_like_multi_product_without_variants_gets_enrichment_crop(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path)
+    offer = _offer(product_name="Actimel 12-pak", price=29)
+    facts = _facts(
+        product_name="Actimel 12-pak",
+        ordinary_price=29,
+        multiple_products=True,
+        variants=[],
+        variant_confidence=0.55,
+        needs_crop_verification=True,
+    )
+    assert policy._balanced_server_needs_crop(offer, facts, 0.96) is True
+    reasons = policy._balanced_crop_reasons(offer, facts, True)
+    assert reasons == ["page-audit-variant-enrichment"]
+    assert policy.is_variant_only_crop(reasons) is True
+
+
+def test_multi_product_with_weak_named_variants_still_gets_enrichment_crop(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path)
+    offer = _offer(product_name="Mix")
+    facts = _facts(
+        product_name="Mix",
+        multiple_products=True,
+        variants=["A", "B"],
+        variant_confidence=0.75,
+    )
+    assert policy._balanced_server_needs_crop(offer, facts, 0.96) is True
+    assert "page-audit-variant-enrichment" in policy._balanced_crop_reasons(
+        offer, facts, True
+    )
+
+
+def test_selective_variant_crops_can_be_disabled_without_affecting_pricing(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path, selective_variant_crops=False)
+    offer = _offer(product_name="Actimel 12-pak", price=29)
+    variant_only = _facts(
+        product_name="Actimel 12-pak",
+        ordinary_price=29,
+        multiple_products=True,
+        variants=[],
+        variant_confidence=0.20,
+        needs_crop_verification=True,
+    )
+    assert policy._balanced_server_needs_crop(offer, variant_only, 0.96) is False
+
+    member = _facts(member_price=12, member_program="Bilka Plus")
+    assert policy._balanced_server_needs_crop(_offer(), member, 0.96) is True
 
 
 def test_missing_member_amount_still_crops(monkeypatch, tmp_path):
@@ -180,18 +251,58 @@ def test_invisible_target_crops(monkeypatch, tmp_path):
     )
 
 
-def test_status_documents_current_luna_prices_and_quality_mode(monkeypatch, tmp_path):
+def test_pricing_crops_sort_before_variant_only_crops(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path)
+    variant = _Crop("Actimel", ["page-audit-variant-enrichment"])
+    pricing = _Crop("Becel", ["page-audit-new-member-price-verification"])
+    mixed = _Crop(
+        "Mixed",
+        ["page-audit-provider-price-conflict", "page-audit-variant-enrichment"],
+    )
+    ordered = policy.sort_crop_candidates([variant, pricing, mixed])
+    assert ordered[-1] is variant
+    assert policy.is_variant_only_crop(variant) is True
+    assert policy.is_variant_only_crop(mixed) is False
+
+
+def test_variant_crop_monthly_slice_stops_optional_work(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path, variant_crop_max_monthly_dkk=0.004)
+    luna.save_store({
+        "records": {
+            "v": {
+                "status": "completed",
+                "analysis_level": "crop",
+                "reasons": ["page-audit-variant-enrichment"],
+                "usage": {"input_tokens": 1964, "output_tokens": 193},
+            },
+            "p": {
+                "status": "completed",
+                "analysis_level": "crop",
+                "reasons": ["page-audit-new-member-price-verification"],
+                "usage": {"input_tokens": 5000, "output_tokens": 500},
+            },
+        },
+        "pricing_index": {},
+        "usage": {},
+        "events": [],
+    })
+    assert policy.variant_crop_spend_dkk() == 0.004371
+    assert policy.variant_crop_budget_allows() is False
+
+
+def test_status_documents_quality_first_mode(monkeypatch, tmp_path):
     _isolated(monkeypatch, tmp_path)
     status = policy.status_payload()
-    assert status["page_mode"] == "rich-page-audit-cost-balanced-v3"
+    assert status["page_mode"] == "rich-page-audit-quality-first-v4"
     assert status["page_image_detail"] == "high"
     assert status["page_reasoning_effort"] == "low"
-    assert status["proactive_variant_crops"] is False
+    assert status["selective_variant_crops"] is True
+    assert status["variant_crop_confidence_threshold"] == 0.80
+    assert status["variant_crop_max_monthly_dkk"] == 5.0
     assert status["visual_only_member_price_requires_crop"] is True
     assert status["current_luna_input_usd_per_million"] == 0.20
     assert status["current_luna_output_usd_per_million"] == 1.20
 
 
-def test_default_config_keeps_monthly_guard():
+def test_global_monthly_guard_remains_20_dkk():
     assert luna.DEFAULT_CONFIG["monthly_budget_dkk"] == 20.0
-    assert luna.DEFAULT_CONFIG["proactive_variant_crops"] is False
