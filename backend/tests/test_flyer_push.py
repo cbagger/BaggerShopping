@@ -1,13 +1,16 @@
 import os
 import asyncio
+import time
 
 os.environ.setdefault("MOBILE_API_TOKEN", "test-token")
 
 from fastapi.testclient import TestClient
 
 from app import flyer_push
+from app import flyer_readiness as readiness
+from app import mobile_offers
 from app.flyer_readiness import mark_ready, publication_is_ready
-from app.meny_flyer import Publication
+from app.meny_flyer import Offer, Publication
 from app.mobile_main import app
 
 client = TestClient(app)
@@ -20,6 +23,28 @@ def publication(identifier: str, retailer: str = "MENY") -> Publication:
         valid_until="20.08.2026", status="current", source_url="https://example.test",
         page_count=1, page_image_urls=["https://example.test/1.jpg"],
     )
+
+
+def usable_publication(identifier: str) -> Publication:
+    value = publication(identifier)
+    offer = Offer(
+        id=f"{identifier}-offer",
+        retailer="MENY",
+        publication_id=identifier,
+        publication_title="Uge 34",
+        product_name="Testvare",
+        price=10,
+        source_url="https://example.test",
+        page_number=1,
+        hotspot_x=0.1,
+        hotspot_y=0.1,
+        hotspot_width=0.2,
+        hotspot_height=0.2,
+        raw_text="Testvare 10 kr",
+        hotspot_confidence=0.99,
+        quality_score=0.99,
+    )
+    return value.model_copy(update={"structured_offers": [offer]})
 
 
 def test_device_preferences_are_filtered_and_persisted(tmp_path, monkeypatch):
@@ -122,3 +147,37 @@ def test_same_publication_id_changed_version_is_gated_and_can_notify_again(tmp_p
     assert mark_ready(changed) is True
     delivery = asyncio.run(flyer_push.deliver_ready_notifications())
     assert delivery == {"ready": 1, "sent": 0, "failed": 0}  # no configured targets
+
+
+def test_readiness_revision_invalidates_mobile_publication_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLYER_READINESS_STORE_PATH", str(tmp_path / "readiness.json"))
+    stale = usable_publication("stale")
+    fresh = usable_publication("fresh")
+
+    original_publications = mobile_offers._publications
+    original_cache = list(mobile_offers._publications_cache)
+    original_single = mobile_offers._publication_cache
+    original_time = mobile_offers._publication_cache_time
+
+    mobile_offers._publications_cache = [stale]
+    mobile_offers._publication_cache = stale
+    mobile_offers._publication_cache_time = time.monotonic()
+
+    async def fetch_fresh():
+        return [fresh]
+
+    monkeypatch.setattr(mobile_offers, "fetch_all_publications", fetch_fresh)
+
+    try:
+        # This test process imports flyer_push before mobile_main, unlike the
+        # production mobile process. Install the hook explicitly to test the
+        # same runtime behaviour.
+        flyer_push._install_mobile_cache_readiness_guard()
+        readiness.observe_publications([fresh], bootstrap_ready_ids=None)
+        result = asyncio.run(mobile_offers._publications())
+        assert [value.id for value in result] == ["fresh"]
+    finally:
+        mobile_offers._publications = original_publications
+        mobile_offers._publications_cache = original_cache
+        mobile_offers._publication_cache = original_single
+        mobile_offers._publication_cache_time = original_time
