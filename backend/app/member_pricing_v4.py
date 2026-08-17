@@ -285,6 +285,26 @@ def _strong_deterministic(
     return None
 
 
+def _unsafe_luna_primary_member_role(
+    *,
+    price: float | None,
+    pricing: MemberPricing | None,
+) -> bool:
+    """Reject an unresolved AI role inversion before it reaches the customer.
+
+    A provider primary price is intentionally untyped: some feeds expose the
+    ordinary campaign price while a few expose a member campaign price. If Luna
+    merely relabels that exact provider value as `member_price` and cannot also
+    identify an ordinary price, the role is unresolved rather than verified.
+    The semantic audit layer will escalate that shape to a targeted crop.
+    """
+    if pricing is None or pricing.source != "luna-verified":
+        return False
+    if price is None or pricing.ordinary_price is not None:
+        return False
+    return v3._same_price(price, pricing.member_price)
+
+
 def detect_member_pricing(
     *,
     retailer: str,
@@ -307,16 +327,20 @@ def detect_member_pricing(
     if deterministic is not None:
         return deterministic
 
-    # Fall back to v3 for page-only/Luna-verified and legacy safe cases. That
-    # path remains fail-closed for uncertain evidence. Crucially, it is reached
-    # only after direct advert price roles have had first priority.
-    return v3.detect_member_pricing(
+    # Fall back to v3 for page-only/Luna-verified and legacy safe cases. Direct
+    # advert roles have already had first priority. A remaining AI result is
+    # still fail-closed when it only relabels the provider's exact primary price
+    # as a member price without resolving the ordinary customer price.
+    fallback = v3.detect_member_pricing(
         retailer=retailer,
         price=price,
         normal_price=normal_price,
         text=compact,
         unit_price=unit_price,
     )
+    if _unsafe_luna_primary_member_role(price=price, pricing=fallback):
+        return None
+    return fallback
 
 
 __all__ = ["MemberPricing", "detect_member_pricing", "has_membership_signal"]
