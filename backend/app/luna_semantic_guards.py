@@ -92,30 +92,20 @@ def _pricing_sanity_reasons(offer, facts) -> tuple[str, ...]:
     member_program = str(facts.get("member_program") or "").strip()
     member_app = str(facts.get("member_app") or "").strip()
 
-    # Live Seafoodmix regression: repeating the untyped provider primary value
-    # as member price while ordinary is unknown has not resolved the roles.
     if ordinary is None and _same_numeric_price(getattr(offer, "price", None), member):
         reasons.append("page-audit-primary-price-role-ambiguous")
 
-    # A model can see a +/Plus/member badge but fail to read the amount. That is
-    # exactly when Kurv should spend one targeted crop rather than silently omit
-    # the member price (e.g. visual-only + PRIS creatives).
     if member is None and member_visible:
         reasons.append("page-audit-visible-member-price-missing-value")
     elif member is None and (member_program or member_app):
         reasons.append("page-audit-member-program-without-price")
 
-    # Never accept a value that the same visual analysis itself describes as a
-    # comparison/unit price. Covers both “166,67 kr/kg” and “Pr. stk. max. 1,98”.
     unit_values = _unit_price_values(facts.get("unit_price"))
     if any(_same_numeric_price(member, value) for value in unit_values):
         reasons.append("page-audit-member-price-is-unit-price")
     if any(_same_numeric_price(ordinary, value) for value in unit_values):
         reasons.append("page-audit-ordinary-price-is-unit-price")
 
-    # Extreme discounts are not rejected; they are merely verified once with a
-    # crop. This catches suspicious 85 -> 1.98 shapes even when the unit-price
-    # string is formatted in a way the deterministic parser does not recognise.
     reference = ordinary
     if not isinstance(reference, (int, float)) or reference <= 0:
         reference = getattr(offer, "price", None)
@@ -132,7 +122,6 @@ def _pricing_sanity_reasons(offer, facts) -> tuple[str, ...]:
 
 
 def _primary_member_role_ambiguous(offer, facts) -> bool:
-    """Backward-compatible helper retained for existing regression tests."""
     return "page-audit-primary-price-role-ambiguous" in _pricing_sanity_reasons(offer, facts)
 
 
@@ -268,15 +257,14 @@ def _crop_candidates_allowing_build58_reverification(publications):
             existing_facts = existing.get("facts") if isinstance(existing, dict) else None
             existing_anomalous = bool(_pricing_sanity_reasons(offer, existing_facts))
 
-            # A safe completed targeted crop remains final. A crop that itself
-            # still has a generic pricing anomaly may be retried under the new
-            # contract instead of permanently poisoning the pricing index.
+            # Preserve a completed legacy crop when it contains no facts we can
+            # judge under the new contract. Reopen only crops whose persisted
+            # facts demonstrably violate the new generic pricing invariants.
             if (
                 isinstance(existing, dict)
                 and existing.get("analysis_level") == "crop"
                 and existing.get("status") in {"completed", "no-change", "pending"}
-                and not existing_anomalous
-                and semantic_row.get("source") == "crop"
+                and (not isinstance(existing_facts, dict) or not existing_anomalous)
             ):
                 continue
 
