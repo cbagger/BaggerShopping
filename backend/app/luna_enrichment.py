@@ -22,11 +22,21 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "enabled": False,
     "apply_results": True,
     "model": "gpt-5.6-luna",
-    "monthly_budget_dkk": 25.0,
-    "max_requests_per_month": 250,
+    # Cost-first hard guard. Persisted QNAP config may override this, but a new
+    # installation cannot silently spend beyond this monthly amount.
+    "monthly_budget_dkk": 20.0,
+    "recommended_monthly_budget_dkk": 20.0,
+    "max_requests_per_month": 2000,
     "max_requests_per_scan": 20,
     "scan_interval_seconds": 3600,
     "min_apply_confidence": 0.96,
+    # Build 59 page scout: compact output + low image detail. Variant-only
+    # uncertainty never triggers a proactive crop by default.
+    "page_scout_image_detail": "low",
+    "page_scout_max_output_tokens": 1400,
+    "proactive_variant_crops": False,
+    "page_audit_max_failures": 2,
+    "crop_max_output_tokens": 1200,
     # Conservative, configurable accounting. If OpenAI's live price is lower,
     # Kurv simply reaches the configured budget later than this estimate says.
     "input_usd_per_million": 1.0,
@@ -508,6 +518,7 @@ async def analyze_candidate(candidate: Candidate, *, client: httpx.AsyncClient |
                 "model": body.get("model") or config.get("model"),
                 "response_id": body.get("id"), "usage": usage, "updated_at": int(time.time()),
             })
+            row.pop("error", None)
         store.setdefault("events", []).append({
             "at": int(time.time()), "event": "analysis", "fingerprint": candidate.fingerprint,
             "status": row.get("status"), "retailer": candidate.offer.retailer,
