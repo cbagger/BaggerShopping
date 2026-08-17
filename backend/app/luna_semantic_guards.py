@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-"""Small safety guards installed around the Build 58 semantic-audit engine.
+"""Safety guards around the Build 58 semantic-audit engine.
 
-They deliberately live outside the main audit module so the two invariants are
-obvious and testable:
+The invariants are deliberately explicit and independently testable:
 1) a page is never accepted as fully audited when Luna omitted a target hotspot;
 2) an old pre-Build58 Luna result can never block a crop explicitly requested by
-the new page audit.
+   the new page audit;
+3) a new safe Build58 page result may upgrade a legacy v1 record, while a real
+   Build58 targeted crop remains the strongest cached result.
 """
 
 from . import luna_semantic_audit as semantic
@@ -15,6 +16,7 @@ from .luna_enrichment import load_store, offer_fingerprint
 
 _installed = False
 _original_validate_page_output = semantic._validate_page_output
+_original_index_page_pricing_if_safe = semantic._index_page_pricing_if_safe
 
 
 def _strict_validate_page_output(value, allowed_ids):
@@ -28,6 +30,34 @@ def _strict_validate_page_output(value, allowed_ids):
     if returned_ids != set(allowed_ids):
         return None
     return rows
+
+
+def _index_page_pricing_upgrading_legacy(
+    store,
+    offer,
+    facts,
+    *,
+    needs_crop,
+    page_fingerprint_value,
+):
+    fingerprint = offer_fingerprint(offer)
+    existing = store.setdefault("records", {}).get(fingerprint)
+    if (
+        isinstance(existing, dict)
+        and existing.get("status") == "completed"
+        and existing.get("analysis_level") is None
+    ):
+        # A Build56/57 record has no analysis_level. If Build58 has a safe page
+        # result, allow the newer semantic audit to become the canonical cached
+        # pricing result. A Build58 crop (analysis_level='crop') is never removed.
+        store["records"].pop(fingerprint, None)
+    return _original_index_page_pricing_if_safe(
+        store,
+        offer,
+        facts,
+        needs_crop=needs_crop,
+        page_fingerprint_value=page_fingerprint_value,
+    )
 
 
 def _crop_candidates_allowing_build58_reverification(publications):
@@ -88,5 +118,6 @@ def install() -> None:
     if _installed:
         return
     semantic._validate_page_output = _strict_validate_page_output
+    semantic._index_page_pricing_if_safe = _index_page_pricing_upgrading_legacy
     semantic.collect_crop_candidates = _crop_candidates_allowing_build58_reverification
     _installed = True
