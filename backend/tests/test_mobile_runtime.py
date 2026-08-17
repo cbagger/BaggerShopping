@@ -2,6 +2,7 @@ import asyncio
 import os
 
 os.environ.setdefault("MOBILE_API_TOKEN", "test-token")
+os.environ.setdefault("SAMSUNG_LIST_ID", "test-list")
 
 import pytest
 
