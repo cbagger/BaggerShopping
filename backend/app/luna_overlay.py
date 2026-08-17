@@ -1,9 +1,41 @@
 from __future__ import annotations
 
 import hashlib
+import re
 
 from .luna_enrichment import load_config, load_store, offer_fingerprint
 from .meny_flyer import Offer, OfferVariant, Publication
+
+
+_SIZE_ONLY_VARIANT_RE = re.compile(
+    r"^\s*(?:ca\.?\s*)?(?:"
+    r"\d+(?:[.,]\d+)?\s*(?:[-–]\s*\d+(?:[.,]\d+)?)?\s*"
+    r"(?:g|kg|ml|cl|dl|l|stk\.?|styk(?:ker)?|pk\.?|pakker?)"
+    r"|\d+\s*[x×]\s*\d+(?:[.,]\d+)?\s*(?:g|kg|ml|cl|dl|l|stk\.?)"
+    r")\s*$",
+    re.IGNORECASE,
+)
+_GENERIC_VARIANT_RE = re.compile(
+    r"^\s*(?:flere\s+varianter|frit\s+valg|assorterede?|diverse)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _safe_luna_variant_name(value: object) -> str | None:
+    """Return only concrete named product variants from Luna.
+
+    Weight, volume, pack count and generic campaign wording are offer metadata,
+    never product identity. This mirrors Kurv's deterministic Variant Extractor
+    rule and keeps the AI overlay strictly additive.
+    """
+    if not isinstance(value, str):
+        return None
+    name = " ".join(value.split())
+    if not name:
+        return None
+    if _SIZE_ONLY_VARIANT_RE.fullmatch(name) or _GENERIC_VARIANT_RE.fullmatch(name):
+        return None
+    return name
 
 
 def apply_cached_enrichment(publications: list[Publication]) -> list[Publication]:
@@ -42,12 +74,13 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
 
             # Protect the strong text-only Variant Extractor v2. Luna can fill a
             # genuinely weak/empty provider variant set, but cannot replace a
-            # variant result that Kurv already considers reliable.
+            # variant result that Kurv already considers reliable. Weight,
+            # volume, pack count and generic campaign wording are never variants.
             if variant_confidence >= 0.99 and offer.variant_confidence < 0.65:
                 names = [
-                    " ".join(str(value).split())
+                    name
                     for value in facts.get("variants", [])
-                    if isinstance(value, str) and " ".join(value.split())
+                    if (name := _safe_luna_variant_name(value)) is not None
                 ]
                 names = list(dict.fromkeys(names))[:12]
                 if names:
