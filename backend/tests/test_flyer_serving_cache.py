@@ -53,6 +53,42 @@ def _publication(*, title="Uge 34", price=15.0, with_offer=True):
     return publication
 
 
+def _seafood_publication():
+    publication = Publication(
+        id="foetex-week",
+        retailer="føtex",
+        title="føtex uge 34",
+        valid_from="14.08.2026",
+        valid_until="20.08.2026",
+        status="current",
+        source_url="https://example.test/foetex",
+        page_count=1,
+        page_image_urls=["https://example.test/foetex/page-1.jpg"],
+    )
+    publication.structured_offers = [Offer(
+        id="seafoodmix",
+        retailer="føtex",
+        publication_id=publication.id,
+        publication_title=publication.title,
+        product_name="Salling Seafoodmix, vannameirejer, tunsteak eller -poke",
+        price=29.0,
+        normal_price=166.67,
+        source_url=publication.source_url,
+        page_number=1,
+        hotspot_x=0.1,
+        hotspot_y=0.2,
+        hotspot_width=0.3,
+        hotspot_height=0.2,
+        hotspot_confidence=0.95,
+        raw_text=(
+            "Salling Seafoodmix, vannameirejer, tunsteak eller -poke 150-300 g. "
+            "PLUS PRIS 25,- Gælder kun med føtex Plus appen. "
+            "PR. STK. 29,- Pr. kg max. 193,33"
+        ),
+    )]
+    return publication
+
+
 def test_processing_replacement_keeps_last_served_hotspots(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     monkeypatch.setattr(luna_overlay, "publication_is_ready", lambda publication: False)
@@ -110,3 +146,60 @@ def test_verified_snapshot_survives_temporary_provider_gap(monkeypatch, tmp_path
     assert len(served) == 1
     assert served[0].retailer == "REMA 1000"
     assert len(served[0].structured_offers) == 1
+
+
+def test_snapshot_stores_raw_offer_fields_not_member_price_presentation(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    publication = _seafood_publication()
+    offer = publication.structured_offers[0]
+
+    # The ordinary API payload is presentation-aware and therefore contains the
+    # derived member-price fields. The persistent serving cache must not.
+    presented = offer.model_dump()
+    assert presented["price"] == 29.0
+    assert presented["member_price"] == 25.0
+
+    snapshot = luna_overlay._publication_snapshot(publication, verified=True)
+    cached_offer = snapshot["publication"]["structured_offers"][0]
+
+    assert cached_offer["price"] == 29.0
+    assert cached_offer["normal_price"] == 166.67
+    assert "member_price" not in cached_offer
+    assert "member_price_label" not in cached_offer
+
+
+def test_v1_cache_is_rebuilt_from_current_raw_provider_generation(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    cache_path = tmp_path / "flyer-serving-cache.json"
+
+    poisoned = _seafood_publication()
+    poisoned_payload = poisoned.model_dump(exclude={"text", "page_texts"})
+    poisoned_payload["structured_offers"] = [
+        {
+            **luna_overlay._raw_offer_payload(poisoned.structured_offers[0]),
+            "price": None,
+        }
+    ]
+    cache_path.write_text(json.dumps({
+        "version": 1,
+        "publications": {
+            poisoned.id: {
+                "fingerprint": "legacy-poisoned",
+                "verified": True,
+                "saved_at": 1,
+                "publication": poisoned_payload,
+            }
+        },
+    }), encoding="utf-8")
+
+    current = _seafood_publication()
+    monkeypatch.setattr(luna_overlay, "publication_is_ready", lambda publication: True)
+
+    served = luna_overlay.apply_cached_enrichment([current])
+
+    assert served[0].structured_offers[0].price == 29.0
+    rewritten = json.loads(cache_path.read_text("utf-8"))
+    assert rewritten["version"] == 2
+    cached_offer = rewritten["publications"][current.id]["publication"]["structured_offers"][0]
+    assert cached_offer["price"] == 29.0
+    assert "member_price" not in cached_offer
