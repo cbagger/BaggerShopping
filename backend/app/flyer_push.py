@@ -15,7 +15,16 @@ from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from .flyer_adapters import RETAILER_ORDER, fetch_all_publications
+# Discovery must use the raw deterministic provider objects. Otherwise Luna's
+# own cached overlay could change variants/prices and accidentally look like a
+# new flyer version, creating a self-triggering enrichment loop.
+from . import _original_fetch_all_publications as fetch_all_publications
+from .flyer_adapters import RETAILER_ORDER
+from .flyer_readiness import (
+    observe_publications,
+    publication_fingerprint,
+    publication_is_ready,
+)
 from .households import current_household
 
 router = APIRouter(prefix="/api/mobile/v1/flyer-notifications", tags=["flyer-notifications"])
@@ -132,56 +141,122 @@ def _notification_name(publication: Any) -> str:
     return title if publication.retailer.casefold() in title.casefold() else f"{publication.retailer} {title}".strip()
 
 
+def _version_key(publication: Any) -> str:
+    return f"{publication.id}:{publication_fingerprint(publication)}"
+
+
 async def check_and_send() -> dict[str, int]:
     publications = [item for item in await fetch_all_publications() if item.status != "expired"]
     current = {item.id: item for item in publications}
+
+    # Migrate the existing push history into version-aware tracking. On the very
+    # first install there is no previous history, so all current flyers are the
+    # baseline and must not trigger pushes/Luna. On an upgrade, readiness uses
+    # the existing seen IDs as the safe baseline and queues anything else.
     async with STORE_LOCK:
         store = _load()
-        previous = set(store.get("seen_publications", []))
-        if not store.get("initialized"):
+        initialized = bool(store.get("initialized"))
+        previous_ids = set(store.get("seen_publications", []))
+        seen_versions = dict(store.get("seen_publication_fingerprints", {}))
+
+        if not initialized:
             store["initialized"] = True
             store["seen_publications"] = sorted(current)
+            store["seen_publication_fingerprints"] = {
+                publication.id: publication_fingerprint(publication)
+                for publication in publications
+            }
+            store["last_check_at"] = int(time.time())
             _save(store)
+            observe_publications(publications, bootstrap_ready_ids=None)
             return {"new": 0, "sent": 0, "failed": 0}
-        unseen = [item for key, item in current.items() if key not in previous]
+
+        # Existing installations predate version fingerprints. Seed only IDs
+        # already known by the old notification worker; an actually new flyer
+        # present during deployment therefore remains pending instead of being
+        # accidentally published.
+        if not seen_versions and previous_ids:
+            seen_versions = {
+                publication.id: publication_fingerprint(publication)
+                for publication in publications
+                if publication.id in previous_ids
+            }
+            store["seen_publication_fingerprints"] = dict(seen_versions)
+            _save(store)
+
+    observe_publications(publications, bootstrap_ready_ids=previous_ids)
+
+    async with STORE_LOCK:
+        store = _load()
+        seen_versions = dict(store.get("seen_publication_fingerprints", {}))
         devices = dict(store.get("devices", {}))
 
+    unseen = [
+        publication
+        for publication in current.values()
+        if seen_versions.get(publication.id) != publication_fingerprint(publication)
+    ]
+
+    # Readiness is the publication gate. A flyer can be detected for hours
+    # without being pushed; it becomes eligible only after Luna marks the exact
+    # provider version ready.
+    ready_unseen = [publication for publication in unseen if publication_is_ready(publication)]
+
     sent = failed = 0
-    completed: set[str] = set()
-    for publication in unseen:
+    completed_versions: dict[str, str] = {}
+
+    for publication in ready_unseen:
+        fingerprint = publication_fingerprint(publication)
+        version_key = _version_key(publication)
         targets = 0
         publication_failed = False
+
         for device_id, device in devices.items():
             if not device.get("enabled") or publication.retailer not in device.get("retailers", []):
                 continue
             targets += 1
-            delivered = set(device.get("delivered_publications", []))
-            if publication.id in delivered:
+            delivered_versions = set(device.get("delivered_publication_versions", []))
+            if version_key in delivered_versions:
                 continue
+
             ok = await _send(
-                device["device_token"], device.get("environment", "production"),
-                "Ny tilbudsavis", f"{_notification_name(publication)} er nu tilgængelig",
+                device["device_token"],
+                device.get("environment", "production"),
+                "Ny tilbudsavis",
+                f"{_notification_name(publication)} er nu tilgængelig",
                 publication.id,
                 publication.retailer,
             )
             sent += int(ok)
             failed += int(not ok)
             publication_failed = publication_failed or not ok
+
             if ok:
                 async with STORE_LOCK:
                     latest = _load()
                     record = latest.setdefault("devices", {}).get(device_id)
                     if record is not None:
-                        history = list(dict.fromkeys([*record.get("delivered_publications", []), publication.id]))[-200:]
-                        record["delivered_publications"] = history
+                        history = list(dict.fromkeys([
+                            *record.get("delivered_publication_versions", []),
+                            version_key,
+                        ]))[-300:]
+                        record["delivered_publication_versions"] = history
                         _save(latest)
+
         if targets == 0 or not publication_failed:
-            completed.add(publication.id)
+            completed_versions[publication.id] = fingerprint
+
     async with STORE_LOCK:
         store = _load()
-        store["seen_publications"] = sorted(set(store.get("seen_publications", [])) | completed)
+        seen = set(store.get("seen_publications", []))
+        versions = store.setdefault("seen_publication_fingerprints", {})
+        for publication_id, fingerprint in completed_versions.items():
+            seen.add(publication_id)
+            versions[publication_id] = fingerprint
+        store["seen_publications"] = sorted(seen)
         store["last_check_at"] = int(time.time())
         _save(store)
+
     return {"new": len(unseen), "sent": sent, "failed": failed}
 
 
