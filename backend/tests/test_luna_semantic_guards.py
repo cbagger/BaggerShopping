@@ -70,6 +70,60 @@ def test_partial_page_output_is_rejected():
     assert len(accepted) == 2
 
 
+def test_safe_build58_page_result_upgrades_legacy_v1_record(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path)
+    offer = _offer()
+    fingerprint = luna.offer_fingerprint(offer)
+    legacy_signature = luna.offer_pricing_signature(offer)
+    store = {
+        "records": {
+            fingerprint: {
+                "status": "completed",
+                # No analysis_level means a legacy Build56/57 Luna result.
+                "facts": {
+                    "same_offer": True,
+                    "ordinary_price": 15,
+                    "member_price": None,
+                    "pricing_confidence": 0.99,
+                },
+            }
+        },
+        "pricing_index": {legacy_signature: fingerprint},
+        "usage": {},
+        "events": [],
+    }
+    facts = {
+        "visible": True,
+        "product_name": "Offer one",
+        "brand": None,
+        "ordinary_price": 15,
+        "member_price": 12,
+        "member_program": "Bilka Plus",
+        "member_app": "Bilka Plus",
+        "requires_activation": False,
+        "before_price": None,
+        "unit_price": None,
+        "package_size": None,
+        "multiple_products": False,
+        "variants": [],
+        "identity_confidence": 0.99,
+        "pricing_confidence": 0.99,
+        "variant_confidence": 0.80,
+        "needs_crop_verification": False,
+    }
+    guards._index_page_pricing_upgrading_legacy(
+        store,
+        offer,
+        facts,
+        needs_crop=False,
+        page_fingerprint_value="page-new",
+    )
+    upgraded = store["records"][fingerprint]
+    assert upgraded["analysis_level"] == "page-audit"
+    assert upgraded["facts"]["member_price"] == 12
+    assert upgraded["page_fingerprint"] == "page-new"
+
+
 def test_old_v1_record_does_not_block_build58_requested_crop(monkeypatch, tmp_path):
     _isolated(monkeypatch, tmp_path)
     offer = _offer()
