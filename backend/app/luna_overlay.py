@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 
+from .flyer_readiness import filter_ready_publications
 from .luna_enrichment import load_config, load_store, offer_fingerprint
 from .luna_semantic_audit import offer_key
 from .meny_flyer import Offer, OfferVariant, Publication
@@ -48,20 +49,22 @@ def _record_facts(offer: Offer, records: dict) -> dict | None:
 
 
 def apply_cached_enrichment(publications: list[Publication]) -> list[Publication]:
-    """Apply only persisted, high-confidence Luna facts.
+    """Expose only ready flyer versions, then apply persisted Luna facts.
 
-    Build 58 adds a general semantic page audit. Provider facts remain the base
-    truth and are never mutated on disk. The overlay is an in-memory copy used
-    only while Luna is enabled. Turning Luna OFF therefore immediately restores
-    the deterministic provider/Variant Extractor path, including all original
-    prices, brands and variants.
+    Readiness is independent of the Luna master switch. A new/changed flyer is
+    hidden while its event job is processing even if Luna is later disabled;
+    this prevents the app from opening a provider version that has not passed
+    the publication gate. Existing baseline flyers fail open until the detector
+    initializes the readiness store during migration.
     """
+    publications = filter_ready_publications(publications)
+
     config = load_config()
     if not config.get("enabled") or not config.get("apply_results"):
         return publications
 
     # One cached store snapshot per flyer fetch. Never deep-copy/re-read the
-    # growing Luna store once per offer; Build 58 can carry thousands of facts.
+    # growing Luna store once per offer; page audits can carry thousands of facts.
     store = load_store()
     records = store.get("records", {})
     semantic_rows = store.get("semantic_facts", {})
@@ -96,9 +99,9 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
             if semantic is not None:
                 signals.append("luna-semantic-audited")
                 if facts.get("multiple_products"):
-                    # The multi-product fact is intentionally useful even while
-                    # a crop is pending: it can only make the UI safer by
-                    # blocking direct-add, never invent a specific variant.
+                    # The multi-product fact is useful even while a crop is
+                    # pending: it can only make the UI safer by blocking
+                    # direct-add, never invent a specific variant.
                     signals.append("luna-multiple-products")
                 if facts.get("package_size"):
                     # Keep package/weight as metadata only. Product Identity and
@@ -115,8 +118,8 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
 
             # A visually verified ordinary price can repair a provider value for
             # non-member campaigns. Member campaigns remain handled by the
-            # separate member-pricing presentation layer so ordinary/member roles
-            # can never collapse into one headline price.
+            # separate member-pricing presentation layer so ordinary/member
+            # roles can never collapse into one headline price.
             if (
                 semantic is not None
                 and not semantic_needs_crop
@@ -126,9 +129,9 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
             ):
                 updates["price"] = round(float(facts["ordinary_price"]), 2)
 
-            # Strong deterministic variants remain protected. Luna can replace a
-            # weak campaign heading or empty provider variant set when the visual
-            # audit has high confidence. Size/weight/generic phrases are filtered.
+            # Strong deterministic variants remain protected. Luna can replace
+            # a weak campaign heading or empty provider set only at high visual
+            # confidence. Size/weight/generic phrases are filtered.
             if (
                 not semantic_needs_crop
                 and variant_confidence >= 0.99
