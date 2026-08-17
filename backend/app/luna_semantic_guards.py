@@ -82,7 +82,7 @@ def _pricing_sanity_reasons(offer, facts) -> tuple[str, ...]:
     possible while preventing a kg/stk comparison price or an unresolved badge
     from becoming customer-visible truth just because confidence is high.
     """
-    if not isinstance(facts, dict) or not facts.get("visible"):
+    if not isinstance(facts, dict) or not (facts.get("visible") or facts.get("same_offer")):
         return ()
 
     reasons: list[str] = []
