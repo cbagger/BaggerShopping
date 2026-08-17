@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 
+from .flyer_readiness import status_payload as readiness_status
 from .luna_enrichment import load_config, save_config, status_payload
 from .luna_semantic_audit import semantic_status_payload
 from .luna_cost_policy import status_payload as cost_policy_status
@@ -18,6 +19,7 @@ def parser() -> argparse.ArgumentParser:
     budget = sub.add_parser("budget")
     budget.add_argument("dkk", type=float)
     sub.add_parser("run-once")
+    sub.add_parser("run-queued-once")
     return value
 
 
@@ -26,6 +28,7 @@ def _status() -> dict:
     total = max(1, int(config.get("max_requests_per_scan", 20)))
     semantic_config = {
         "master_enabled": bool(config.get("enabled")),
+        "persistent_mode": "event-driven-publication-queue",
         "max_requests_per_scan": total,
         "max_page_audits_per_scan": max(
             1, int(config.get("max_page_audits_per_scan", max(1, total // 2)))
@@ -42,6 +45,7 @@ def _status() -> dict:
         **status_payload(),
         **semantic_status_payload(),
         "semantic_config": semantic_config,
+        "publication_readiness": readiness_status(),
         "cost_policy": cost_policy_status(),
     }
 
@@ -52,7 +56,8 @@ def main() -> None:
         save_config({"enabled": True})
     elif args.command == "disable":
         # Master switch: OFF means zero OpenAI calls and zero application of
-        # cached Luna page/crop facts. Deterministic Kurv remains fully usable.
+        # cached Luna page/crop facts. Readiness itself remains fail-shut for a
+        # version already queued as processing.
         save_config({"enabled": False})
     elif args.command == "budget":
         if args.dkk < 0:
@@ -61,6 +66,10 @@ def main() -> None:
     elif args.command == "run-once":
         from .luna_worker import run_once
         print(json.dumps(asyncio.run(run_once()), ensure_ascii=False, indent=2))
+        return
+    elif args.command == "run-queued-once":
+        from .luna_worker import run_queued_once
+        print(json.dumps(asyncio.run(run_queued_once()), ensure_ascii=False, indent=2))
         return
     print(json.dumps(_status(), ensure_ascii=False, indent=2))
 
