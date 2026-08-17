@@ -26,6 +26,15 @@ _EXPLICIT_ACTIVATION_RE = re.compile(
     r"\b(?:aktiv[ée]r(?:e|es|et)?|aktiver(?:e|es|et)?|klip(?:pe|pes|pet)?)\b",
     re.IGNORECASE,
 )
+_UNIT_PRICE_SUFFIX_RE = re.compile(
+    r"^\s*(?:kr\.?\s*)?(?:/|pr\.?\s*)(?:kg|g|l|liter|ml|cl|dl|100\s*g|100\s*ml)\b",
+    re.IGNORECASE,
+)
+_UNIT_PRICE_PREFIX_RE = re.compile(
+    r"(?:\bpr\.?\s*(?:kg|g|l|liter|ml|cl|dl|100\s*g|100\s*ml)|"
+    r"\b(?:kg|g|l|liter|ml|cl|dl)\s*pris)\s*.{0,18}$",
+    re.IGNORECASE,
+)
 _PROGRAMS: tuple[tuple[re.Pattern[str], str, str | None], ...] = (
     (re.compile(r"\blidl\s*plus\b", re.IGNORECASE), "Lidl Plus", "Lidl Plus"),
     (re.compile(r"\bnetto\s*(?:\+|plus)\b", re.IGNORECASE), "Netto+", "Netto+"),
@@ -70,6 +79,21 @@ def _program(text: str, retailer: str) -> tuple[str, str | None]:
     return "Medlemspris", None
 
 
+def _explicit_match_is_unit_price(text: str, match: re.Match[str]) -> bool:
+    """Reject a tagged numeric value when it is visibly a unit price.
+
+    Provider metadata and page text can contain constructs such as
+    ``plus pris 166,67 kr/kg``. The role word alone must never promote a kg/l
+    comparison price to the customer-facing member price.
+    """
+    suffix = text[match.end("price"):match.end("price") + 28]
+    prefix = text[max(0, match.start() - 32):match.start()]
+    return bool(
+        _UNIT_PRICE_SUFFIX_RE.search(suffix)
+        or _UNIT_PRICE_PREFIX_RE.search(prefix)
+    )
+
+
 def _explicit_fallback(
     *,
     retailer: str,
@@ -82,10 +106,17 @@ def _explicit_fallback(
     if "[kurv-page-context]" in text:
         return None
     member_match = _EXPLICIT_MEMBER_RE.search(text)
-    if member_match is None:
+    if member_match is None or _explicit_match_is_unit_price(text, member_match):
         return None
     member_price = _number(member_match.group("price"))
     if member_price is None:
+        return None
+
+    # Fundamental Price Guard: a member price cannot be higher than the
+    # provider's current product price. If it is, the numeric candidate is a
+    # unit/reference/foreign price role and must fail closed rather than replace
+    # the product price in the public payload.
+    if price is not None and member_price > price + 0.005:
         return None
 
     ordinary: float | None = None
