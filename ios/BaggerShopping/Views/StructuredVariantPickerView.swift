@@ -188,18 +188,19 @@ struct StructuredVariantPickerView: View {
     private func choose(_ rawName: String) {
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
+        let shoppingName = offer.samsungSafeShoppingItemName(name)
         saving = true
         Task {
             if rememberForFamily {
                 try? await api.saveFamilyProductPreference(
                     itemName: offer.conciseProductName,
-                    preferredName: name,
+                    preferredName: shoppingName,
                     mode: requireExactVariant ? "required" : "preferred"
                 )
             }
             await MainActor.run {
                 saving = false
-                select(name)
+                select(shoppingName)
             }
         }
     }
