@@ -17,7 +17,15 @@ STORE_VERSION = 1
 
 
 def store_path() -> Path:
-    return Path(os.getenv("FLYER_READINESS_STORE_PATH", "/data/flyer-readiness.json"))
+    explicit = os.getenv("FLYER_READINESS_STORE_PATH")
+    if explicit:
+        return Path(explicit)
+    # Tests and small deployments that override only the existing flyer-push
+    # store automatically get an isolated sibling readiness store too.
+    push_store = os.getenv("FLYER_PUSH_STORE_PATH")
+    if push_store:
+        return Path(push_store).with_name("flyer-readiness.json")
+    return Path("/data/flyer-readiness.json")
 
 
 def _lock_path() -> Path:
@@ -85,6 +93,10 @@ def load_store() -> dict[str, Any]:
             return _read_unlocked()
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def readiness_revision() -> int:
+    return int(load_store().get("updated_at") or 0)
 
 
 def _stable_url(value: str) -> str:
@@ -285,7 +297,29 @@ def pending_publication_records() -> list[dict[str, Any]]:
         for row in store.get("publications", {}).values()
         if isinstance(row, dict) and row.get("status") == "processing"
     ]
-    return sorted(result, key=lambda row: (int(row.get("detected_at") or 0), str(row.get("publication_id") or "")))
+    return sorted(
+        result,
+        key=lambda row: (
+            int(row.get("detected_at") or 0),
+            str(row.get("publication_id") or ""),
+        ),
+    )
+
+
+def ready_publication_records() -> list[dict[str, Any]]:
+    store = load_store()
+    result = [
+        dict(row)
+        for row in store.get("publications", {}).values()
+        if isinstance(row, dict) and row.get("status") == "ready"
+    ]
+    return sorted(
+        result,
+        key=lambda row: (
+            int(row.get("ready_at") or 0),
+            str(row.get("publication_id") or ""),
+        ),
+    )
 
 
 def mark_processing_attempt(publication_id: str, fingerprint: str) -> None:
@@ -321,6 +355,9 @@ def mark_failed(publication_id: str, fingerprint: str, error: str) -> None:
         row = store.setdefault("publications", {}).get(publication_id)
         if not isinstance(row, dict) or row.get("fingerprint") != fingerprint:
             return
+        # Fail shut but keep the event queued. The event worker applies a
+        # backoff and can retry; the mobile API never exposes this version while
+        # mandatory Luna work is unresolved.
         row["status"] = "processing"
         row["last_error"] = error[:500]
         row["last_failed_at"] = int(time.time())
