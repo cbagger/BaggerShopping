@@ -2,6 +2,7 @@ from app import member_pricing_v3 as v3
 from app import member_pricing_v4 as v4
 from app import luna_semantic_audit as semantic
 from app import luna_semantic_guards as guards
+from app.member_pricing import detect_member_pricing as detect_public_member_pricing
 from app.luna_enrichment import offer_fingerprint
 from app.meny_flyer import Offer, Publication
 
@@ -68,6 +69,64 @@ def test_unresolved_luna_primary_member_role_is_fail_closed(monkeypatch):
     )
 
     assert result is None
+
+
+def test_public_fallback_cannot_promote_unit_price_after_luna_is_rejected(monkeypatch):
+    """Exact live follow-on: 166.67 kr/kg must never replace provider price 29."""
+
+    def ambiguous_luna(**_):
+        return {
+            "authoritative": True,
+            "ordinary_price": None,
+            "member_price": 29,
+            "member_program": "føtex plus",
+            "member_app": "føtex plus appen",
+            "requires_activation": False,
+            "pricing_confidence": 0.98,
+        }
+
+    monkeypatch.setattr(v3, "_luna_override", ambiguous_luna)
+
+    result = detect_public_member_pricing(
+        retailer="føtex",
+        price=29,
+        normal_price=None,
+        text=(
+            "Salling Seafoodmix, vannameirejer, tunsteak eller -poke | "
+            "plus pris 166,67 kr/kg max. | føtex Plus"
+        ),
+        unit_price="166,67 kr/kg max. (plus); 193,33 kr/kg max.",
+    )
+
+    assert result is None
+
+
+def test_public_fallback_rejects_any_member_candidate_above_provider_product_price(monkeypatch):
+    monkeypatch.setattr(v3, "_luna_override", lambda **_: None)
+
+    result = detect_public_member_pricing(
+        retailer="føtex",
+        price=29,
+        normal_price=None,
+        text="Salling Seafoodmix | plus pris 166,67",
+    )
+
+    assert result is None
+
+
+def test_public_fallback_still_accepts_real_member_price_below_provider_price(monkeypatch):
+    monkeypatch.setattr(v3, "_luna_override", lambda **_: None)
+
+    result = detect_public_member_pricing(
+        retailer="føtex",
+        price=29,
+        normal_price=None,
+        text="Salling Seafoodmix | plus pris 25 kr | føtex Plus",
+    )
+
+    assert result is not None
+    assert result.ordinary_price == 29
+    assert result.member_price == 25
 
 
 def test_resolved_luna_member_role_remains_customer_visible(monkeypatch):
