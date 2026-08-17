@@ -8,6 +8,8 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
+from pydantic import BaseModel
+
 from .flyer_readiness import (
     load_store as load_readiness_store,
     publication_fingerprint,
@@ -30,21 +32,40 @@ _GENERIC_VARIANT_RE = re.compile(
     r"^\s*(?:flere\s+varianter|frit\s+valg|assorterede?|diverse|flere\s+slags)\s*$",
     re.IGNORECASE,
 )
-_SERVING_CACHE_VERSION = 1
+# v1 accidentally serialized Offer.model_dump(), which is Kurv's customer-facing
+# member-price presentation hook. That could freeze a stale Luna classification
+# into the serving cache as if it were raw provider data. v2 stores only the
+# underlying Pydantic fields and deliberately invalidates v1 snapshots.
+_SERVING_CACHE_VERSION = 2
 
 
 def _serving_cache_path() -> Path:
     return Path(os.getenv("FLYER_SERVING_CACHE_PATH", "/data/flyer-serving-cache.json"))
 
 
+def _empty_serving_cache(*, migrated_from: object = None) -> dict:
+    value = {"version": _SERVING_CACHE_VERSION, "publications": {}}
+    if migrated_from is not None:
+        value["migrated_from_version"] = migrated_from
+    return value
+
+
 def _load_serving_cache() -> dict:
     try:
         value = json.loads(_serving_cache_path().read_text("utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {"version": _SERVING_CACHE_VERSION, "publications": {}}
+        return _empty_serving_cache()
     if not isinstance(value, dict):
-        return {"version": _SERVING_CACHE_VERSION, "publications": {}}
-    value.setdefault("version", _SERVING_CACHE_VERSION)
+        return _empty_serving_cache()
+
+    version = value.get("version")
+    if version != _SERVING_CACHE_VERSION:
+        # v1 snapshots cannot be repaired safely because the presentation hook
+        # may already have replaced the raw provider price. Rebuild the cache
+        # from the current raw provider objects instead. This is a cache-only
+        # migration; family/list/Samsung/Luna stores remain untouched.
+        return _empty_serving_cache(migrated_from=version)
+
     value.setdefault("publications", {})
     return value
 
@@ -67,9 +88,16 @@ def _save_serving_cache(store: dict) -> None:
         return
 
 
+def _raw_offer_payload(offer: Offer) -> dict:
+    """Serialize source fields without Kurv's presentation-time price hook."""
+    return BaseModel.model_dump(offer)
+
+
 def _publication_snapshot(publication: Publication, *, verified: bool) -> dict:
     payload = publication.model_dump(exclude={"text", "page_texts"})
-    payload["structured_offers"] = [offer.model_dump() for offer in publication.structured_offers]
+    payload["structured_offers"] = [
+        _raw_offer_payload(offer) for offer in publication.structured_offers
+    ]
     return {
         "fingerprint": publication_fingerprint(publication),
         "verified": verified,
@@ -126,7 +154,7 @@ def _serve_stable_publications(publications: list[Publication]) -> list[Publicat
     rows = store.setdefault("publications", {})
     result: list[Publication] = []
     current_ids: set[str] = set()
-    changed = False
+    changed = bool(store.get("migrated_from_version") is not None)
 
     for publication in publications:
         current_ids.add(publication.id)
@@ -168,6 +196,7 @@ def _serve_stable_publications(publications: list[Publication]) -> list[Publicat
             result.append(cached)
 
     if changed:
+        store.pop("migrated_from_version", None)
         _save_serving_cache(store)
     return result
 
