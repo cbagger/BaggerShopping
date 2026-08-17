@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,8 @@ from .flyer_readiness import (
     observe_publications,
     publication_fingerprint,
     publication_is_ready,
+    readiness_revision,
+    ready_publication_records,
 )
 from .households import current_household
 
@@ -137,12 +140,137 @@ async def _send(
 
 
 def _notification_name(publication: Any) -> str:
-    title = publication.title.strip()
-    return title if publication.retailer.casefold() in title.casefold() else f"{publication.retailer} {title}".strip()
+    title = str(getattr(publication, "title", "") or "").strip()
+    retailer = str(getattr(publication, "retailer", "") or "").strip()
+    return title if retailer.casefold() in title.casefold() else f"{retailer} {title}".strip()
 
 
 def _version_key(publication: Any) -> str:
     return f"{publication.id}:{publication_fingerprint(publication)}"
+
+
+def _record_version_key(record: dict[str, Any]) -> str:
+    return f"{record.get('publication_id')}:{record.get('fingerprint')}"
+
+
+def _install_mobile_cache_readiness_guard() -> None:
+    """Invalidate the Mobile API flyer cache whenever readiness changes.
+
+    `mobile_main` imports `mobile_offers` before this module, so in that process
+    the module is already available and can be wrapped without a circular
+    import. The standalone flyer-push worker never imports mobile_offers, so the
+    hook is a no-op there. Endpoint functions resolve `_publications` from their
+    module globals at call time, making this safe for the existing router.
+    """
+    mobile = sys.modules.get(f"{__package__}.mobile_offers")
+    if mobile is None:
+        return
+    original = getattr(mobile, "_publications", None)
+    if original is None or getattr(original, "_readiness_guard_installed", False):
+        return
+
+    state = {"revision": readiness_revision()}
+
+    async def guarded_publications():
+        revision = readiness_revision()
+        if revision != state["revision"]:
+            lock = getattr(mobile, "_publication_lock")
+            async with lock:
+                mobile._publications_cache = []
+                mobile._publication_cache = None
+                mobile._publication_cache_time = 0.0
+            state["revision"] = revision
+        return await original()
+
+    guarded_publications._readiness_guard_installed = True
+    mobile._publications = guarded_publications
+
+
+_install_mobile_cache_readiness_guard()
+
+
+async def _deliver_ready_records(records: list[dict[str, Any]]) -> dict[str, int]:
+    """Deliver ready flyer versions using only local readiness metadata."""
+    async with STORE_LOCK:
+        store = _load()
+        if not store.get("initialized"):
+            return {"ready": 0, "sent": 0, "failed": 0}
+        seen_versions = dict(store.get("seen_publication_fingerprints", {}))
+        devices = dict(store.get("devices", {}))
+
+    ready_unseen = [
+        row for row in records
+        if row.get("publication_id")
+        and row.get("fingerprint")
+        and seen_versions.get(str(row["publication_id"])) != str(row["fingerprint"])
+    ]
+
+    sent = failed = 0
+    completed_versions: dict[str, str] = {}
+
+    for row in ready_unseen:
+        publication_id = str(row["publication_id"])
+        retailer = str(row.get("retailer") or "")
+        title = str(row.get("title") or "")
+        fingerprint = str(row["fingerprint"])
+        version_key = _record_version_key(row)
+        notification_name = title if retailer.casefold() in title.casefold() else f"{retailer} {title}".strip()
+        targets = 0
+        publication_failed = False
+
+        for device_id, device in devices.items():
+            if not device.get("enabled") or retailer not in device.get("retailers", []):
+                continue
+            targets += 1
+            delivered_versions = set(device.get("delivered_publication_versions", []))
+            if version_key in delivered_versions:
+                continue
+
+            ok = await _send(
+                device["device_token"],
+                device.get("environment", "production"),
+                "Ny tilbudsavis",
+                f"{notification_name} er nu tilgængelig",
+                publication_id,
+                retailer,
+            )
+            sent += int(ok)
+            failed += int(not ok)
+            publication_failed = publication_failed or not ok
+
+            if ok:
+                async with STORE_LOCK:
+                    latest = _load()
+                    record = latest.setdefault("devices", {}).get(device_id)
+                    if record is not None:
+                        history = list(dict.fromkeys([
+                            *record.get("delivered_publication_versions", []),
+                            version_key,
+                        ]))[-300:]
+                        record["delivered_publication_versions"] = history
+                        _save(latest)
+
+        if targets == 0 or not publication_failed:
+            completed_versions[publication_id] = fingerprint
+
+    if completed_versions:
+        async with STORE_LOCK:
+            store = _load()
+            seen = set(store.get("seen_publications", []))
+            versions = store.setdefault("seen_publication_fingerprints", {})
+            for publication_id, fingerprint in completed_versions.items():
+                seen.add(publication_id)
+                versions[publication_id] = fingerprint
+            store["seen_publications"] = sorted(seen)
+            store["last_ready_delivery_at"] = int(time.time())
+            _save(store)
+
+    return {"ready": len(ready_unseen), "sent": sent, "failed": failed}
+
+
+async def deliver_ready_notifications() -> dict[str, int]:
+    """Local, provider-free delivery path used after Luna marks a flyer ready."""
+    return await _deliver_ready_records(ready_publication_records())
 
 
 async def check_and_send() -> dict[str, int]:
@@ -189,7 +317,6 @@ async def check_and_send() -> dict[str, int]:
     async with STORE_LOCK:
         store = _load()
         seen_versions = dict(store.get("seen_publication_fingerprints", {}))
-        devices = dict(store.get("devices", {}))
 
     unseen = [
         publication
@@ -197,77 +324,42 @@ async def check_and_send() -> dict[str, int]:
         if seen_versions.get(publication.id) != publication_fingerprint(publication)
     ]
 
-    # Readiness is the publication gate. A flyer can be detected for hours
-    # without being pushed; it becomes eligible only after Luna marks the exact
-    # provider version ready.
-    ready_unseen = [publication for publication in unseen if publication_is_ready(publication)]
-
-    sent = failed = 0
-    completed_versions: dict[str, str] = {}
-
-    for publication in ready_unseen:
-        fingerprint = publication_fingerprint(publication)
-        version_key = _version_key(publication)
-        targets = 0
-        publication_failed = False
-
-        for device_id, device in devices.items():
-            if not device.get("enabled") or publication.retailer not in device.get("retailers", []):
-                continue
-            targets += 1
-            delivered_versions = set(device.get("delivered_publication_versions", []))
-            if version_key in delivered_versions:
-                continue
-
-            ok = await _send(
-                device["device_token"],
-                device.get("environment", "production"),
-                "Ny tilbudsavis",
-                f"{_notification_name(publication)} er nu tilgængelig",
-                publication.id,
-                publication.retailer,
-            )
-            sent += int(ok)
-            failed += int(not ok)
-            publication_failed = publication_failed or not ok
-
-            if ok:
-                async with STORE_LOCK:
-                    latest = _load()
-                    record = latest.setdefault("devices", {}).get(device_id)
-                    if record is not None:
-                        history = list(dict.fromkeys([
-                            *record.get("delivered_publication_versions", []),
-                            version_key,
-                        ]))[-300:]
-                        record["delivered_publication_versions"] = history
-                        _save(latest)
-
-        if targets == 0 or not publication_failed:
-            completed_versions[publication.id] = fingerprint
+    # Detection only queues processing versions. Delivery is driven by the
+    # shared local readiness store, so no second provider fetch is needed when
+    # Luna later flips the version to ready.
+    delivery = await deliver_ready_notifications()
 
     async with STORE_LOCK:
         store = _load()
-        seen = set(store.get("seen_publications", []))
-        versions = store.setdefault("seen_publication_fingerprints", {})
-        for publication_id, fingerprint in completed_versions.items():
-            seen.add(publication_id)
-            versions[publication_id] = fingerprint
-        store["seen_publications"] = sorted(seen)
         store["last_check_at"] = int(time.time())
         _save(store)
 
-    return {"new": len(unseen), "sent": sent, "failed": failed}
+    return {
+        "new": len(unseen),
+        "sent": delivery["sent"],
+        "failed": delivery["failed"],
+    }
 
 
 async def worker() -> None:
-    interval = max(300, int(os.getenv("FLYER_PUSH_INTERVAL_SECONDS", "3600")))
+    provider_interval = max(300, int(os.getenv("FLYER_PUSH_INTERVAL_SECONDS", "3600")))
+    ready_interval = max(5, int(os.getenv("FLYER_READY_POLL_SECONDS", "10")))
+    next_provider_check = 0.0
+
     while True:
         try:
-            print({"flyer_push": await check_and_send()}, flush=True)
+            now = time.monotonic()
+            if now >= next_provider_check:
+                result = await check_and_send()
+                next_provider_check = time.monotonic() + provider_interval
+                print({"flyer_push": result}, flush=True)
+            else:
+                delivery = await deliver_ready_notifications()
+                if delivery["ready"] or delivery["sent"] or delivery["failed"]:
+                    print({"flyer_ready_push": delivery}, flush=True)
         except Exception as exc:
             print({"flyer_push_error": str(exc)}, flush=True)
-        await asyncio.sleep(interval)
+        await asyncio.sleep(ready_interval)
 
 
 if __name__ == "__main__":
