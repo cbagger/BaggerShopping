@@ -4,8 +4,7 @@ import json
 
 from app import luna_cost_policy as policy
 from app import luna_enrichment as luna
-from app import luna_semantic_audit as semantic
-from app.meny_flyer import Offer, OfferVariant, Publication
+from app.meny_flyer import Offer
 
 
 def _isolated(monkeypatch, tmp_path, **config_updates):
@@ -26,13 +25,13 @@ def _isolated(monkeypatch, tmp_path, **config_updates):
     monkeypatch.setattr(luna, "_store_signature", None)
 
 
-def _offer(offer_id="becel", *, price=15, variants=None, confidence=0.62):
+def _offer(*, price=15, raw_text="provider text", product_name="Becel flydende"):
     return Offer(
-        id=offer_id,
+        id="offer",
         retailer="Bilka",
         publication_id="pub",
         publication_title="Uge 34",
-        product_name="Becel flydende" if offer_id == "becel" else "Testkampagne",
+        product_name=product_name,
         price=price,
         source_url="https://example.test",
         page_number=1,
@@ -40,149 +39,159 @@ def _offer(offer_id="becel", *, price=15, variants=None, confidence=0.62):
         hotspot_y=0.2,
         hotspot_width=0.3,
         hotspot_height=0.2,
-        raw_text="provider text",
-        variants=variants or [],
-        variant_confidence=confidence,
+        raw_text=raw_text,
+        variant_confidence=0.62,
         quality_score=0.97,
     )
 
 
-def _candidate(*offers):
-    publication = Publication(
-        id="pub",
-        retailer="Bilka",
-        title="Uge 34",
-        source_url="https://example.test",
-        page_count=1,
-        page_image_urls=["https://images.test/page.jpg?rotating=1"],
-        structured_offers=list(offers),
-    )
-    return semantic.PageAuditCandidate(
-        fingerprint="page",
-        publication=publication,
-        page_number=1,
-        image_url=publication.page_image_urls[0],
-        offers=tuple(offers),
-    )
-
-
-def _row(offer_id, **updates):
+def _facts(**updates):
     value = {
-        "id": offer_id,
-        "vis": True,
-        "o": 15,
-        "m": None,
-        "p": None,
-        "a": False,
-        "x": False,
-        "v": [],
-        "pc": 0.99,
-        "vc": 0.8,
-        "r": "none",
+        "visible": True,
+        "product_name": "Becel flydende",
+        "brand": "Becel",
+        "ordinary_price": 15,
+        "member_price": None,
+        "member_program": None,
+        "member_app": None,
+        "requires_activation": False,
+        "before_price": None,
+        "unit_price": "30 kr/l",
+        "package_size": "500 ml",
+        "multiple_products": False,
+        "variants": ["Original"],
+        "identity_confidence": 0.99,
+        "pricing_confidence": 0.99,
+        "variant_confidence": 0.90,
+        "needs_crop_verification": False,
     }
     value.update(updates)
     return value
 
 
-def test_page_scout_is_low_detail_and_compact_by_default(monkeypatch, tmp_path):
-    _isolated(monkeypatch, tmp_path)
-    candidate = _candidate(_offer())
-    body = policy._cost_page_request_body(candidate, luna.load_config())
-    image = body["input"][0]["content"][1]
-    assert image["detail"] == "low"
-    assert body["max_output_tokens"] == 1400
-    schema = body["text"]["format"]["schema"]
-    keys = set(schema["properties"]["offers"]["items"]["properties"])
-    assert keys == {"id", "vis", "o", "m", "p", "a", "x", "v", "pc", "vc", "r"}
-
-
-def test_compact_output_requires_exactly_every_hotspot():
-    allowed = {"one", "two"}
-    assert policy._cost_validate_page_output(
-        {"offers": [_row("one")]}, allowed
-    ) is None
-    rows = policy._cost_validate_page_output(
-        {"offers": [_row("one"), _row("two")]}, allowed
-    )
-    assert rows is not None
-    assert {row["offer_id"] for row in rows} == allowed
-
-
-def test_becel_style_high_confidence_member_price_needs_no_crop(monkeypatch, tmp_path):
+def test_plain_safe_price_does_not_crop(monkeypatch, tmp_path):
     _isolated(monkeypatch, tmp_path)
     offer = _offer()
-    facts = policy._expanded_row(
-        _row(
-            "becel",
-            o=15,
-            m=12,
-            p="Bilka Plus",
-            pc=0.99,
-            r="none",
-        ),
-        {"becel"},
-    )
-    assert facts is not None
-    assert policy._cost_server_needs_crop(offer, facts, 0.96) is False
-    assert facts["ordinary_price"] == 15
-    assert facts["member_price"] == 12
+    facts = _facts()
+    assert policy._balanced_server_needs_crop(offer, facts, 0.96) is False
+    assert policy._balanced_crop_reasons(offer, facts, False) == []
 
 
-def test_variant_only_uncertainty_does_not_spend_proactive_crop(monkeypatch, tmp_path):
-    _isolated(monkeypatch, tmp_path, proactive_variant_crops=False)
-    offer = _offer("castello")
-    facts = policy._expanded_row(
-        _row(
-            "castello",
-            x=True,
-            v=["Saga", "Creamy White", "Creamy Blue"],
-            vc=0.93,
-            r="variant",
-        ),
-        {"castello"},
-    )
-    assert facts is not None
-    assert facts["multiple_products"] is True
-    assert policy._cost_server_needs_crop(offer, facts, 0.96) is False
-    assert policy._cost_crop_reasons(offer, facts, False) == []
-
-
-def test_missing_member_amount_still_gets_proactive_crop(monkeypatch, tmp_path):
+def test_visual_only_member_price_requires_independent_crop(monkeypatch, tmp_path):
     _isolated(monkeypatch, tmp_path)
-    offer = _offer()
-    facts = policy._expanded_row(
-        _row("becel", o=15, m=None, p="Bilka Plus", pc=0.72, r="member"),
-        {"becel"},
+    offer = _offer(raw_text="Becel flydende 500 ml")
+    facts = _facts(
+        ordinary_price=15,
+        member_price=12,
+        member_program="Bilka Plus",
+        pricing_confidence=0.99,
     )
-    assert facts is not None
-    assert policy._cost_server_needs_crop(offer, facts, 0.96) is True
-    reasons = policy._cost_crop_reasons(offer, facts, True)
-    assert "page-scout-member-uncertain" in reasons
-    assert "page-scout-member-price-missing" in reasons
+    assert policy._balanced_server_needs_crop(offer, facts, 0.96) is True
+    reasons = policy._balanced_crop_reasons(offer, facts, True)
+    assert "page-audit-new-member-price-verification" in reasons
 
 
-def test_price_conflict_still_gets_proactive_crop(monkeypatch, tmp_path):
+def test_provider_member_evidence_allows_high_confidence_member_price(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path)
+    offer = _offer(raw_text="Bilka Plus pris 12 kr. Normalpris 15 kr.")
+    facts = _facts(
+        ordinary_price=15,
+        member_price=12,
+        member_program="Bilka Plus",
+        pricing_confidence=0.99,
+    )
+    assert policy._balanced_server_needs_crop(offer, facts, 0.96) is False
+
+
+def test_variant_only_model_crop_is_suppressed_when_pricing_is_safe(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path)
+    offer = _offer(product_name="Castello dessertost")
+    facts = _facts(
+        product_name="Castello dessertost",
+        brand="Castello",
+        ordinary_price=15,
+        member_price=None,
+        multiple_products=True,
+        variants=["Saga", "Creamy White", "Creamy Blue"],
+        variant_confidence=0.82,
+        pricing_confidence=0.99,
+        needs_crop_verification=True,
+    )
+    assert policy._balanced_server_needs_crop(offer, facts, 0.96) is False
+    assert policy._balanced_crop_reasons(offer, facts, False) == []
+
+
+def test_missing_member_amount_still_crops(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path)
+    offer = _offer(raw_text="Bilka Plus")
+    facts = _facts(
+        member_price=None,
+        member_program="Bilka Plus",
+        pricing_confidence=0.90,
+        needs_crop_verification=True,
+    )
+    assert policy._balanced_server_needs_crop(offer, facts, 0.96) is True
+    reasons = policy._balanced_crop_reasons(offer, facts, True)
+    assert "page-audit-member-price-missing" in reasons
+
+
+def test_low_confidence_member_price_still_crops(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path)
+    offer = _offer(raw_text="Bilka Plus pris")
+    facts = _facts(
+        ordinary_price=15,
+        member_price=12,
+        member_program="Bilka Plus",
+        pricing_confidence=0.82,
+    )
+    assert policy._balanced_server_needs_crop(offer, facts, 0.96) is True
+    assert "page-audit-member-price-low-confidence" in policy._balanced_crop_reasons(
+        offer, facts, True
+    )
+
+
+def test_provider_price_conflict_still_crops(monkeypatch, tmp_path):
     _isolated(monkeypatch, tmp_path)
     offer = _offer(price=15)
-    facts = policy._expanded_row(
-        _row("becel", o=20, m=12, p="Bilka Plus", pc=0.99),
-        {"becel"},
+    facts = _facts(ordinary_price=20, member_price=12, pricing_confidence=0.99)
+    assert policy._balanced_server_needs_crop(offer, facts, 0.96) is True
+    assert "page-audit-provider-price-conflict" in policy._balanced_crop_reasons(
+        offer, facts, True
     )
-    assert facts is not None
-    assert policy._cost_server_needs_crop(offer, facts, 0.96) is True
-    assert "page-scout-provider-price-conflict" in policy._cost_crop_reasons(offer, facts, True)
 
 
-def test_weight_like_variant_is_filtered():
-    expanded = policy._expanded_row(
-        _row("one", x=True, v=["500 g", "Original", "Flere varianter"], vc=0.99),
-        {"one"},
+def test_invalid_member_relation_still_crops(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path)
+    offer = _offer(raw_text="Bilka Plus")
+    facts = _facts(ordinary_price=12, member_price=15, member_program="Bilka Plus")
+    assert policy._balanced_server_needs_crop(offer, facts, 0.96) is True
+    assert "page-audit-price-role-conflict" in policy._balanced_crop_reasons(
+        offer, facts, True
     )
-    assert expanded is not None
-    assert expanded["variants"] == ["Original"]
 
 
-def test_default_config_has_hard_monthly_cost_guard():
+def test_invisible_target_crops(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path)
+    offer = _offer()
+    facts = _facts(visible=False)
+    assert policy._balanced_server_needs_crop(offer, facts, 0.96) is True
+    assert "page-audit-target-not-visible" in policy._balanced_crop_reasons(
+        offer, facts, True
+    )
+
+
+def test_status_documents_current_luna_prices_and_quality_mode(monkeypatch, tmp_path):
+    _isolated(monkeypatch, tmp_path)
+    status = policy.status_payload()
+    assert status["page_mode"] == "rich-page-audit-cost-balanced-v3"
+    assert status["page_image_detail"] == "high"
+    assert status["page_reasoning_effort"] == "low"
+    assert status["proactive_variant_crops"] is False
+    assert status["visual_only_member_price_requires_crop"] is True
+    assert status["current_luna_input_usd_per_million"] == 0.20
+    assert status["current_luna_output_usd_per_million"] == 1.20
+
+
+def test_default_config_keeps_monthly_guard():
     assert luna.DEFAULT_CONFIG["monthly_budget_dkk"] == 20.0
     assert luna.DEFAULT_CONFIG["proactive_variant_crops"] is False
-    assert luna.DEFAULT_CONFIG["page_scout_image_detail"] == "low"
