@@ -4,6 +4,7 @@ import hashlib
 import re
 
 from .luna_enrichment import load_config, load_store, offer_fingerprint
+from .luna_semantic_audit import semantic_facts_for_offer
 from .meny_flyer import Offer, OfferVariant, Publication
 
 
@@ -16,7 +17,7 @@ _SIZE_ONLY_VARIANT_RE = re.compile(
     re.IGNORECASE,
 )
 _GENERIC_VARIANT_RE = re.compile(
-    r"^\s*(?:flere\s+varianter|frit\s+valg|assorterede?|diverse)\s*$",
+    r"^\s*(?:flere\s+varianter|frit\s+valg|assorterede?|diverse|flere\s+slags)\s*$",
     re.IGNORECASE,
 )
 
@@ -38,14 +39,22 @@ def _safe_luna_variant_name(value: object) -> str | None:
     return name
 
 
-def apply_cached_enrichment(publications: list[Publication]) -> list[Publication]:
-    """Overlay only facts that are safe for existing deterministic engines.
+def _record_facts(offer: Offer, records: dict) -> dict | None:
+    row = records.get(offer_fingerprint(offer))
+    facts = row.get("facts") if isinstance(row, dict) and row.get("status") == "completed" else None
+    if not isinstance(facts, dict) or not facts.get("same_offer"):
+        return None
+    return facts
 
-    Pricing remains handled by member_pricing's synchronous overlay so source
-    price fields and Price Guard identity rules are never silently rewritten.
-    Product names are likewise retained. High-confidence brand/variant facts may
-    enrich weak provider records because these improve search/variant selection
-    without changing hotspot geometry or the chosen product identity root.
+
+def apply_cached_enrichment(publications: list[Publication]) -> list[Publication]:
+    """Apply only persisted, high-confidence Luna facts.
+
+    Build 58 adds a general semantic page audit. Provider facts remain the base
+    truth and are never mutated on disk. The overlay is an in-memory copy used
+    only while Luna is enabled. Turning Luna OFF therefore immediately restores
+    the deterministic provider/Variant Extractor path, including all original
+    prices, brands and variants.
     """
     config = load_config()
     if not config.get("enabled") or not config.get("apply_results"):
@@ -59,24 +68,48 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
         changed = False
         offers: list[Offer] = []
         for offer in publication.structured_offers:
-            row = records.get(offer_fingerprint(offer))
-            facts = row.get("facts") if isinstance(row, dict) and row.get("status") == "completed" else None
-            if not isinstance(facts, dict) or not facts.get("same_offer"):
+            semantic = semantic_facts_for_offer(offer)
+            legacy = _record_facts(offer, records)
+            facts = semantic or legacy
+            if not isinstance(facts, dict):
                 offers.append(offer)
                 continue
 
             updates: dict = {}
             identity_confidence = float(facts.get("identity_confidence") or 0)
+            pricing_confidence = float(facts.get("pricing_confidence") or 0)
             variant_confidence = float(facts.get("variant_confidence") or 0)
+            signals = list(offer.quality_signals)
+
+            if semantic is not None:
+                signals.append("luna-semantic-audited")
+                if facts.get("multiple_products"):
+                    signals.append("luna-multiple-products")
+                if facts.get("package_size"):
+                    # Keep package/weight as metadata only. Product Identity and
+                    # Price Guard never consume this signal as identity evidence.
+                    signals.append("luna-package-size-known")
 
             if not offer.brand and facts.get("brand") and identity_confidence >= threshold:
                 updates["brand"] = str(facts["brand"]).strip()
 
-            # Protect the strong text-only Variant Extractor v2. Luna can fill a
-            # genuinely weak/empty provider variant set, but cannot replace a
-            # variant result that Kurv already considers reliable. Weight,
-            # volume, pack count and generic campaign wording are never variants.
-            if variant_confidence >= 0.99 and offer.variant_confidence < 0.65:
+            # A visually verified ordinary price can repair a provider value for
+            # non-member campaigns. Member campaigns remain handled by the
+            # separate member-pricing presentation layer so ordinary/member roles
+            # can never collapse into one headline price.
+            if (
+                semantic is not None
+                and facts.get("member_price") is None
+                and isinstance(facts.get("ordinary_price"), (int, float))
+                and pricing_confidence >= 0.99
+                and not facts.get("needs_crop_verification")
+            ):
+                updates["price"] = round(float(facts["ordinary_price"]), 2)
+
+            # Strong deterministic variants remain protected. Luna can replace a
+            # weak campaign heading or empty provider variant set when the visual
+            # audit has high confidence. Size/weight/generic phrases are filtered.
+            if variant_confidence >= 0.99 and offer.variant_confidence < 0.90:
                 names = [
                     name
                     for value in facts.get("variants", [])
@@ -94,10 +127,10 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
                         for name in names
                     ]
                     updates["variant_confidence"] = variant_confidence
-                    updates["quality_signals"] = list(dict.fromkeys([
-                        *offer.quality_signals,
-                        "luna-verified-variants",
-                    ]))
+                    signals.append("luna-verified-variants")
+
+            if signals != offer.quality_signals:
+                updates["quality_signals"] = list(dict.fromkeys(signals))
 
             if updates:
                 offers.append(offer.model_copy(update=updates))
