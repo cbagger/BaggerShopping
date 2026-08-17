@@ -5,7 +5,6 @@ import httpx
 
 from app import luna_enrichment as luna
 from app import luna_semantic_audit as semantic
-from app.member_pricing import detect_member_pricing
 from app.meny_flyer import Offer, Publication
 
 
@@ -74,7 +73,7 @@ def test_page_fingerprint_ignores_rotating_image_query():
     assert semantic.page_fingerprint(first, 9, [offer]) == semantic.page_fingerprint(second, 9, [offer])
 
 
-def test_page_audit_becel_shape_does_not_require_crop():
+def test_page_audit_becel_visual_only_member_price_requires_verification_crop():
     offer = _offer()
     facts = {
         "visible": True,
@@ -95,7 +94,10 @@ def test_page_audit_becel_shape_does_not_require_crop():
         "variant_confidence": 0.80,
         "needs_crop_verification": False,
     }
-    assert semantic._server_needs_crop(offer, facts, 0.96) is False
+    assert semantic._server_needs_crop(offer, facts, 0.96) is True
+    assert "page-audit-new-member-price-verification" in semantic._crop_reasons(
+        offer, facts, True
+    )
 
 
 def test_multiple_products_without_named_variants_requires_crop():
@@ -122,7 +124,7 @@ def test_multiple_products_without_named_variants_requires_crop():
     assert semantic._server_needs_crop(offer, facts, 0.96) is True
 
 
-def test_page_audit_can_autonomously_create_member_price_override(monkeypatch, tmp_path):
+def test_page_audit_stages_visual_only_member_price_until_crop(monkeypatch, tmp_path):
     _isolated(monkeypatch, tmp_path, enabled=True)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     offer = _offer()
@@ -168,21 +170,20 @@ def test_page_audit_can_autonomously_create_member_price_override(monkeypatch, t
 
     result = asyncio.run(run())
     assert result["status"] == "completed"
-    assert result["crop_needed"] == 0
-
-    pricing = detect_member_pricing(
-        retailer=offer.retailer,
-        price=offer.price,
-        normal_price=offer.normal_price,
-        text=f"{offer.product_name} {offer.raw_text}",
-        unit_price=offer.unit_price,
-    )
-    assert pricing is not None
-    assert pricing.ordinary_price == 15
-    assert pricing.member_price == 12
-    assert pricing.label == "Bilka Plus"
+    assert result["crop_needed"] == 1
 
     store = luna.load_store()
+    row = store["semantic_facts"][semantic.offer_key(offer)]
+    assert row["source"] == "page-audit"
+    assert row["needs_crop"] is True
+    assert "page-audit-new-member-price-verification" in row["crop_reasons"]
+    assert row["facts"]["ordinary_price"] == 15
+    assert row["facts"]["member_price"] == 12
+
+    # The page observation is valuable and retained, but it must not become an
+    # authoritative pricing override until the independent crop verifies it.
+    signature = luna.offer_pricing_signature(offer)
+    assert signature not in store["pricing_index"]
     assert store["usage"][luna.month_key()]["by_kind"]["page-audit"]["requests"] == 1
 
 
