@@ -17,6 +17,28 @@ from .luna_enrichment import load_store, offer_fingerprint
 _installed = False
 _original_validate_page_output = semantic._validate_page_output
 _original_index_page_pricing_if_safe = semantic._index_page_pricing_if_safe
+_original_page_schema = semantic._page_schema
+_original_page_prompt = semantic._page_prompt
+
+
+def _strict_page_schema(candidate):
+    schema = _original_page_schema(candidate)
+    count = max(1, len(candidate.offers))
+    offers_schema = schema["properties"]["offers"]
+    # Structured output itself now requires full page coverage, rather than
+    # relying only on post-response validation.
+    offers_schema["minItems"] = count
+    offers_schema["maxItems"] = count
+    return schema
+
+
+def _strict_page_prompt(candidate):
+    return _original_page_prompt(candidate) + (
+        "\n\nIMPORTANT COVERAGE CONTRACT: Return exactly one result for EVERY target offer_id "
+        "listed in the context, no more and no fewer. If a target cannot be safely associated "
+        "with a visible advert, still return its exact offer_id with visible=false, null/empty "
+        "facts, low confidences, and needs_crop_verification=true. Never omit a target."
+    )
 
 
 def _strict_validate_page_output(value, allowed_ids):
@@ -117,6 +139,8 @@ def install() -> None:
     global _installed
     if _installed:
         return
+    semantic._page_schema = _strict_page_schema
+    semantic._page_prompt = _strict_page_prompt
     semantic._validate_page_output = _strict_validate_page_output
     semantic._index_page_pricing_if_safe = _index_page_pricing_upgrading_legacy
     semantic.collect_crop_candidates = _crop_candidates_allowing_build58_reverification
