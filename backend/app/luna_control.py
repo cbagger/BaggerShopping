@@ -5,6 +5,7 @@ import asyncio
 import json
 
 from .luna_enrichment import save_config, status_payload
+from .luna_semantic_audit import semantic_status_payload
 
 
 def parser() -> argparse.ArgumentParser:
@@ -19,11 +20,17 @@ def parser() -> argparse.ArgumentParser:
     return value
 
 
+def _status() -> dict:
+    return {**status_payload(), **semantic_status_payload()}
+
+
 def main() -> None:
     args = parser().parse_args()
     if args.command == "enable":
         save_config({"enabled": True})
     elif args.command == "disable":
+        # Master switch: OFF means zero OpenAI calls and zero application of
+        # cached Luna page/crop facts. Deterministic Kurv remains fully usable.
         save_config({"enabled": False})
     elif args.command == "budget":
         if args.dkk < 0:
@@ -33,7 +40,7 @@ def main() -> None:
         from .luna_worker import run_once
         print(json.dumps(asyncio.run(run_once()), ensure_ascii=False, indent=2))
         return
-    print(json.dumps(status_payload(), ensure_ascii=False, indent=2))
+    print(json.dumps(_status(), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
