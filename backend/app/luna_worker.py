@@ -50,9 +50,9 @@ async def run_once() -> dict:
     publications = await fetch_all_publications()
 
     total_limit = max(1, int(config.get("max_requests_per_scan", 20)))
-    page_limit = min(
-        total_limit,
-        max(1, int(config.get("max_page_audits_per_scan", total_limit))),
+    page_limit = max(
+        1,
+        int(config.get("max_page_audits_per_scan", max(1, total_limit // 2))),
     )
     crop_limit = max(1, int(config.get("max_crop_verifications_per_scan", 10)))
 
@@ -63,17 +63,35 @@ async def run_once() -> dict:
     stop_status: str | None = None
 
     async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-        for candidate in page_candidates[:page_limit]:
-            result = await analyze_page_audit(candidate, client=client)
+        # First finish crop work already requested by earlier page audits. This
+        # prevents a large backlog of new pages from starving verification.
+        initial_crop_candidates = collect_crop_candidates(publications)
+        crop_budget = min(crop_limit, total_limit)
+        for candidate in initial_crop_candidates[:crop_budget]:
+            result = await analyze_crop_candidate(candidate, client=client)
             if result.get("status") in {"budget-exhausted", "disabled", "missing-api-key"}:
                 stop_status = str(result.get("status"))
                 break
-            processed_pages += 1
+            processed_crops += 1
 
-        remaining = max(0, total_limit - processed_pages)
-        crop_candidates = collect_crop_candidates(publications)
+        remaining = max(0, total_limit - processed_crops)
         if stop_status is None and remaining:
-            for candidate in crop_candidates[: min(crop_limit, remaining)]:
+            for candidate in page_candidates[: min(page_limit, remaining)]:
+                result = await analyze_page_audit(candidate, client=client)
+                if result.get("status") in {"budget-exhausted", "disabled", "missing-api-key"}:
+                    stop_status = str(result.get("status"))
+                    break
+                processed_pages += 1
+
+        # Spend any remaining cycle budget on new crop requests created by the
+        # pages just audited. With max_requests_per_scan=1 this naturally
+        # alternates page -> crop -> next page when verification is needed.
+        remaining = max(0, total_limit - processed_pages - processed_crops)
+        if stop_status is None and remaining:
+            new_crop_candidates = collect_crop_candidates(publications)
+            already = {candidate.fingerprint for candidate in initial_crop_candidates[:crop_budget]}
+            fresh = [candidate for candidate in new_crop_candidates if candidate.fingerprint not in already]
+            for candidate in fresh[: min(crop_limit - processed_crops, remaining)]:
                 result = await analyze_crop_candidate(candidate, client=client)
                 if result.get("status") in {"budget-exhausted", "disabled", "missing-api-key"}:
                     stop_status = str(result.get("status"))
