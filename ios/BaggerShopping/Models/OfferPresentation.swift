@@ -30,7 +30,15 @@ extension GroceryOffer {
             }
 
         if names.count > 1 { return .variants(names) }
-        if names.count == 1, !hasUnresolvedVariantLanguage { return .direct(names[0]) }
+        // A single low-confidence "variant" is normally just the provider's
+        // campaign heading. It is not proof that the advert contains only one
+        // actual product. Fail safe into the picker instead of direct-adding a
+        // visually grouped campaign that Kurv has not resolved yet.
+        if names.count == 1,
+           !hasUnresolvedVariantLanguage,
+           variantConfidence >= 0.90 {
+            return .direct(names[0])
+        }
         return .unspecified
     }
 
@@ -62,8 +70,19 @@ extension GroceryOffer {
 
     var hasUnresolvedVariantLanguage: Bool {
         let value = "\(productName) \(rawText)".lowercased()
-        return ["frit valg", "flere varianter", "udvalgte varianter", "assorteret", " eller "]
-            .contains(where: value.contains)
+        return [
+            "frit valg",
+            "flere varianter",
+            "forskellige varianter",
+            "flere slags",
+            "smagsvarianter",
+            "udvalgte varianter",
+            "assorteret",
+            "assorterede",
+            "vælg mellem",
+            "vælg imellem",
+            " eller "
+        ].contains(where: value.contains)
     }
 
     func shoppingItemName(variant: String?) -> String {
