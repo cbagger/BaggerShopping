@@ -4,7 +4,7 @@ import hashlib
 import re
 
 from .luna_enrichment import load_config, load_store, offer_fingerprint
-from .luna_semantic_audit import offer_key, semantic_facts_for_offer
+from .luna_semantic_audit import offer_key
 from .meny_flyer import Offer, OfferVariant, Publication
 
 
@@ -60,6 +60,8 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
     if not config.get("enabled") or not config.get("apply_results"):
         return publications
 
+    # One cached store snapshot per flyer fetch. Never deep-copy/re-read the
+    # growing Luna store once per offer; Build 58 can carry thousands of facts.
     store = load_store()
     records = store.get("records", {})
     semantic_rows = store.get("semantic_facts", {})
@@ -70,8 +72,12 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
         changed = False
         offers: list[Offer] = []
         for offer in publication.structured_offers:
-            semantic = semantic_facts_for_offer(offer)
             semantic_row = semantic_rows.get(offer_key(offer))
+            semantic = None
+            if isinstance(semantic_row, dict):
+                candidate = semantic_row.get("facts")
+                if isinstance(candidate, dict) and candidate.get("visible"):
+                    semantic = candidate
             semantic_needs_crop = bool(
                 isinstance(semantic_row, dict) and semantic_row.get("needs_crop")
             )
