@@ -4,7 +4,7 @@ import hashlib
 import re
 
 from .luna_enrichment import load_config, load_store, offer_fingerprint
-from .luna_semantic_audit import semantic_facts_for_offer
+from .luna_semantic_audit import offer_key, semantic_facts_for_offer
 from .meny_flyer import Offer, OfferVariant, Publication
 
 
@@ -60,7 +60,9 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
     if not config.get("enabled") or not config.get("apply_results"):
         return publications
 
-    records = load_store().get("records", {})
+    store = load_store()
+    records = store.get("records", {})
+    semantic_rows = store.get("semantic_facts", {})
     threshold = float(config.get("min_apply_confidence", 0.96))
     result: list[Publication] = []
 
@@ -69,6 +71,10 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
         offers: list[Offer] = []
         for offer in publication.structured_offers:
             semantic = semantic_facts_for_offer(offer)
+            semantic_row = semantic_rows.get(offer_key(offer))
+            semantic_needs_crop = bool(
+                isinstance(semantic_row, dict) and semantic_row.get("needs_crop")
+            )
             legacy = _record_facts(offer, records)
             facts = semantic or legacy
             if not isinstance(facts, dict):
@@ -84,13 +90,21 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
             if semantic is not None:
                 signals.append("luna-semantic-audited")
                 if facts.get("multiple_products"):
+                    # The multi-product fact is intentionally useful even while
+                    # a crop is pending: it can only make the UI safer by
+                    # blocking direct-add, never invent a specific variant.
                     signals.append("luna-multiple-products")
                 if facts.get("package_size"):
                     # Keep package/weight as metadata only. Product Identity and
                     # Price Guard never consume this signal as identity evidence.
                     signals.append("luna-package-size-known")
 
-            if not offer.brand and facts.get("brand") and identity_confidence >= threshold:
+            if (
+                not semantic_needs_crop
+                and not offer.brand
+                and facts.get("brand")
+                and identity_confidence >= threshold
+            ):
                 updates["brand"] = str(facts["brand"]).strip()
 
             # A visually verified ordinary price can repair a provider value for
@@ -99,17 +113,21 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
             # can never collapse into one headline price.
             if (
                 semantic is not None
+                and not semantic_needs_crop
                 and facts.get("member_price") is None
                 and isinstance(facts.get("ordinary_price"), (int, float))
                 and pricing_confidence >= 0.99
-                and not facts.get("needs_crop_verification")
             ):
                 updates["price"] = round(float(facts["ordinary_price"]), 2)
 
             # Strong deterministic variants remain protected. Luna can replace a
             # weak campaign heading or empty provider variant set when the visual
             # audit has high confidence. Size/weight/generic phrases are filtered.
-            if variant_confidence >= 0.99 and offer.variant_confidence < 0.90:
+            if (
+                not semantic_needs_crop
+                and variant_confidence >= 0.99
+                and offer.variant_confidence < 0.90
+            ):
                 names = [
                     name
                     for value in facts.get("variants", [])
