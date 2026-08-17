@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from app import flyer_push
 from app import flyer_readiness as readiness
 from app import mobile_offers
-from app.flyer_readiness import mark_ready, publication_is_ready
+from app.flyer_readiness import mark_ready, publication_fingerprint, publication_is_ready
 from app.meny_flyer import Offer, Publication
 from app.mobile_main import app
 
@@ -72,6 +72,7 @@ def test_first_check_seeds_without_push_and_marks_baseline_ready(tmp_path, monke
     monkeypatch.setattr(flyer_push, "_send", fail_send)
     assert asyncio.run(flyer_push.check_and_send()) == {"new": 0, "sent": 0, "failed": 0}
     assert publication_is_ready(existing) is True
+    assert flyer_push._load()["seen_notification_releases"][existing.id] == flyer_push._publication_release_key(existing)
 
 
 def test_new_publication_is_not_pushed_until_luna_marks_ready(tmp_path, monkeypatch):
@@ -115,12 +116,14 @@ def test_new_publication_is_not_pushed_until_luna_marks_ready(tmp_path, monkeypa
     delivery = asyncio.run(flyer_push.deliver_ready_notifications())
     assert delivery == {"ready": 1, "sent": 1, "failed": 0}
     assert sent == [("aa" * 32, "MENY Uge 34 er nu tilgængelig", "new", "MENY")]
-    assert "new" in flyer_push._load()["seen_publications"]
+    store = flyer_push._load()
+    assert "new" in store["seen_publications"]
+    assert store["seen_notification_releases"]["new"] == flyer_push._publication_release_key(new)
 
 
-def test_same_publication_id_changed_version_is_gated_and_can_notify_again(tmp_path, monkeypatch):
+def test_same_publication_content_revision_is_gated_without_duplicate_push(tmp_path, monkeypatch):
     monkeypatch.setenv("FLYER_PUSH_STORE_PATH", str(tmp_path / "push.json"))
-    original = publication("same")
+    original = publication("same", retailer="365discount")
 
     async def initial_publications(): return [original]
     async def never_send(*args, **kwargs): raise AssertionError("baseline must not send")
@@ -128,6 +131,17 @@ def test_same_publication_id_changed_version_is_gated_and_can_notify_again(tmp_p
     monkeypatch.setattr(flyer_push, "fetch_all_publications", initial_publications)
     monkeypatch.setattr(flyer_push, "_send", never_send)
     asyncio.run(flyer_push.check_and_send())
+
+    store = flyer_push._load()
+    store["devices"] = {
+        "device": {
+            "device_token": "aa" * 32,
+            "retailers": ["365discount"],
+            "enabled": True,
+            "environment": "production",
+        },
+    }
+    flyer_push._save(store)
 
     changed = original.model_copy(update={
         "page_image_urls": ["https://example.test/changed.jpg"],
@@ -146,7 +160,104 @@ def test_same_publication_id_changed_version_is_gated_and_can_notify_again(tmp_p
 
     assert mark_ready(changed) is True
     delivery = asyncio.run(flyer_push.deliver_ready_notifications())
-    assert delivery == {"ready": 1, "sent": 0, "failed": 0}  # no configured targets
+    assert delivery == {"ready": 1, "sent": 0, "failed": 0}
+    assert sent == []
+
+    updated = flyer_push._load()
+    assert updated["seen_publication_fingerprints"]["same"] == publication_fingerprint(changed)
+    assert updated["seen_notification_releases"]["same"] == flyer_push._publication_release_key(original)
+
+
+def test_same_publication_id_new_validity_window_notifies_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLYER_PUSH_STORE_PATH", str(tmp_path / "push.json"))
+    original = publication("same")
+
+    async def initial_publications(): return [original]
+    async def never_send(*args, **kwargs): raise AssertionError("baseline must not send")
+
+    monkeypatch.setattr(flyer_push, "fetch_all_publications", initial_publications)
+    monkeypatch.setattr(flyer_push, "_send", never_send)
+    asyncio.run(flyer_push.check_and_send())
+
+    store = flyer_push._load()
+    store["devices"] = {
+        "device": {
+            "device_token": "aa" * 32,
+            "retailers": ["MENY"],
+            "enabled": True,
+            "environment": "production",
+        },
+    }
+    flyer_push._save(store)
+
+    next_release = original.model_copy(update={
+        "title": "Uge 35",
+        "valid_from": "21.08.2026",
+        "valid_until": "27.08.2026",
+        "page_image_urls": ["https://example.test/week-35.jpg"],
+    })
+    sent = []
+
+    async def changed_publications(): return [next_release]
+    async def send(*args): sent.append(args); return True
+
+    monkeypatch.setattr(flyer_push, "fetch_all_publications", changed_publications)
+    monkeypatch.setattr(flyer_push, "_send", send)
+
+    result = asyncio.run(flyer_push.check_and_send())
+    assert result == {"new": 1, "sent": 0, "failed": 0}
+    assert mark_ready(next_release) is True
+
+    delivery = asyncio.run(flyer_push.deliver_ready_notifications())
+    assert delivery == {"ready": 1, "sent": 1, "failed": 0}
+    assert len(sent) == 1
+    assert "MENY Uge 35 er nu tilgængelig" in sent[0][3]
+
+    # Polling or restarting again cannot duplicate the already delivered release.
+    assert asyncio.run(flyer_push.deliver_ready_notifications()) == {"ready": 0, "sent": 0, "failed": 0}
+
+
+def test_legacy_push_store_migrates_known_release_without_restart_push(tmp_path, monkeypatch):
+    monkeypatch.setenv("FLYER_PUSH_STORE_PATH", str(tmp_path / "push.json"))
+    original = publication("same", retailer="365discount")
+    readiness.observe_publications([original], bootstrap_ready_ids=None)
+
+    flyer_push._save({
+        "initialized": True,
+        "seen_publications": ["same"],
+        "seen_publication_fingerprints": {"same": publication_fingerprint(original)},
+        "devices": {
+            "device": {
+                "device_token": "aa" * 32,
+                "retailers": ["365discount"],
+                "enabled": True,
+                "environment": "production",
+            },
+        },
+    })
+
+    # Simulate the real production symptom: a container restart sees the same
+    # 365discount release with a changed provider/content fingerprint.
+    changed = original.model_copy(update={
+        "page_image_urls": ["https://example.test/restart-mutated.jpg"],
+    })
+    sent = []
+
+    async def publications(): return [changed]
+    async def send(*args): sent.append(args); return True
+
+    monkeypatch.setattr(flyer_push, "fetch_all_publications", publications)
+    monkeypatch.setattr(flyer_push, "_send", send)
+
+    result = asyncio.run(flyer_push.check_and_send())
+    assert result == {"new": 1, "sent": 0, "failed": 0}
+    migrated = flyer_push._load()
+    assert migrated["seen_notification_releases"]["same"] == flyer_push._publication_release_key(changed)
+
+    assert mark_ready(changed) is True
+    delivery = asyncio.run(flyer_push.deliver_ready_notifications())
+    assert delivery == {"ready": 1, "sent": 0, "failed": 0}
+    assert sent == []
 
 
 def test_readiness_revision_invalidates_mobile_publication_cache(tmp_path, monkeypatch):
