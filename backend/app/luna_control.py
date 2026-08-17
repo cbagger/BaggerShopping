@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import json
 
-from .luna_enrichment import save_config, status_payload
+from .luna_enrichment import load_config, save_config, status_payload
 from .luna_semantic_audit import semantic_status_payload
 
 
@@ -21,7 +21,26 @@ def parser() -> argparse.ArgumentParser:
 
 
 def _status() -> dict:
-    return {**status_payload(), **semantic_status_payload()}
+    config = load_config()
+    total = max(1, int(config.get("max_requests_per_scan", 20)))
+    semantic_config = {
+        "master_enabled": bool(config.get("enabled")),
+        "max_requests_per_scan": total,
+        "max_page_audits_per_scan": max(
+            1, int(config.get("max_page_audits_per_scan", max(1, total // 2)))
+        ),
+        "max_crop_verifications_per_scan": max(
+            1, int(config.get("max_crop_verifications_per_scan", 10))
+        ),
+        "page_audit_max_failures": max(1, int(config.get("page_audit_max_failures", 2))),
+        "page_audit_max_output_tokens": int(config.get("page_audit_max_output_tokens", 4000)),
+        "crop_max_output_tokens": int(config.get("crop_max_output_tokens", 1200)),
+    }
+    return {
+        **status_payload(),
+        **semantic_status_payload(),
+        "semantic_config": semantic_config,
+    }
 
 
 def main() -> None:
