@@ -296,7 +296,11 @@ def publication_is_ready(publication: Publication) -> bool:
         # not blank the current app. Once initialized, unknown flyers fail shut.
         return True
     row = store.get("publications", {}).get(publication.id)
-    return bool(isinstance(row, dict) and row.get("status") == "ready")
+    return bool(
+        isinstance(row, dict)
+        and row.get("status") == "ready"
+        and row.get("fingerprint") == publication_fingerprint(publication)
+    )
 
 
 def filter_ready_publications(publications: Iterable[Publication]) -> list[Publication]:
