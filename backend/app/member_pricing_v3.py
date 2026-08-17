@@ -4,12 +4,21 @@ import re
 from dataclasses import dataclass
 
 
+_FOOTNOTE = r"[¹²³⁴⁵⁶⁷⁸⁹⁰*]*"
 EXPLICIT_MEMBER_MARKER_RE = re.compile(
-    r"\b(?:medlems?[-\s_]?pris|kundeklub[-\s_]?pris|klub[-\s_]?pris|club[-\s_]?price|plus[-\s_]?pris|app[-\s_]?pris|member[-\s_]?price)\b",
+    rf"(?:\b(?:medlems?[-\s_]?pris|kundeklub[-\s_]?pris|klub[-\s_]?pris|club[-\s_]?price|plus[-\s_]?pris|app[-\s_]?pris|member[-\s_]?price)\b|(?<!\w)\+\s*pris\b){_FOOTNOTE}",
     re.IGNORECASE,
 )
 MEMBERSHIP_PROGRAM_RE = re.compile(
-    r"\b(?:lidl\s*plus|netto\s*(?:\+|plus)|(?:føtex|foetex)\s*plus|bilka\s*plus|coop\s*(?:medlem|plus|app)|spar\s*sammen|meny\s*(?:medlem|app))\b",
+    rf"(?:"
+    rf"\blidl\s*plus{_FOOTNOTE}(?=\W|$)|"
+    rf"\bnetto\s*(?:\+|plus){_FOOTNOTE}(?=\W|$)|"
+    rf"\b(?:føtex|foetex)\s*plus{_FOOTNOTE}(?=\W|$)|"
+    rf"\bbilka\s*plus{_FOOTNOTE}(?=\W|$)|"
+    rf"\bcoop\s*(?:medlems?(?:pris)?|plus|app){_FOOTNOTE}(?=\W|$)|"
+    rf"\bspar\s*sammen{_FOOTNOTE}(?=\W|$)|"
+    rf"\bmeny\s*(?:medlem|app){_FOOTNOTE}(?=\W|$)"
+    rf")",
     re.IGNORECASE,
 )
 ACTIVATION_RE = re.compile(
@@ -30,7 +39,7 @@ UNIT_PRICE_BEFORE_RE = re.compile(
     re.IGNORECASE,
 )
 UNIT_PRICE_AFTER_RE = re.compile(
-    r"^\s*(?:kr\.?\s*)?(?:(?:/\s*)|(?:pr\.?\s*))(?:kg|kilo|l(?:iter)?|100\s*g|100\s*ml)\b(?!\s*max)",
+    r"^\s*(?:kr\.?\s*)?/\s*(?:kg|kilo|l(?:iter)?|100\s*g|100\s*ml)\b",
     re.IGNORECASE,
 )
 PRICE_RE = re.compile(
@@ -40,6 +49,9 @@ PRICE_RE = re.compile(
     r"|(?P<space>\d{1,3}\s+\d{2})(?=\s*(?:kr\.?|$|[^\d]))"
     r"|(?P<whole>\d{1,4})\s*kr\.?)",
     re.IGNORECASE,
+)
+ORDINARY_PRICE_RANGE_RE = re.compile(
+    r"(?<!\d)\d{1,4}[,.]\d{2}\s*[-–]\s*\d{1,4}[,.]\d{2}(?!\d)"
 )
 PAGE_CONTEXT_OPEN = "[kurv-page-context]"
 PAGE_CONTEXT_CLOSE = "[/kurv-page-context]"
@@ -106,8 +118,13 @@ def _near_before(pattern: re.Pattern[str], text: str, start: int, *, before: int
 
 def _unit_price_context(text: str, start: int, end: int) -> bool:
     before = text[max(0, start - 44):start]
-    if UNIT_PRICE_BEFORE_RE.search(before) is not None:
-        return True
+    unit_markers = list(UNIT_PRICE_BEFORE_RE.finditer(before))
+    if unit_markers:
+        # A unit-price label belongs to the first numeric token after it. Do
+        # not let "Pr. kg 30,00 Med Lidl Plus 12,-" smear the kg role onto 12.
+        tail = before[unit_markers[-1].end():]
+        if PRICE_RE.search(tail) is None:
+            return True
     after = text[end:min(len(text), end + 24)]
     return UNIT_PRICE_AFTER_RE.search(after) is not None
 
@@ -146,19 +163,19 @@ def has_membership_signal(text: str) -> bool:
 
 def _program(text: str, retailer: str) -> tuple[str | None, str | None, re.Match[str] | None]:
     patterns: tuple[tuple[re.Pattern[str], str, str | None], ...] = (
-        (re.compile(r"\blidl\s*plus\b", re.IGNORECASE), "Lidl Plus", "Lidl Plus"),
-        (re.compile(r"\bnetto\s*(?:\+|plus\b)", re.IGNORECASE), "Netto+", "Netto+"),
-        (re.compile(r"\b(?:føtex|foetex)\s*plus\b", re.IGNORECASE), "føtex Plus", "føtex Plus"),
-        (re.compile(r"\bbilka\s*plus\b", re.IGNORECASE), "Bilka Plus", "Bilka Plus"),
-        (re.compile(r"\bcoop\s*(?:medlem|plus|app)\b", re.IGNORECASE), "Coop medlemspris", "Coop"),
-        (re.compile(r"\bspar\s*sammen\b", re.IGNORECASE), "SPAR SAMMEN medlemspris", "SPAR SAMMEN"),
+        (re.compile(rf"\blidl\s*plus{_FOOTNOTE}(?=\W|$)", re.IGNORECASE), "Lidl Plus", "Lidl Plus"),
+        (re.compile(rf"\bnetto\s*(?:\+|plus){_FOOTNOTE}(?=\W|$)", re.IGNORECASE), "Netto+", "Netto+"),
+        (re.compile(rf"\b(?:føtex|foetex)\s*plus{_FOOTNOTE}(?=\W|$)", re.IGNORECASE), "føtex Plus", "føtex Plus"),
+        (re.compile(rf"\bbilka\s*plus{_FOOTNOTE}(?=\W|$)", re.IGNORECASE), "Bilka Plus", "Bilka Plus"),
+        (re.compile(rf"\bcoop\s*(?:medlems?(?:pris)?|plus|app){_FOOTNOTE}(?=\W|$)", re.IGNORECASE), "Coop medlemspris", "Coop"),
+        (re.compile(rf"\bspar\s*sammen{_FOOTNOTE}(?=\W|$)", re.IGNORECASE), "SPAR SAMMEN medlemspris", "SPAR SAMMEN"),
     )
     for pattern, label, app_name in patterns:
         if match := pattern.search(text):
             return label, app_name, match
 
     retailer_key = retailer.casefold().strip()
-    plus_match = re.search(r"\bplus[-\s_]?pris\b", text, re.IGNORECASE)
+    plus_match = re.search(r"(?:\bplus[-\s_]?pris\b|(?<!\w)\+\s*pris\b)", text, re.IGNORECASE)
     if plus_match is not None:
         plus_programs = {
             "lidl": ("Lidl Plus", "Lidl Plus"),
@@ -180,7 +197,7 @@ def _program(text: str, retailer: str) -> tuple[str | None, str | None, re.Match
 def _generic_label(text: str) -> str:
     if re.search(r"\bapp[-\s_]?pris\b", text, re.IGNORECASE):
         return "App-pris"
-    if re.search(r"\bplus[-\s_]?pris\b", text, re.IGNORECASE):
+    if re.search(r"(?:\bplus[-\s_]?pris\b|(?<!\w)\+\s*pris\b)", text, re.IGNORECASE):
         return "Pluspris"
     if re.search(r"\b(?:kundeklub|klub)[-\s_]?pris\b", text, re.IGNORECASE):
         return "Kundeklubpris"
@@ -209,6 +226,30 @@ def _rank_member_candidate(prices: list[_PriceCandidate], markers: list[re.Match
         return None
     ranked.sort(key=lambda row: (row[0], row[1]))
     return ranked[0][2]
+
+
+def _candidate_distance(marker: re.Match[str], candidate: _PriceCandidate) -> int:
+    if candidate.end < marker.start():
+        return marker.start() - candidate.end
+    if candidate.start > marker.end():
+        return candidate.start - marker.end()
+    return 0
+
+
+def _programme_directly_labels_candidate(
+    text: str,
+    marker: re.Match[str] | None,
+    candidate: _PriceCandidate,
+) -> bool:
+    if marker is None or candidate.start < marker.end():
+        return False
+    if _candidate_distance(marker, candidate) > 36:
+        return False
+    between = text[marker.end():candidate.start]
+    # Structured provider metadata is appended with pipes. A programme mention
+    # in one field must not turn a later generic provider price into a member
+    # price merely because the strings happen to be close after concatenation.
+    return "|" not in between
 
 
 def _ordinary_text_price(prices: list[_PriceCandidate], *, member_price: float) -> float | None:
@@ -322,6 +363,12 @@ def detect_member_pricing(*, retailer: str, price: float | None, normal_price: f
         ):
             ordinary_price = round(normal_price, 2) if normal_price is not None else None
 
+    # A variant-dependent ordinary-price range (for example 13,95-19,95)
+    # must never be collapsed to one invented shelf price just because the
+    # provider primary value is the member price.
+    if primary_is_member and ORDINARY_PRICE_RANGE_RE.search(compact):
+        ordinary_price = None
+
     if price is not None and price < member_price - 0.005:
         return None
     if ordinary_price is not None and member_price >= ordinary_price - 0.005:
@@ -341,8 +388,11 @@ def detect_member_pricing(*, retailer: str, price: float | None, normal_price: f
         and _same_price(candidate.value, member_price)
         for candidate in prices
     )
+    programme_role = _programme_directly_labels_candidate(
+        compact, programme_match, selected
+    )
     source = "page-context-member-price" if page_only else "structured-member-price"
-    confidence = 0.72 if page_only else (0.99 if selected.member_role else 0.94)
+    confidence = 0.72 if page_only else (0.99 if selected.member_role or programme_role else 0.94)
 
     # Low-confidence evidence is a Luna review candidate. With Luna disabled,
     # fail closed and leave Kurv's ordinary deterministic offer untouched.
