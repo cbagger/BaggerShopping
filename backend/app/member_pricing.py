@@ -5,9 +5,9 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 
-from .member_pricing_v3 import (
+from .member_pricing_v4 import (
     MemberPricing,
-    detect_member_pricing as _detect_member_pricing_v3,
+    detect_member_pricing as _detect_member_pricing_v4,
     has_membership_signal,
 )
 
@@ -122,7 +122,7 @@ def detect_member_pricing(
     text: str,
     unit_price: str | None = None,
 ) -> MemberPricing | None:
-    result = _detect_member_pricing_v3(
+    result = _detect_member_pricing_v4(
         retailer=retailer,
         price=price,
         normal_price=normal_price,
@@ -138,7 +138,9 @@ def detect_member_pricing(
         )
 
     # A cached high-confidence Luna decision has already passed the confidence
-    # gate. Do not reinterpret it with the weak provider text that triggered AI.
+    # gate. Do not reinterpret it with weak provider text. Direct deterministic
+    # price roles are resolved before Luna in v4 and therefore never reach this
+    # branch with a contradictory cached role.
     if result.source == "luna-verified":
         return result
 

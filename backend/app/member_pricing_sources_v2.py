@@ -4,7 +4,7 @@ import re
 from typing import Iterable
 
 from .meny_flyer import Offer, Publication, _normalize_space
-from .member_pricing_v3 import has_membership_signal
+from .member_pricing import has_membership_signal
 
 _SKIP_STRUCTURED_KEYS = {
     "id", "url", "source", "image", "images", "zoom", "view", "thumbnail",
