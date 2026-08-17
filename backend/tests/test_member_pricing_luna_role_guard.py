@@ -236,3 +236,161 @@ def test_resolved_29_25_page_audit_is_not_reopened(monkeypatch):
 
     candidates = guards._crop_candidates_allowing_build58_reverification([publication])
     assert candidates == []
+
+
+def test_spir_visible_member_badge_without_amount_requires_crop():
+    offer = _offer(price=12).model_copy(
+        update={
+            "id": "spir-10",
+            "retailer": "Netto",
+            "product_name": "SPIR plantedrik",
+            "raw_text": "SPIR plantedrik 1 liter",
+        }
+    )
+    facts = {
+        "visible": True,
+        "ordinary_price": 12,
+        "member_price": None,
+        "member_program": "Netto+",
+        "member_app": "Netto+ appen",
+        "membership_price_visible": True,
+        "unit_price": None,
+        "pricing_confidence": 0.99,
+    }
+
+    reasons = guards._pricing_sanity_reasons(offer, facts)
+    assert "page-audit-visible-member-price-missing-value" in reasons
+    assert guards._strict_server_needs_crop(offer, facts, 0.96) is True
+
+
+def test_spir_resolved_12_9_does_not_trigger_generic_sanity_crop():
+    offer = _offer(price=12).model_copy(
+        update={
+            "id": "spir-10",
+            "retailer": "Netto",
+            "product_name": "SPIR plantedrik",
+        }
+    )
+    facts = {
+        "visible": True,
+        "ordinary_price": 12,
+        "member_price": 9,
+        "member_program": "Netto+",
+        "member_app": "Netto+ appen",
+        "membership_price_visible": True,
+        "unit_price": None,
+        "pricing_confidence": 0.99,
+    }
+
+    assert guards._pricing_sanity_reasons(offer, facts) == ()
+
+
+def test_neophos_unit_price_cannot_be_member_price_even_with_high_confidence():
+    offer = _offer(price=85).model_copy(
+        update={
+            "id": "neophos-40",
+            "retailer": "Bilka",
+            "product_name": "Neophos maskinopvask",
+            "unit_price": "Pr. stk. max. 2,13",
+        }
+    )
+    facts = {
+        "visible": True,
+        "ordinary_price": 85,
+        "member_price": 1.98,
+        "member_program": "Bilka Plus",
+        "member_app": "Bilka Plus appen",
+        "membership_price_visible": True,
+        "unit_price": "Pr. stk. max. 1,98 (plus); Pr. stk. max. 2,13",
+        "pricing_confidence": 0.99,
+    }
+
+    reasons = guards._pricing_sanity_reasons(offer, facts)
+    assert "page-audit-member-price-is-unit-price" in reasons
+    assert "page-audit-extreme-member-discount-needs-verification" in reasons
+    assert guards._strict_server_needs_crop(offer, facts, 0.96) is True
+
+
+def test_neophos_correct_85_79_is_safe_even_with_unit_price_metadata():
+    offer = _offer(price=85).model_copy(
+        update={
+            "id": "neophos-40",
+            "retailer": "Bilka",
+            "product_name": "Neophos maskinopvask",
+            "unit_price": "Pr. stk. max. 2,13",
+        }
+    )
+    facts = {
+        "visible": True,
+        "ordinary_price": 85,
+        "member_price": 79,
+        "member_program": "Bilka Plus",
+        "member_app": "Bilka Plus appen",
+        "membership_price_visible": True,
+        "unit_price": "Pr. stk. max. 1,98 (plus); Pr. stk. max. 2,13",
+        "pricing_confidence": 0.99,
+    }
+
+    assert guards._pricing_sanity_reasons(offer, facts) == ()
+
+
+def test_cached_luna_neophos_unit_price_is_fail_closed_until_crop(monkeypatch):
+    def wrong_luna(**_):
+        return {
+            "authoritative": True,
+            "ordinary_price": 85,
+            "member_price": 1.98,
+            "member_program": "Bilka Plus",
+            "member_app": "Bilka Plus",
+            "requires_activation": False,
+            "pricing_confidence": 0.99,
+        }
+
+    monkeypatch.setattr(v3, "_luna_override", wrong_luna)
+
+    result = v4.detect_member_pricing(
+        retailer="Bilka",
+        price=85,
+        normal_price=None,
+        text="Neophos maskinopvask | Pr. stk. max. 1,98 | Pr. stk. max. 2,13",
+        unit_price="Pr. stk. max. 2,13",
+    )
+
+    assert result is None
+
+
+def test_correct_luna_neophos_85_79_remains_visible(monkeypatch):
+    def correct_luna(**_):
+        return {
+            "authoritative": True,
+            "ordinary_price": 85,
+            "member_price": 79,
+            "member_program": "Bilka Plus",
+            "member_app": "Bilka Plus",
+            "requires_activation": False,
+            "pricing_confidence": 0.99,
+        }
+
+    monkeypatch.setattr(v3, "_luna_override", correct_luna)
+
+    result = v4.detect_member_pricing(
+        retailer="Bilka",
+        price=85,
+        normal_price=None,
+        text="Neophos maskinopvask | Pr. stk. max. 1,98 | Pr. stk. max. 2,13",
+        unit_price="Pr. stk. max. 2,13",
+    )
+
+    assert result is not None
+    assert result.ordinary_price == 85
+    assert result.member_price == 79
+
+
+def test_new_semantic_contract_changes_page_fingerprint():
+    offer = _offer()
+    publication = _publication(offer)
+    original = guards._original_page_fingerprint(publication, 19, [offer])
+    versioned = guards._versioned_page_fingerprint(publication, 19, [offer])
+
+    assert original != versioned
+    assert len(versioned) == 32

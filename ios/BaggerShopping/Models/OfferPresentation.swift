@@ -99,17 +99,39 @@ extension GroceryOffer {
         ].contains(where: value.contains)
     }
 
+    /// Samsung Food interprets a trailing “6 stk” as shopping quantity = 6 and
+    /// strips it from the item name. That destroys Kurv's selected-offer key on
+    /// the next reconciliation. Keep the advertised pack choice in the name,
+    /// but express only a trailing package count as “6-pak”, which is product
+    /// metadata rather than shopping-list quantity. Weight/volume and all other
+    /// variant text remain untouched.
+    func samsungSafeShoppingItemName(_ rawName: String) -> String {
+        let value = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return value }
+        return value.replacingOccurrences(
+            of: #"\s+(\d+)\s*(?:stk\.?|styk(?:ker)?)\s*$"#,
+            with: " $1-pak",
+            options: [.regularExpression, .caseInsensitive]
+        )
+    }
+
     func shoppingItemName(variant: String?) -> String {
         let base = conciseProductName
         guard let variant = variant?.trimmingCharacters(in: .whitespacesAndNewlines),
               !variant.isEmpty,
-              variant.caseInsensitiveCompare(base) != .orderedSame else { return base }
+              variant.caseInsensitiveCompare(base) != .orderedSame else {
+            return samsungSafeShoppingItemName(base)
+        }
 
-        if let composed = composedSharedAlternative(base: base, variant: variant) { return composed }
-        if let composed = composedPropertyVariant(base: base, variant: variant) { return composed }
+        if let composed = composedSharedAlternative(base: base, variant: variant) {
+            return samsungSafeShoppingItemName(composed)
+        }
+        if let composed = composedPropertyVariant(base: base, variant: variant) {
+            return samsungSafeShoppingItemName(composed)
+        }
 
         if variant.range(of: base, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
-            return variant
+            return samsungSafeShoppingItemName(variant)
         }
         let words = variant.split(whereSeparator: \.isWhitespace)
         let leadingJoinWords = ["i", "med", "uden", "af", "til"]
@@ -121,14 +143,14 @@ extension GroceryOffer {
             || firstWord.allSatisfy { $0.isUppercase || $0.isNumber || $0 == "’" || $0 == "'" }
         if !beginsAsSuffix && !isGenericVariantSuffix(variant)
             && (beginsWithBrandLikeName || beginsWithExplicitBrand) {
-            return variant
+            return samsungSafeShoppingItemName(variant)
         }
         if isGenericVariantSuffix(variant), variant.lowercased().hasPrefix(firstWordOf(base).lowercased() + " "),
            let productNoun = base.split(whereSeparator: \.isWhitespace).last.map(String.init),
            variant.range(of: productNoun, options: [.caseInsensitive, .diacriticInsensitive]) == nil {
-            return "\(variant) \(productNoun)"
+            return samsungSafeShoppingItemName("\(variant) \(productNoun)")
         }
-        return "\(variantBaseName(from: base)) – \(cleanedVariantSuffix(variant))"
+        return samsungSafeShoppingItemName("\(variantBaseName(from: base)) – \(cleanedVariantSuffix(variant))")
     }
 
     private func composedSharedAlternative(base: String, variant: String) -> String? {
@@ -171,11 +193,11 @@ extension GroceryOffer {
     func shoppingItemName(customVariant: String) -> String {
         let base = manualVariantBaseName
         let custom = customVariant.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !custom.isEmpty else { return base }
+        guard !custom.isEmpty else { return samsungSafeShoppingItemName(base) }
         if custom.range(of: base, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
-            return custom
+            return samsungSafeShoppingItemName(custom)
         }
-        return "\(base) – \(custom)"
+        return samsungSafeShoppingItemName("\(base) – \(custom)")
     }
 
     private var manualVariantBaseName: String {
