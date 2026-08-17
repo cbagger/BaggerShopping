@@ -6,6 +6,7 @@ import json
 
 from .luna_enrichment import load_config, save_config, status_payload
 from .luna_semantic_audit import semantic_status_payload
+from .luna_cost_policy import status_payload as cost_policy_status
 
 
 def parser() -> argparse.ArgumentParser:
@@ -34,12 +35,14 @@ def _status() -> dict:
         ),
         "page_audit_max_failures": max(1, int(config.get("page_audit_max_failures", 2))),
         "page_audit_max_output_tokens": int(config.get("page_audit_max_output_tokens", 4000)),
+        "page_scout_max_output_tokens": int(config.get("page_scout_max_output_tokens", 1400)),
         "crop_max_output_tokens": int(config.get("crop_max_output_tokens", 1200)),
     }
     return {
         **status_payload(),
         **semantic_status_payload(),
         "semantic_config": semantic_config,
+        "cost_policy": cost_policy_status(),
     }
 
 
