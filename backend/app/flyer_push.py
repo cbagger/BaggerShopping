@@ -145,12 +145,39 @@ def _notification_name(publication: Any) -> str:
     return title if retailer.casefold() in title.casefold() else f"{retailer} {title}".strip()
 
 
-def _version_key(publication: Any) -> str:
-    return f"{publication.id}:{publication_fingerprint(publication)}"
+def _notification_release_key(
+    publication_id: object,
+    valid_from: object,
+    valid_until: object,
+) -> str:
+    """Stable identity for one customer-visible flyer release.
+
+    Content fingerprints intentionally change whenever provider page/offer data
+    changes because readiness/Luna must re-audit those revisions. A push titled
+    "Ny tilbudsavis" has different semantics: the same publication and validity
+    window is still the same flyer, even if Tjek/iPaper mutates metadata or a
+    backend/container restart observes a slightly different content fingerprint.
+    """
+    return "|".join(
+        str(value or "").strip()
+        for value in (publication_id, valid_from, valid_until)
+    )
 
 
-def _record_version_key(record: dict[str, Any]) -> str:
-    return f"{record.get('publication_id')}:{record.get('fingerprint')}"
+def _publication_release_key(publication: Any) -> str:
+    return _notification_release_key(
+        getattr(publication, "id", None),
+        getattr(publication, "valid_from", None),
+        getattr(publication, "valid_until", None),
+    )
+
+
+def _record_release_key(record: dict[str, Any]) -> str:
+    return _notification_release_key(
+        record.get("publication_id"),
+        record.get("valid_from"),
+        record.get("valid_until"),
+    )
 
 
 def _install_mobile_cache_readiness_guard() -> None:
@@ -190,15 +217,22 @@ _install_mobile_cache_readiness_guard()
 
 
 async def _deliver_ready_records(records: list[dict[str, Any]]) -> dict[str, int]:
-    """Deliver ready flyer versions using only local readiness metadata."""
+    """Acknowledge ready content revisions and notify only new flyer releases.
+
+    Readiness is fingerprint-based so any meaningful provider revision can be
+    reprocessed. Notification identity is deliberately release-based so the
+    same flyer cannot be pushed again merely because a worker/container restarts
+    or provider metadata changes within the same validity window.
+    """
     async with STORE_LOCK:
         store = _load()
         if not store.get("initialized"):
             return {"ready": 0, "sent": 0, "failed": 0}
         seen_versions = dict(store.get("seen_publication_fingerprints", {}))
+        seen_releases = dict(store.get("seen_notification_releases", {}))
         devices = dict(store.get("devices", {}))
 
-    ready_unseen = [
+    ready_revisions = [
         row for row in records
         if row.get("publication_id")
         and row.get("fingerprint")
@@ -207,65 +241,76 @@ async def _deliver_ready_records(records: list[dict[str, Any]]) -> dict[str, int
 
     sent = failed = 0
     completed_versions: dict[str, str] = {}
+    completed_releases: dict[str, str] = {}
 
-    for row in ready_unseen:
+    for row in ready_revisions:
         publication_id = str(row["publication_id"])
         retailer = str(row.get("retailer") or "")
         title = str(row.get("title") or "")
         fingerprint = str(row["fingerprint"])
-        version_key = _record_version_key(row)
+        release_key = _record_release_key(row)
+        should_notify = seen_releases.get(publication_id) != release_key
         notification_name = title if retailer.casefold() in title.casefold() else f"{retailer} {title}".strip()
         targets = 0
         publication_failed = False
 
-        for device_id, device in devices.items():
-            if not device.get("enabled") or retailer not in device.get("retailers", []):
-                continue
-            targets += 1
-            delivered_versions = set(device.get("delivered_publication_versions", []))
-            if version_key in delivered_versions:
-                continue
+        if should_notify:
+            for device_id, device in devices.items():
+                if not device.get("enabled") or retailer not in device.get("retailers", []):
+                    continue
+                targets += 1
+                delivered_releases = set(device.get("delivered_publication_releases", []))
+                if release_key in delivered_releases:
+                    continue
 
-            ok = await _send(
-                device["device_token"],
-                device.get("environment", "production"),
-                "Ny tilbudsavis",
-                f"{notification_name} er nu tilgængelig",
-                publication_id,
-                retailer,
-            )
-            sent += int(ok)
-            failed += int(not ok)
-            publication_failed = publication_failed or not ok
+                ok = await _send(
+                    device["device_token"],
+                    device.get("environment", "production"),
+                    "Ny tilbudsavis",
+                    f"{notification_name} er nu tilgængelig",
+                    publication_id,
+                    retailer,
+                )
+                sent += int(ok)
+                failed += int(not ok)
+                publication_failed = publication_failed or not ok
 
-            if ok:
-                async with STORE_LOCK:
-                    latest = _load()
-                    record = latest.setdefault("devices", {}).get(device_id)
-                    if record is not None:
-                        history = list(dict.fromkeys([
-                            *record.get("delivered_publication_versions", []),
-                            version_key,
-                        ]))[-300:]
-                        record["delivered_publication_versions"] = history
-                        _save(latest)
+                if ok:
+                    async with STORE_LOCK:
+                        latest = _load()
+                        record = latest.setdefault("devices", {}).get(device_id)
+                        if record is not None:
+                            history = list(dict.fromkeys([
+                                *record.get("delivered_publication_releases", []),
+                                release_key,
+                            ]))[-300:]
+                            record["delivered_publication_releases"] = history
+                            _save(latest)
 
-        if targets == 0 or not publication_failed:
+        # Same-release fingerprint changes are silently acknowledged after
+        # readiness completes. New releases are acknowledged only when all
+        # configured APNs deliveries succeeded (or there were no targets).
+        if not should_notify or targets == 0 or not publication_failed:
             completed_versions[publication_id] = fingerprint
+            if should_notify:
+                completed_releases[publication_id] = release_key
 
-    if completed_versions:
+    if completed_versions or completed_releases:
         async with STORE_LOCK:
             store = _load()
             seen = set(store.get("seen_publications", []))
             versions = store.setdefault("seen_publication_fingerprints", {})
+            releases = store.setdefault("seen_notification_releases", {})
             for publication_id, fingerprint in completed_versions.items():
                 seen.add(publication_id)
                 versions[publication_id] = fingerprint
+            for publication_id, release_key in completed_releases.items():
+                releases[publication_id] = release_key
             store["seen_publications"] = sorted(seen)
             store["last_ready_delivery_at"] = int(time.time())
             _save(store)
 
-    return {"ready": len(ready_unseen), "sent": sent, "failed": failed}
+    return {"ready": len(ready_revisions), "sent": sent, "failed": failed}
 
 
 async def deliver_ready_notifications() -> dict[str, int]:
@@ -277,15 +322,15 @@ async def check_and_send() -> dict[str, int]:
     publications = [item for item in await fetch_all_publications() if item.status != "expired"]
     current = {item.id: item for item in publications}
 
-    # Migrate the existing push history into version-aware tracking. On the very
-    # first install there is no previous history, so all current flyers are the
-    # baseline and must not trigger pushes/Luna. On an upgrade, readiness uses
-    # the existing seen IDs as the safe baseline and queues anything else.
+    # Migrate the existing push history into version-aware tracking. Content
+    # fingerprints remain the readiness acknowledgement, while customer-visible
+    # notification history is keyed separately by publication + validity range.
     async with STORE_LOCK:
         store = _load()
         initialized = bool(store.get("initialized"))
         previous_ids = set(store.get("seen_publications", []))
         seen_versions = dict(store.get("seen_publication_fingerprints", {}))
+        seen_releases = store.setdefault("seen_notification_releases", {})
 
         if not initialized:
             store["initialized"] = True
@@ -294,15 +339,21 @@ async def check_and_send() -> dict[str, int]:
                 publication.id: publication_fingerprint(publication)
                 for publication in publications
             }
+            store["seen_notification_releases"] = {
+                publication.id: _publication_release_key(publication)
+                for publication in publications
+            }
             store["last_check_at"] = int(time.time())
             _save(store)
             observe_publications(publications, bootstrap_ready_ids=None)
             return {"new": 0, "sent": 0, "failed": 0}
 
-        # Existing installations predate version fingerprints. Seed only IDs
-        # already known by the old notification worker; an actually new flyer
-        # present during deployment therefore remains pending instead of being
-        # accidentally published.
+        # Existing installations predate one or both tracking layers. Seed only
+        # publication IDs already known by the previous worker. An actually new
+        # flyer present during deployment therefore remains pending and can push
+        # after readiness, while a known 365discount flyer cannot be re-pushed
+        # just because its content fingerprint changed during a restart.
+        changed_store = False
         if not seen_versions and previous_ids:
             seen_versions = {
                 publication.id: publication_fingerprint(publication)
@@ -310,6 +361,14 @@ async def check_and_send() -> dict[str, int]:
                 if publication.id in previous_ids
             }
             store["seen_publication_fingerprints"] = dict(seen_versions)
+            changed_store = True
+
+        for publication in publications:
+            if publication.id in previous_ids and publication.id not in seen_releases:
+                seen_releases[publication.id] = _publication_release_key(publication)
+                changed_store = True
+
+        if changed_store:
             _save(store)
 
     observe_publications(publications, bootstrap_ready_ids=previous_ids)
