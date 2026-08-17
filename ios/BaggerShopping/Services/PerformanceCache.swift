@@ -31,9 +31,9 @@ struct CachedFlyerOffers: Codable {
 }
 
 enum FlyerOfferCache {
-    // v4 invalidates Build 56 offer payloads after member-signal parsing and
-    // variant direct-add safety were hardened.
-    private static let prefix = "kurv-cached-flyer-offers-v4-"
+    // v5 invalidates Build 57 payloads now that Luna can audit every new page
+    // semantically and feed verified member/variant facts into the offer layer.
+    private static let prefix = "kurv-cached-flyer-offers-v5-"
 
     static func save(_ offers: [GroceryOffer], publicationID: String) {
         guard !offers.isEmpty else { return }
@@ -66,7 +66,7 @@ struct CachedOfferSearch: Codable {
 }
 
 enum OfferSearchCache {
-    private static let prefix = "kurv-cached-offer-search-v4-"
+    private static let prefix = "kurv-cached-offer-search-v5-"
 
     static func save(_ offers: [GroceryOffer], query: String, retailers: Set<String>) {
         guard !offers.isEmpty else { return }
@@ -104,7 +104,7 @@ struct CachedSmartOfferMatches: Codable {
 }
 
 enum SmartOfferMatchCache {
-    private static let key = "kurv-cached-smart-offer-matches-v4"
+    private static let key = "kurv-cached-smart-offer-matches-v5"
 
     static func save(_ matches: [String: [GroceryOffer]]) {
         let cached = CachedSmartOfferMatches(savedAt: Date(), matches: matches)
