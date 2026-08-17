@@ -15,7 +15,14 @@ from .flyer_readiness import (
     publication_fingerprint,
     status_payload as readiness_status_payload,
 )
-from .luna_enrichment import analyze_candidate, collect_candidates, load_config, status_payload
+from .luna_enrichment import (
+    analyze_candidate,
+    collect_candidates,
+    load_config,
+    load_store,
+    save_store,
+    status_payload,
+)
 # Install semantic invariants first, then the quality/cost policy. Both patch the
 # shared semantic module before the worker binds functions locally.
 from . import luna_semantic_guards as _semantic_guards
@@ -27,6 +34,7 @@ from .luna_semantic_audit import (
     analyze_page_audit,
     collect_crop_candidates,
     collect_page_audit_candidates,
+    offer_key,
     semantic_status_payload,
 )
 
@@ -57,6 +65,65 @@ def _split_crop_candidates(candidates):
     pricing = [candidate for candidate in ordered if not _cost_policy.is_variant_only_crop(candidate)]
     variants = [candidate for candidate in ordered if _cost_policy.is_variant_only_crop(candidate)]
     return pricing, variants
+
+
+def _mandatory_pricing_crop_verified(result: dict, config: dict) -> bool:
+    """Mandatory crop completion is about pricing, not merely identity.
+
+    `analyze_crop_candidate` can legitimately call a crop useful when identity
+    or variant confidence is high. That is fine for optional enrichment, but a
+    publication gate created by price/member uncertainty needs an independently
+    high-confidence price result before the flyer may become ready.
+    """
+    if str(result.get("status") or "") != "completed":
+        return False
+    facts = result.get("semantic_facts")
+    if not isinstance(facts, dict) or not facts.get("visible"):
+        return False
+    threshold = float(config.get("min_apply_confidence", 0.96))
+    if float(facts.get("pricing_confidence") or 0) < threshold:
+        return False
+
+    ordinary = facts.get("ordinary_price")
+    member = facts.get("member_price")
+    if ordinary is None and member is None:
+        return False
+    if ordinary is not None and (
+        not isinstance(ordinary, (int, float))
+        or isinstance(ordinary, bool)
+        or float(ordinary) <= 0
+    ):
+        return False
+    if member is not None and (
+        not isinstance(member, (int, float))
+        or isinstance(member, bool)
+        or float(member) <= 0
+    ):
+        return False
+    if member is not None and ordinary is None:
+        return False
+    if member is not None and ordinary is not None and float(member) >= float(ordinary):
+        return False
+    return True
+
+
+def _requeue_mandatory_crop(candidate, previous_semantic: dict | None, error: str) -> None:
+    """Restore the page-audit uncertainty so a mandatory crop can retry."""
+    store = load_store()
+    semantic = store.setdefault("semantic_facts", {})
+    if isinstance(previous_semantic, dict):
+        semantic[offer_key(candidate.offer)] = previous_semantic
+
+    record = store.setdefault("records", {}).get(candidate.fingerprint)
+    if isinstance(record, dict):
+        record["status"] = "failed"
+        record["error"] = error[:500]
+
+    pricing_index = store.setdefault("pricing_index", {})
+    for signature, fingerprint in list(pricing_index.items()):
+        if fingerprint == candidate.fingerprint:
+            pricing_index.pop(signature, None)
+    save_store(store)
 
 
 async def run_once() -> dict:
@@ -259,17 +326,23 @@ async def _process_publication(record: dict) -> dict:
                 }
             processed_pages += 1
 
-        # Price/member safety is mandatory before publication. A no-change crop
-        # is NOT enough for a row the page audit explicitly deemed unsafe.
+        # Price/member safety is mandatory before publication. Keep the page
+        # uncertainty around until the targeted crop returns genuinely safe
+        # pricing facts; identity confidence alone can never satisfy this gate.
         pricing_candidates, _ = _split_crop_candidates(collect_crop_candidates([publication]))
         for candidate in pricing_candidates:
+            before_store = load_store()
+            previous_semantic = before_store.get("semantic_facts", {}).get(
+                offer_key(candidate.offer)
+            )
             result = await analyze_crop_candidate(candidate, client=client)
             status = str(result.get("status") or "")
             if status in _STOP_STATUSES:
                 mark_failed(publication_id, expected_fingerprint, status)
                 return {"status": status, "publication_id": publication_id}
-            if status != "completed":
+            if not _mandatory_pricing_crop_verified(result, config):
                 error = str(result.get("error") or status or "pricing-crop-unresolved")
+                _requeue_mandatory_crop(candidate, previous_semantic, error)
                 mark_failed(publication_id, expected_fingerprint, error)
                 return {
                     "status": "pricing-crop-unresolved",
