@@ -8,6 +8,9 @@ import httpx
 
 from . import _original_fetch_all_publications as fetch_all_publications
 from .luna_enrichment import analyze_candidate, collect_candidates, load_config, status_payload
+# Install the semantic-audit invariants before binding functions locally.
+from . import luna_semantic_guards as _semantic_guards
+_semantic_guards.install()
 from .luna_semantic_audit import (
     analyze_crop_candidate,
     analyze_page_audit,
