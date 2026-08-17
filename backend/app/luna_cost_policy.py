@@ -15,15 +15,15 @@ The live Build58/59 shadow tests established the final operating principle:
 * variant enrichment is the first paid work to stop when its own monthly slice
   is exhausted. The global Luna hard budget remains authoritative.
 
-This module deliberately leaves Build58's rich page request/schema/validator
-untouched. It patches only the server-side crop gate/reasons and exposes helpers
-used by the worker to prioritise pricing work before optional variant enrichment.
-Provider facts remain untouched and Luna OFF remains authoritative.
+The generic semantic-sanity layer owns the invariants for price roles. This
+module may prioritise or suppress optional work, but it must never overwrite
+those safety reasons when it installs its worker-level crop gate.
 """
 
 from typing import Any, Iterable
 
 from . import luna_semantic_audit as semantic
+from . import luna_semantic_guards as semantic_guards
 from .luna_enrichment import load_config, load_store
 from .member_pricing import has_membership_signal
 
@@ -64,6 +64,8 @@ def _provider_price_conflict(offer: Any, facts: dict[str, Any], threshold: float
 
 def _pricing_is_safe(offer: Any, facts: dict[str, Any], threshold: float) -> bool:
     if not facts.get("visible"):
+        return False
+    if semantic_guards._pricing_sanity_reasons(offer, facts):
         return False
     if not semantic._price_relation_valid(facts):
         return False
@@ -114,13 +116,15 @@ def _variant_enrichment_needed(
     ]
     confidence = float(facts.get("variant_confidence") or 0)
 
-    # One readable choice is not enough for a campaign that explicitly covers
-    # multiple products. Otherwise only enrich when confidence is genuinely
-    # weak. This keeps Castello 0.93 / Iskasse 0.88 but enriches Actimel 0.55.
     return len(variants) < 2 or confidence < _variant_threshold(config)
 
 
 def _pricing_crop_needed(offer: Any, facts: dict[str, Any], threshold: float) -> bool:
+    # Cost/quality policy must preserve every generic safety invariant installed
+    # by luna_semantic_guards. This is deliberately first: price safety always
+    # wins over optional-work suppression and budget prioritisation.
+    if semantic_guards._pricing_sanity_reasons(offer, facts):
+        return True
     if not facts.get("visible"):
         return True
     if not semantic._price_relation_valid(facts):
@@ -136,8 +140,6 @@ def _pricing_crop_needed(offer: Any, facts: dict[str, Any], threshold: float) ->
     if facts.get("member_price") is not None and not _provider_has_member_evidence(offer):
         return True
 
-    # A model-requested crop is pricing-critical only when the pricing relation
-    # itself is not already safe. Pure variant uncertainty is handled below.
     if facts.get("needs_crop_verification") and not _pricing_is_safe(offer, facts, threshold):
         return True
     return False
@@ -155,7 +157,11 @@ def _balanced_crop_reasons(offer: Any, facts: dict[str, Any], needs_crop: bool) 
 
     config = load_config()
     threshold = float(config.get("min_apply_confidence", 0.96))
-    result: list[str] = []
+
+    # Keep the exact generic sanity reason in the persisted crop record. This
+    # gives targeted-crop prompts and diagnostics the same explanation that
+    # caused the worker-level gate to fire.
+    result: list[str] = list(semantic_guards._pricing_sanity_reasons(offer, facts))
 
     if not facts.get("visible"):
         result.append("page-audit-target-not-visible")
@@ -241,6 +247,7 @@ def status_payload() -> dict[str, Any]:
         "variant_crop_spend_dkk": variant_crop_spend_dkk(config),
         "variant_crop_budget_available": variant_crop_budget_allows(config),
         "visual_only_member_price_requires_crop": True,
+        "generic_member_price_sanity_preserved": True,
         "recommended_monthly_budget_dkk": float(config.get("recommended_monthly_budget_dkk", 20.0)),
         "current_luna_input_usd_per_million": 0.20,
         "current_luna_output_usd_per_million": 1.20,
@@ -252,8 +259,8 @@ def install() -> None:
     if _INSTALLED:
         return
 
-    # Deliberately do NOT patch _page_request_body or _validate_page_output.
-    # Build58's rich high-detail semantic audit remains the primary pass.
+    # The cost layer owns the final worker-level gate, but explicitly delegates
+    # all price-role invariants to luna_semantic_guards above.
     semantic._server_needs_crop = _balanced_server_needs_crop
     semantic._crop_reasons = _balanced_crop_reasons
     _INSTALLED = True
