@@ -85,14 +85,27 @@ def _exclusive_store():
 
 
 def load_store() -> dict[str, Any]:
+    # Reading readiness before the detector has initialized it must be a pure
+    # fail-open operation. Do not try to create /data or a lock file merely to
+    # discover that the store does not exist; this also keeps ordinary unit
+    # tests and fresh installations independent of QNAP filesystem layout.
+    path = store_path()
+    if not path.exists():
+        return _empty_store()
+
     lock_path = _lock_path()
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
-        try:
-            return _read_unlocked()
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    try:
+        with lock_path.open("a+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            try:
+                return _read_unlocked()
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        # If the readiness store cannot be read/locked, fail open as
+        # uninitialized rather than blanking the public flyer shelf. Once a
+        # valid initialized store is readable, unknown versions still fail shut.
+        return _empty_store()
 
 
 def readiness_revision() -> int:
