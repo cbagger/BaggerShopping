@@ -45,6 +45,12 @@ def _reasoning_effort(config: dict[str, Any]) -> str:
     return value if value in {"minimal", "low"} else "minimal"
 
 
+def _output_cap(config: dict[str, Any]) -> int:
+    # Cost guard: persisted Build59 config may still say 1400. v2 deliberately
+    # caps the cheap scout at 700 even before config migration.
+    return min(700, max(256, int(config.get("page_scout_max_output_tokens", 700))))
+
+
 def _short_id_map(ids: Iterable[str]) -> dict[str, str]:
     """Map full offer ids to the shortest stable unique prefix on the page."""
     values = sorted(set(str(value) for value in ids))
@@ -151,7 +157,7 @@ def _cost_page_request_body(candidate: semantic.PageAuditCandidate, config: dict
                 "schema": _compact_schema(candidate),
             },
         },
-        "max_output_tokens": int(config.get("page_scout_max_output_tokens", 700)),
+        "max_output_tokens": _output_cap(config),
     }
 
 
@@ -289,7 +295,7 @@ def status_payload() -> dict[str, Any]:
         "page_image_detail": _detail(config),
         "page_scout_model": str(config.get("page_scout_model") or config.get("model") or "gpt-5.6-luna"),
         "page_scout_reasoning_effort": _reasoning_effort(config),
-        "page_scout_max_output_tokens": int(config.get("page_scout_max_output_tokens", 700)),
+        "page_scout_max_output_tokens": _output_cap(config),
         "proactive_variant_crops": False,
         "recommended_monthly_budget_dkk": float(config.get("recommended_monthly_budget_dkk", 20.0)),
     }
