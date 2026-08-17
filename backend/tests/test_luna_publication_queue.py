@@ -81,3 +81,36 @@ def test_failed_page_audit_keeps_publication_hidden(tmp_path, monkeypatch):
     pending = readiness.pending_publication_records()
     assert len(pending) == 1
     assert pending[0]["last_error"] == "vision failed"
+
+
+def test_mandatory_pricing_crop_requires_pricing_confidence_not_identity_only():
+    config = {"min_apply_confidence": 0.96}
+    result = {
+        "status": "completed",
+        "semantic_facts": {
+            "visible": True,
+            "ordinary_price": 15,
+            "member_price": 12,
+            "identity_confidence": 1.0,
+            "pricing_confidence": 0.70,
+        },
+    }
+    assert luna_worker._mandatory_pricing_crop_verified(result, config) is False
+
+    result["semantic_facts"]["pricing_confidence"] = 0.99
+    assert luna_worker._mandatory_pricing_crop_verified(result, config) is True
+
+
+def test_mandatory_pricing_crop_rejects_invalid_member_relation():
+    result = {
+        "status": "completed",
+        "semantic_facts": {
+            "visible": True,
+            "ordinary_price": 12,
+            "member_price": 15,
+            "pricing_confidence": 0.99,
+        },
+    }
+    assert luna_worker._mandatory_pricing_crop_verified(
+        result, {"min_apply_confidence": 0.96}
+    ) is False
