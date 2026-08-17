@@ -39,6 +39,19 @@ _DIRECT_CONTEXT_PRICE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_UNIT_PRICE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?<!\d)(?P<price>\d{1,4}(?:[,.]\d{1,2})?)\s*kr\.?\s*(?:/|pr\.?)\s*"
+        r"(?:kg|kilo|l(?:iter)?|100\s*g|100\s*ml|stk\.?|styk(?:ker)?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bpr\.?\s*(?:kg|kilo|l(?:iter)?|100\s*g|100\s*ml|stk\.?|styk(?:ker)?)\b"
+        r"[^\d]{0,24}(?P<price>\d{1,4}(?:[,.]\d{1,2})?)",
+        re.IGNORECASE,
+    ),
+)
+
 
 def _compact(text: str) -> str:
     return " ".join((text or "").replace("\u00ad", "").split())
@@ -285,24 +298,70 @@ def _strong_deterministic(
     return None
 
 
-def _unsafe_luna_primary_member_role(
+def _unit_price_values(*values: str | None) -> set[float]:
+    result: set[float] = set()
+    for value in values:
+        if not value:
+            continue
+        for pattern in _UNIT_PRICE_PATTERNS:
+            for match in pattern.finditer(value):
+                try:
+                    number = float(match.group("price").replace(",", "."))
+                except (AttributeError, ValueError):
+                    continue
+                if 0 < number <= 10_000:
+                    result.add(round(number, 2))
+    return result
+
+
+def _unsafe_luna_member_role(
     *,
     price: float | None,
+    text: str,
+    unit_price: str | None,
     pricing: MemberPricing | None,
 ) -> bool:
-    """Reject an unresolved AI role inversion before it reaches the customer.
+    """Fail closed cached AI pricing that still violates product-price sanity.
 
-    A provider primary price is intentionally untyped: some feeds expose the
-    ordinary campaign price while a few expose a member campaign price. If Luna
-    merely relabels that exact provider value as `member_price` and cannot also
-    identify an ordinary price, the role is unresolved rather than verified.
-    The semantic audit layer will escalate that shape to a targeted crop.
+    This is only a presentation guard. The semantic audit layer separately
+    escalates the same shapes to a targeted visual crop, so valid unusual deals
+    can become visible again once their roles are actually verified.
     """
     if pricing is None or pricing.source != "luna-verified":
         return False
-    if price is None or pricing.ordinary_price is not None:
-        return False
-    return v3._same_price(price, pricing.member_price)
+
+    # Provider primary price merely relabelled as member price, with no ordinary
+    # role resolved (the live Seafoodmix failure).
+    if (
+        price is not None
+        and pricing.ordinary_price is None
+        and v3._same_price(price, pricing.member_price)
+    ):
+        return True
+
+    unit_values = _unit_price_values(_customer_text(text), unit_price)
+    if any(v3._same_price(pricing.member_price, value) for value in unit_values):
+        return True
+
+    reference = pricing.ordinary_price if pricing.ordinary_price is not None else price
+    if (
+        isinstance(reference, (int, float))
+        and reference > pricing.member_price > 0
+        and reference - pricing.member_price >= 10
+        and pricing.member_price / reference <= 0.25
+        and unit_values
+    ):
+        # If a supposed member price is extreme and the advert/provider also
+        # contains a low unit-price value in the same numerical neighbourhood,
+        # do not show it before the new targeted crop has resolved the roles.
+        if any(
+            abs(pricing.member_price - value) / max(pricing.member_price, value) <= 0.20
+            for value in unit_values
+            if value > 0
+        ):
+            return True
+
+    return False
 
 
 def detect_member_pricing(
@@ -328,9 +387,9 @@ def detect_member_pricing(
         return deterministic
 
     # Fall back to v3 for page-only/Luna-verified and legacy safe cases. Direct
-    # advert roles have already had first priority. A remaining AI result is
-    # still fail-closed when it only relabels the provider's exact primary price
-    # as a member price without resolving the ordinary customer price.
+    # advert roles have already had first priority. Remaining AI facts fail
+    # closed whenever they still look like an unresolved provider/unit-price
+    # role; the semantic audit contract will then send them to a visual crop.
     fallback = v3.detect_member_pricing(
         retailer=retailer,
         price=price,
@@ -338,7 +397,12 @@ def detect_member_pricing(
         text=compact,
         unit_price=unit_price,
     )
-    if _unsafe_luna_primary_member_role(price=price, pricing=fallback):
+    if _unsafe_luna_member_role(
+        price=price,
+        text=compact,
+        unit_price=unit_price,
+        pricing=fallback,
+    ):
         return None
     return fallback
 
