@@ -72,6 +72,12 @@ def test_changed_same_id_reopens_gate_and_tracks_changed_page(tmp_path, monkeypa
     assert readiness.publication_is_ready(original)
 
     changed = publication("same", price=12)
+
+    # Version matching is part of the read gate itself, not only detection.
+    # Therefore a provider change under the same publication ID is hidden even
+    # in the interval before flyer-push has observed/enqueued the new version.
+    assert readiness.publication_is_ready(changed) is False
+
     result = readiness.observe_publications([changed], bootstrap_ready_ids={"same"})
     assert result["changed"] == ["same"]
     assert readiness.publication_is_ready(changed) is False
