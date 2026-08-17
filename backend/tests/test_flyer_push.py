@@ -71,17 +71,24 @@ def test_new_publication_is_not_pushed_until_luna_marks_ready(tmp_path, monkeypa
     monkeypatch.setattr(flyer_push, "fetch_all_publications", publications)
     monkeypatch.setattr(flyer_push, "_send", send)
 
-    # Detection creates a processing event, but push remains blocked.
+    # Provider detection creates a processing event, but push remains blocked.
     result = asyncio.run(flyer_push.check_and_send())
     assert result == {"new": 1, "sent": 0, "failed": 0}
     assert sent == []
     assert publication_is_ready(new) is False
     assert "new" not in flyer_push._load()["seen_publications"]
 
-    # Luna's publication-complete marker opens both the API gate and push gate.
+    # Luna's publication-complete marker opens the API gate. Notification can
+    # then be delivered from local readiness metadata without another provider
+    # fetch, which is the production fast path.
     assert mark_ready(new) is True
-    result = asyncio.run(flyer_push.check_and_send())
-    assert result == {"new": 1, "sent": 1, "failed": 0}
+
+    async def must_not_fetch():
+        raise AssertionError("ready delivery must not refetch providers")
+
+    monkeypatch.setattr(flyer_push, "fetch_all_publications", must_not_fetch)
+    delivery = asyncio.run(flyer_push.deliver_ready_notifications())
+    assert delivery == {"ready": 1, "sent": 1, "failed": 0}
     assert sent == [("aa" * 32, "MENY Uge 34 er nu tilgængelig", "new", "MENY")]
     assert "new" in flyer_push._load()["seen_publications"]
 
@@ -113,5 +120,5 @@ def test_same_publication_id_changed_version_is_gated_and_can_notify_again(tmp_p
     assert publication_is_ready(changed) is False
 
     assert mark_ready(changed) is True
-    result = asyncio.run(flyer_push.check_and_send())
-    assert result == {"new": 1, "sent": 0, "failed": 0}  # no configured targets
+    delivery = asyncio.run(flyer_push.deliver_ready_notifications())
+    assert delivery == {"ready": 1, "sent": 0, "failed": 0}  # no configured targets
