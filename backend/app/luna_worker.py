@@ -8,9 +8,12 @@ import httpx
 
 from . import _original_fetch_all_publications as fetch_all_publications
 from .luna_enrichment import analyze_candidate, collect_candidates, load_config, status_payload
-# Install the semantic-audit invariants before binding functions locally.
+# Install semantic invariants first, then the cost policy. Both patch the shared
+# semantic module before the worker binds functions locally.
 from . import luna_semantic_guards as _semantic_guards
 _semantic_guards.install()
+from . import luna_cost_policy as _cost_policy
+_cost_policy.install()
 from .luna_semantic_audit import (
     analyze_crop_candidate,
     analyze_page_audit,
@@ -22,9 +25,8 @@ from .luna_semantic_audit import (
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("kurv-luna")
 
-# Legacy fallback for pages that cannot be visually audited (for example a
-# provider without a usable page image). The Build 58 primary path is now:
-# full-page semantic audit -> targeted crop only when needed.
+# Legacy fallback for pages that cannot be visually audited. The primary path
+# is compact visual page scout -> pricing/member crop only when necessary.
 _PAID_REASONS = {
     "member-signal-without-safe-price",
     "member-price-needs-visual-verification",
@@ -44,12 +46,10 @@ def _paid_candidates(candidates):
 async def run_once() -> dict:
     config = load_config()
     if not config.get("enabled"):
-        return {"status": "disabled", **status_payload(), **semantic_status_payload()}
+        return {"status": "disabled", **status_payload(), **semantic_status_payload(), "cost_policy": _cost_policy.status_payload()}
     if not os.getenv("OPENAI_API_KEY", "").strip():
-        return {"status": "missing-api-key", **status_payload(), **semantic_status_payload()}
+        return {"status": "missing-api-key", **status_payload(), **semantic_status_payload(), "cost_policy": _cost_policy.status_payload()}
 
-    # Always scan raw deterministic source facts. Luna's cached overlays never
-    # feed back into their own page fingerprints or candidate selection.
     publications = await fetch_all_publications()
 
     total_limit = max(1, int(config.get("max_requests_per_scan", 20)))
@@ -66,8 +66,9 @@ async def run_once() -> dict:
     stop_status: str | None = None
 
     async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-        # First finish crop work already requested by earlier page audits. This
-        # prevents a large backlog of new pages from starving verification.
+        # Only pricing/member-critical rows become proactive crop candidates in
+        # cost-first mode. Variant-only uncertainty remains a safe UI blocker
+        # without spending a second request.
         initial_crop_candidates = collect_crop_candidates(publications)
         crop_budget = min(crop_limit, total_limit)
         for candidate in initial_crop_candidates[:crop_budget]:
@@ -86,24 +87,19 @@ async def run_once() -> dict:
                     break
                 processed_pages += 1
 
-        # Spend any remaining cycle budget on new crop requests created by the
-        # pages just audited. With max_requests_per_scan=1 this naturally
-        # alternates page -> crop -> next page when verification is needed.
         remaining = max(0, total_limit - processed_pages - processed_crops)
         if stop_status is None and remaining:
             new_crop_candidates = collect_crop_candidates(publications)
             already = {candidate.fingerprint for candidate in initial_crop_candidates[:crop_budget]}
             fresh = [candidate for candidate in new_crop_candidates if candidate.fingerprint not in already]
-            for candidate in fresh[: min(crop_limit - processed_crops, remaining)]:
+            for candidate in fresh[: min(max(0, crop_limit - processed_crops), remaining)]:
                 result = await analyze_crop_candidate(candidate, client=client)
                 if result.get("status") in {"budget-exhausted", "disabled", "missing-api-key"}:
                     stop_status = str(result.get("status"))
                     break
                 processed_crops += 1
 
-        # Keep the old selective pricing verifier only as a compatibility
-        # fallback for offers whose page could not be audited yet. It is never
-        # the primary Build 58 decision mechanism.
+        # Compatibility fallback is kept for offers without usable page images.
         remaining = max(0, total_limit - processed_pages - processed_crops)
         fallback_candidates = _paid_candidates(collect_candidates(publications))
         if stop_status is None and remaining:
@@ -126,6 +122,7 @@ async def run_once() -> dict:
         "processed": processed,
         **status_payload(),
         **semantic_status_payload(),
+        "cost_policy": _cost_policy.status_payload(),
     }
 
 
@@ -135,9 +132,7 @@ async def main() -> None:
             result = await run_once()
             log.info("Luna cycle: %s", result)
         except Exception:
-            # Luna is strictly isolated. A page-audit/OpenAI failure must never
-            # terminate or degrade the deterministic Kurv backend.
-            log.exception("Luna semantic audit cycle failed")
+            log.exception("Luna cost-first semantic audit cycle failed")
         config = load_config()
         await asyncio.sleep(max(300, int(config.get("scan_interval_seconds", 3600))))
 
