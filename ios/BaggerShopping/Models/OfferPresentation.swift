@@ -30,10 +30,9 @@ extension GroceryOffer {
             }
 
         if names.count > 1 { return .variants(names) }
-        // A single low-confidence "variant" is normally just the provider's
-        // campaign heading. It is not proof that the advert contains only one
-        // actual product. Fail safe into the picker instead of direct-adding a
-        // visually grouped campaign that Kurv has not resolved yet.
+        // Direct-add requires positive evidence for one concrete product. A
+        // weak provider heading or a Luna visual signal that the advert covers
+        // multiple products always falls back to the picker.
         if names.count == 1,
            !hasUnresolvedVariantLanguage,
            variantConfidence >= 0.90 {
@@ -42,12 +41,26 @@ extension GroceryOffer {
         return .unspecified
     }
 
-    /// Structured flyer hotspots remain authoritative. When a retailer only
-    /// supplies a campaign heading, derive a conservative set of alternatives
-    /// from explicit Danish choice language instead of forcing manual entry.
+    /// Structured flyer hotspots remain authoritative. Luna may confirm that a
+    /// visually grouped campaign contains multiple products. If provider data
+    /// then contains only the campaign heading, do not show that heading as a
+    /// fake one-item "variant"; present the unresolved picker instead.
     var resolvedVariantNames: [String] {
         let structured = variants.map(\.name).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        if !structured.isEmpty { return structured }
+        if !structured.isEmpty {
+            if qualitySignals.contains("luna-multiple-products") && structured.count <= 1 {
+                return []
+            }
+            if structured.count == 1 && variantConfidence < 0.90 {
+                let only = structured[0].folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+                let product = productName.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+                let concise = conciseProductName.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
+                if only == product || only == concise {
+                    return []
+                }
+            }
+            return structured
+        }
 
         let source = productName
             .replacingOccurrences(of: "\n", with: " ")
@@ -69,6 +82,7 @@ extension GroceryOffer {
     }
 
     var hasUnresolvedVariantLanguage: Bool {
+        if qualitySignals.contains("luna-multiple-products") { return true }
         let value = "\(productName) \(rawText)".lowercased()
         return [
             "frit valg",
