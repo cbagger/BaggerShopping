@@ -207,27 +207,27 @@ def observe_publications(
             snap = _snapshot(publication)
             existing = rows.get(publication.id)
 
-            # v1 fingerprints included parsed offer fields. Code/parser changes
-            # could therefore make every existing flyer look new and trigger a
-            # paid Luna replay. During the one-time v2 migration, a release that
-            # flyer-push already knows is preserved as ready and receives the new
-            # source-only fingerprint. Truly new publication IDs still queue.
+            # v1 fingerprints included parsed offer fields. A parser/code change
+            # could therefore leave an already-observed same release in
+            # `processing`, even when flyer-push had not yet acknowledged it as
+            # seen. The one-time v1 -> v2 cutover deliberately trusts every
+            # existing same-release readiness row as already known and discards
+            # that ambiguous legacy backlog. Publication IDs absent from the v1
+            # store still queue normally below, so genuinely new releases after
+            # cutover remain fail-shut and get Luna review.
             if legacy_migration and isinstance(existing, dict) and _same_release(existing, snap):
-                known_release = bootstrap_ready_ids is None or publication.id in bootstrap_ready_ids
                 rows[publication.id] = {
                     **existing,
                     **snap,
-                    "status": "ready" if known_release else "processing",
-                    "changed_pages": [] if known_release else sorted(int(key) for key in snap["page_fingerprints"]),
+                    "status": "ready",
+                    "changed_pages": [],
                     "detected_at": int(existing.get("detected_at") or now),
-                    "ready_at": now if known_release else None,
-                    "processing_started_at": None if known_release else now,
+                    "ready_at": now,
+                    "processing_started_at": None,
                     "attempts": 0,
                     "last_error": None,
                 }
                 migrated.append(publication.id)
-                if not known_release:
-                    queued.append(publication.id)
                 continue
 
             if first_observation and not isinstance(existing, dict):
