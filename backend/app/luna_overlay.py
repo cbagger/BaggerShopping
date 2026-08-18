@@ -34,6 +34,7 @@ _GENERIC_VARIANT_RE = re.compile(
 )
 _SERVING_CACHE_VERSION = 2
 _LUNA_PICKER_VARIANT_CONFIDENCE = 0.80
+_LEGACY_LUNA_VARIANT_CONFIDENCE = 0.99
 
 
 def _serving_cache_path() -> Path:
@@ -187,6 +188,12 @@ def _record_facts(offer: Offer, records: dict) -> dict | None:
     return facts
 
 
+def _may_surface_picker_variants(*, semantic: dict | None, facts: dict, confidence: float) -> bool:
+    if semantic is not None:
+        return facts.get("multiple_products") is True and confidence >= _LUNA_PICKER_VARIANT_CONFIDENCE
+    return confidence >= _LEGACY_LUNA_VARIANT_CONFIDENCE
+
+
 def apply_cached_enrichment(publications: list[Publication]) -> list[Publication]:
     publications = _serve_stable_publications(publications)
 
@@ -251,8 +258,11 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
 
             if (
                 not semantic_needs_crop
-                and facts.get("multiple_products") is True
-                and variant_confidence >= _LUNA_PICKER_VARIANT_CONFIDENCE
+                and _may_surface_picker_variants(
+                    semantic=semantic,
+                    facts=facts,
+                    confidence=variant_confidence,
+                )
                 and offer.variant_confidence < 0.90
             ):
                 names = [
@@ -273,7 +283,7 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
                     ]
                     updates["variant_confidence"] = variant_confidence
                     signals.append("luna-picker-variants")
-                    if variant_confidence >= 0.99:
+                    if variant_confidence >= _LEGACY_LUNA_VARIANT_CONFIDENCE:
                         signals.append("luna-verified-variants")
 
             if signals != offer.quality_signals:
