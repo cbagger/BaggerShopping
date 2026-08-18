@@ -84,6 +84,85 @@ def test_completed_bad_crop_is_reopened_under_new_sanity_contract(monkeypatch):
     assert "page-audit-member-price-is-unit-price" in candidates[0].reasons
 
 
+def test_completed_exact_crop_resolves_nearby_member_signal_without_loop(monkeypatch):
+    offer = _neophos_offer().model_copy(update={
+        "unit_price": None,
+        "quality_signals": ["member-price-context-nearby-v3"],
+    })
+    publication = _publication(offer)
+    fingerprint = offer_fingerprint(offer)
+    crop_facts = {
+        "visible": True,
+        "same_offer": True,
+        "ordinary_price": 85.0,
+        "member_price": None,
+        "member_program": None,
+        "member_app": None,
+        "membership_price_visible": False,
+        "unit_price": None,
+        "pricing_confidence": 0.99,
+    }
+    store = {
+        "semantic_facts": {
+            semantic.offer_key(offer): {
+                "source": "crop",
+                "page_fingerprint": "page",
+                "facts": crop_facts,
+                "needs_crop": False,
+                "crop_reasons": [],
+            }
+        },
+        "records": {
+            fingerprint: {
+                "status": "completed",
+                "analysis_level": "crop",
+                "facts": {
+                    "same_offer": True,
+                    "ordinary_price": 85.0,
+                    "member_price": None,
+                    "pricing_confidence": 0.99,
+                },
+                "semantic_facts": crop_facts,
+            }
+        },
+    }
+
+    monkeypatch.setattr(guards, "load_store", lambda: store)
+    monkeypatch.setattr(guards, "load_config", lambda: {"min_apply_confidence": 0.96})
+
+    assert guards._pricing_sanity_reasons(offer, crop_facts) == (
+        "page-audit-provider-member-context-unresolved",
+    )
+    assert guards.mandatory_pricing_crop_resolved(offer, crop_facts) is True
+    assert guards._crop_candidates_allowing_build58_reverification([publication]) == []
+
+
+def test_completed_exact_crop_can_confirm_large_real_member_discount(monkeypatch):
+    offer = _neophos_offer().model_copy(update={
+        "price": 50.0,
+        "unit_price": None,
+        "quality_signals": ["member-price-context-nearby-v3"],
+    })
+    facts = {
+        "visible": True,
+        "same_offer": True,
+        "ordinary_price": 50.0,
+        "member_price": 10.0,
+        "member_program": "Plus",
+        "member_app": "Plus",
+        "membership_price_visible": True,
+        "unit_price": None,
+        "pricing_confidence": 0.99,
+    }
+
+    monkeypatch.setattr(guards, "load_config", lambda: {"min_apply_confidence": 0.96})
+
+    assert "page-audit-extreme-member-discount-needs-verification" in guards._pricing_sanity_reasons(
+        offer, facts
+    )
+    assert guards.mandatory_pricing_crop_resolved(offer, facts) is True
+
+
 def test_fact_schema_requires_explicit_member_price_visibility():
     schema = guards._strict_fact_schema(include_offer_id=False)
 
