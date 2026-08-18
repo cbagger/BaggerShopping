@@ -30,6 +30,7 @@ def test_offer_metadata_round_trips_all_shared_fields(monkeypatch, tmp_path):
     store_path = use_store(monkeypatch, tmp_path)
     payload = {
         "item_name": "Letmælk",
+        "item_id": None,
         "retailer": "MENY",
         "price": 12.95,
         "valid_from": "10.08.2026",
@@ -57,6 +58,7 @@ def test_migration_sync_adds_missing_local_metadata_but_server_wins_conflicts(mo
     use_store(monkeypatch, tmp_path)
     server_record = {
         "item_name": "Kaffe",
+        "item_id": None,
         "retailer": "Bilka",
         "price": 49.0,
         "valid_from": "07.08.2026",
@@ -71,6 +73,7 @@ def test_migration_sync_adds_missing_local_metadata_but_server_wins_conflicts(mo
     local_conflict = dict(server_record, retailer="MENY", price=39.0, offer_id="old-local-offer")
     local_missing = {
         "item_name": "Rugbrød",
+        "item_id": None,
         "retailer": "MENY",
         "price": 18.0,
         "valid_from": "10.08.2026",
@@ -96,6 +99,7 @@ def test_offer_metadata_can_be_updated_and_removed(monkeypatch, tmp_path):
     use_store(monkeypatch, tmp_path)
     initial = {
         "item_name": "Smør",
+        "item_id": None,
         "retailer": "MENY",
         "price": 20.0,
         "valid_from": None,
@@ -127,6 +131,7 @@ def test_item_rename_updates_samsung_payload_and_moves_offer_metadata(monkeypatc
     use_store(monkeypatch, tmp_path)
     original = {
         "item_name": "Gammel mælk",
+        "item_id": None,
         "retailer": "365discount",
         "price": 10.0,
         "valid_from": "10.08.2026",
@@ -174,6 +179,7 @@ def test_item_rename_updates_samsung_payload_and_moves_offer_metadata(monkeypatc
     assert records == [
         dict(
             original,
+            item_id="item-123",
             item_name="Ny mælk",
             matched_item_name="Ny mælk",
         )
