@@ -1,6 +1,10 @@
 from app.luna_semantic_guards import _pricing_sanity_reasons
 from app.member_pricing import detect_member_pricing
-from app.member_pricing_sources_v3 import COVERAGE_SIGNAL, enrich_ipaper_offers
+from app.member_pricing_sources_v3 import (
+    COVERAGE_SIGNAL,
+    _mark_member_signal_pages,
+    enrich_ipaper_offers,
+)
 from app.meny_flyer import Offer, Publication
 
 
@@ -56,6 +60,52 @@ def test_nearby_member_context_is_recall_signal_not_customer_price_truth():
         text=enriched.raw_text,
     )
     assert pricing is None
+
+
+def test_one_member_offer_escalates_other_hotspots_on_same_page_only():
+    spir = offer(name="SPIR plantedrik", price=12.0).model_copy(
+        update={
+            "id": "spir-1",
+            "raw_text": "SPIR plantedrik 12 kr. Netto+ + PRIS 9 kr.",
+        }
+    )
+    riberhus = offer()
+    next_page = offer(name="Zanetti Parmigiano", price=45.0).model_copy(
+        update={
+            "id": "parm-1",
+            "page_number": 11,
+            "raw_text": "Zanetti Parmigiano 45 kr.",
+        }
+    )
+
+    marked = _mark_member_signal_pages([spir, riberhus, next_page])
+
+    assert COVERAGE_SIGNAL in marked[0].quality_signals
+    assert COVERAGE_SIGNAL in marked[1].quality_signals
+    assert COVERAGE_SIGNAL not in marked[2].quality_signals
+
+    pricing = detect_member_pricing(
+        retailer="Netto",
+        price=24.0,
+        normal_price=None,
+        text=marked[1].raw_text,
+    )
+    assert pricing is None
+
+    reasons = _pricing_sanity_reasons(
+        marked[1],
+        {
+            "visible": True,
+            "same_offer": True,
+            "ordinary_price": 24.0,
+            "member_price": None,
+            "membership_price_visible": False,
+            "member_program": None,
+            "member_app": None,
+            "unit_price": None,
+        },
+    )
+    assert "page-audit-provider-member-context-unresolved" in reasons
 
 
 def test_page_audit_that_misses_nearby_member_signal_is_forced_to_exact_crop():
