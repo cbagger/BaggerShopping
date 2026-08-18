@@ -16,6 +16,7 @@ from .flyer_intelligence import (
     save_feedback_store,
     stable_report_id,
 )
+from .flyer_serving_reader import load_verified_publications
 from .meny_flyer import (
     Offer, Publication, _contains_query_term, _is_pet_offer, _product_domain,
     _query_terms, search_publication,
@@ -31,6 +32,7 @@ _publication_cache: Publication | None = None
 _publication_cache_time = 0.0
 _publication_lock = asyncio.Lock()
 _publications_cache: list[Publication] = []
+_publication_refresh_task: asyncio.Task[None] | None = None
 _QUALITY_STORE_PATH = os.getenv("FLYER_QUALITY_STORE_PATH", "/data/flyer-quality-feedback.json")
 _quality_store_lock = asyncio.Lock()
 
@@ -101,42 +103,103 @@ async def _publication() -> Publication:
     return publication
 
 
-async def _publications() -> list[Publication]:
+def _usable_publications(candidates: list[Publication]) -> list[Publication]:
+    return [
+        candidate for candidate in candidates
+        if candidate.status != "expired"
+        and not _reader_problems(candidate)
+        and not _health_problems(candidate)
+    ]
+
+
+def _stale_publication_fallback() -> list[Publication]:
+    return [
+        item for item in _publications_cache
+        if item.status != "expired" and not _reader_problems(item)
+    ]
+
+
+def _replace_publication_cache(publications: list[Publication], *, now: float | None = None) -> None:
     global _publication_cache, _publication_cache_time, _publications_cache
+    _publications_cache = publications
+    _publication_cache = next((item for item in publications if item.retailer == "MENY"), None)
+    _publication_cache_time = time.monotonic() if now is None else now
+
+
+async def _refresh_publications_once() -> list[Publication] | None:
+    """Refresh provider data without ever invalidating the last usable cache."""
+    try:
+        candidates = await fetch_all_publications()
+        usable = _usable_publications(candidates)
+    except Exception:
+        return None
+
+    if not usable:
+        return None
+
+    _replace_publication_cache(usable)
+    return usable
+
+
+async def _background_publication_refresh() -> None:
+    async with _publication_lock:
+        await _refresh_publications_once()
+
+
+def _schedule_publication_refresh() -> None:
+    global _publication_refresh_task
+    if _publication_refresh_task is not None and not _publication_refresh_task.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _publication_refresh_task = loop.create_task(_background_publication_refresh())
+
+
+async def _publications() -> list[Publication]:
     now = time.monotonic()
-    if _publications_cache and now - _publication_cache_time < _CACHE_TTL_SECONDS:
-        return _publications_cache
+    if _publications_cache:
+        if now - _publication_cache_time < _CACHE_TTL_SECONDS:
+            return _publications_cache
+        fallback = _stale_publication_fallback()
+        if fallback:
+            _schedule_publication_refresh()
+            return fallback
 
     async with _publication_lock:
         now = time.monotonic()
-        if _publications_cache and now - _publication_cache_time < _CACHE_TTL_SECONDS:
-            return _publications_cache
-        try:
-            candidates = await fetch_all_publications()
-            # Only expose editions that support the complete product contract:
-            # browse, search, positioned markers and add-to-list. Editorial or
-            # supplementary catalogues without structured offers must not
-            # masquerade as fully interactive flyers in the iPhone app.
-            usable = [
-                candidate for candidate in candidates
-                if candidate.status != "expired"
-                and not _reader_problems(candidate)
-                and not _health_problems(candidate)
-            ]
-            if not usable:
-                raise ValueError("ingen funktionelt gyldige aviser")
-            _publications_cache = usable
-            _publication_cache = next((item for item in usable if item.retailer == "MENY"), None)
-            _publication_cache_time = now
-            return usable
-        except Exception as exc:
-            fallback = [item for item in _publications_cache if item.status != "expired" and not _reader_problems(item)]
+        if _publications_cache:
+            if now - _publication_cache_time < _CACHE_TTL_SECONDS:
+                return _publications_cache
+            fallback = _stale_publication_fallback()
             if fallback:
+                _schedule_publication_refresh()
                 return fallback
-            raise HTTPException(
-                status_code=503,
-                detail=f"De aktuelle tilbudsaviser kunne ikke valideres: {exc}",
-            ) from exc
+
+        # Cold-start from the last verified persistent serving generation. This
+        # is local disk I/O only, so a NAS/router restart does not make the first
+        # iPhone request wait for every retailer/provider to come back online.
+        cached = _usable_publications(load_verified_publications())
+        if cached:
+            _replace_publication_cache(cached, now=now)
+            _schedule_publication_refresh()
+            return cached
+
+        # First install / empty cache: there is no safe generation to serve, so
+        # this one request must build the initial provider generation normally.
+        refreshed = await _refresh_publications_once()
+        if refreshed:
+            return refreshed
+
+        fallback = _stale_publication_fallback()
+        if fallback:
+            return fallback
+
+        raise HTTPException(
+            status_code=503,
+            detail="De aktuelle tilbudsaviser kunne ikke valideres",
+        )
 
 
 def _parse_validity(value: str | None) -> date | None:
