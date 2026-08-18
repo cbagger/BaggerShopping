@@ -37,14 +37,15 @@ _original_page_fingerprint = semantic.page_fingerprint
 _original_server_needs_crop = semantic._server_needs_crop
 _original_crop_prompt = semantic._crop_prompt
 
+_UNIT_TOKEN = r"(?P<unit>kg|kilo|l(?:iter)?|100\s*g|100\s*ml|stk\.?|styk(?:ker)?)"
 _UNIT_PRICE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        r"(?<!\d)(?P<price>\d{1,4}(?:[,.]\d{1,2})?)\s*kr\.?\s*(?:/|pr\.?)\s*"
-        r"(?:kg|kilo|l(?:iter)?|100\s*g|100\s*ml|stk\.?|styk(?:ker)?)\b",
+        rf"(?<!\d)(?P<price>\d{{1,4}}(?:[,.]\d{{1,2}})?)\s*kr\.?\s*(?:/|pr\.?)\s*"
+        rf"{_UNIT_TOKEN}\b",
         re.IGNORECASE,
     ),
     re.compile(
-        r"\bpr\.?\s*(?:kg|kilo|l(?:iter)?|100\s*g|100\s*ml|stk\.?|styk(?:ker)?)\b"
+        rf"\bpr\.?\s*{_UNIT_TOKEN}\b"
         r"[^\d]{0,24}(?P<price>\d{1,4}(?:[,.]\d{1,2})?)",
         re.IGNORECASE,
     ),
@@ -72,6 +73,71 @@ def _unit_price_values(value: object) -> set[float]:
             if 0 < number <= 10_000:
                 result.add(round(number, 2))
     return result
+
+
+def _normalize_unit(value: object) -> str:
+    unit = re.sub(r"\s+", "", str(value or "").casefold().replace(".", ""))
+    if unit in {"kg", "kilo"}:
+        return "kg"
+    if unit in {"l", "liter"}:
+        return "l"
+    if unit == "100g":
+        return "100g"
+    if unit == "100ml":
+        return "100ml"
+    if unit in {"stk", "styk", "stykker"}:
+        return "stk"
+    return ""
+
+
+def _package_matches_unit_basis(package_size: object, unit: str) -> bool:
+    if not isinstance(package_size, str) or not package_size.strip():
+        return False
+    package = package_size.casefold().replace(",", ".")
+    patterns = {
+        "kg": (
+            r"(?:^|[^\d])1(?:\.0+)?\s*kg\b",
+            r"(?:^|[^\d])1000\s*g\b",
+        ),
+        "l": (
+            r"(?:^|[^\d])1(?:\.0+)?\s*(?:l|liter)\b",
+            r"(?:^|[^\d])1000\s*ml\b",
+        ),
+        "100g": (r"(?:^|[^\d])100\s*g\b",),
+        "100ml": (r"(?:^|[^\d])100\s*ml\b",),
+        "stk": (r"(?:^|[^\d])1\s*(?:stk\.?|styk(?:ke|ker)?)\b",),
+    }
+    return any(re.search(pattern, package, re.IGNORECASE) for pattern in patterns.get(unit, ()))
+
+
+def _unit_price_collision_is_package_equivalent(facts: dict, price) -> bool:
+    """Allow equal headline/unit values when the package exactly equals the unit basis.
+
+    12 kr for a 1 kg yoghurt legitimately has a unit price of 12 kr/kg. The same
+    numeric equality for a 500 g pack is still suspicious and must fail closed.
+    """
+    unit_price = facts.get("unit_price")
+    if not isinstance(unit_price, str) or not unit_price.strip():
+        return False
+
+    matching_units: list[str] = []
+    for pattern in _UNIT_PRICE_PATTERNS:
+        for match in pattern.finditer(unit_price):
+            try:
+                number = float(match.group("price").replace(",", "."))
+            except (AttributeError, ValueError):
+                continue
+            if _same_numeric_price(price, number):
+                unit = _normalize_unit(match.groupdict().get("unit"))
+                if unit:
+                    matching_units.append(unit)
+
+    if not matching_units:
+        return False
+    return all(
+        _package_matches_unit_basis(facts.get("package_size"), unit)
+        for unit in matching_units
+    )
 
 
 def _pricing_sanity_reasons(offer, facts) -> tuple[str, ...]:
@@ -110,9 +176,15 @@ def _pricing_sanity_reasons(offer, facts) -> tuple[str, ...]:
         reasons.append("page-audit-member-program-without-price")
 
     unit_values = _unit_price_values(facts.get("unit_price"))
-    if any(_same_numeric_price(member, value) for value in unit_values):
+    if (
+        any(_same_numeric_price(member, value) for value in unit_values)
+        and not _unit_price_collision_is_package_equivalent(facts, member)
+    ):
         reasons.append("page-audit-member-price-is-unit-price")
-    if any(_same_numeric_price(ordinary, value) for value in unit_values):
+    if (
+        any(_same_numeric_price(ordinary, value) for value in unit_values)
+        and not _unit_price_collision_is_package_equivalent(facts, ordinary)
+    ):
         reasons.append("page-audit-ordinary-price-is-unit-price")
 
     reference = ordinary
@@ -174,9 +246,15 @@ def mandatory_pricing_crop_resolved(offer, facts, config: dict | None = None) ->
         return False
 
     unit_values = _unit_price_values(facts.get("unit_price"))
-    if any(_same_numeric_price(member, value) for value in unit_values):
+    if (
+        any(_same_numeric_price(member, value) for value in unit_values)
+        and not _unit_price_collision_is_package_equivalent(facts, member)
+    ):
         return False
-    if any(_same_numeric_price(ordinary, value) for value in unit_values):
+    if (
+        any(_same_numeric_price(ordinary, value) for value in unit_values)
+        and not _unit_price_collision_is_package_equivalent(facts, ordinary)
+    ):
         return False
 
     return True
@@ -225,9 +303,11 @@ def _strict_page_prompt(candidate):
         "true but you cannot safely read its amount, return member_price=null and set "
         "needs_crop_verification=true. provider_price is an untyped source value, not evidence that "
         "the value is ordinary_price or member_price. A kg/l/100g/100ml/stk comparison price must "
-        "stay only in unit_price and can NEVER equal ordinary_price or member_price. If a proposed "
-        "member price is dramatically lower than the ordinary/provider price, re-check whether it "
-        "is actually a unit price and request crop verification whenever the role is not visually "
+        "stay in unit_price and must not be copied into ordinary_price or member_price merely because "
+        "the numbers match. Numeric equality is legitimate only when the package itself exactly "
+        "equals that unit basis, such as 1 kg at 12 kr also being 12 kr/kg. If a proposed member "
+        "price is dramatically lower than the ordinary/provider price, re-check whether it is "
+        "actually a unit price and request crop verification whenever the role is not visually "
         "unambiguous."
     )
 
@@ -239,12 +319,15 @@ def _strict_crop_prompt(candidate):
         "membership/app/club/plus price treatment. Inspect every headline price and bind each to "
         "its visible role label/layout. provider_price is untyped and must never be copied into "
         "member_price merely because Plus/app/member text is visible. kg/l/100g/100ml/stk prices "
-        "belong only in unit_price — examples such as 'Pr. stk. max. 1,98' are NOT member prices. "
-        "If page_audit_facts proposed a member price that equals a unit/comparison price, or a "
-        "visible member badge had no amount, that result is specifically unresolved. When two "
-        "customer prices are visible, return the non-member campaign price as ordinary_price and "
-        "the explicitly membership-tied campaign price as member_price. If the role still cannot "
-        "be read safely, return null and lower pricing_confidence rather than guessing."
+        "belong in unit_price and must not be mistaken for headline prices; numeric equality can be "
+        "legitimate when the package exactly equals the unit basis, for example 1 kg at 12 kr also "
+        "being 12 kr/kg. Examples such as 'Pr. stk. max. 1,98' are NOT member prices unless the "
+        "advert explicitly binds that amount to membership. If page_audit_facts proposed a member "
+        "price that equals an unrelated unit/comparison price, or a visible member badge had no "
+        "amount, that result is specifically unresolved. When two customer prices are visible, "
+        "return the non-member campaign price as ordinary_price and the explicitly membership-tied "
+        "campaign price as member_price. If the role still cannot be read safely, return null and "
+        "lower pricing_confidence rather than guessing."
     )
 
 
@@ -324,15 +407,18 @@ def _crop_candidates_allowing_build58_reverification(publications):
                 else existing.get("facts") if isinstance(existing, dict) else None
             )
 
-            if (
-                isinstance(existing, dict)
-                and existing.get("analysis_level") == "crop"
-                and existing.get("status") == "completed"
-            ):
-                if not isinstance(existing_facts, dict) and not sanity_reasons:
-                    continue
-                if mandatory_pricing_crop_resolved(offer, existing_facts):
-                    continue
+            if isinstance(existing, dict) and existing.get("analysis_level") == "crop":
+                status = str(existing.get("status") or "")
+                reusable_failed_crop = (
+                    status == "failed"
+                    and str(existing.get("error") or "") == "completed"
+                    and isinstance(existing_facts, dict)
+                )
+                if status == "completed" or reusable_failed_crop:
+                    if not isinstance(existing_facts, dict) and not sanity_reasons:
+                        continue
+                    if mandatory_pricing_crop_resolved(offer, existing_facts):
+                        continue
 
             existing_anomalous = bool(_pricing_sanity_reasons(offer, existing_facts))
             if (
