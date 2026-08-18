@@ -14,6 +14,10 @@ from app import member_pricing_v4 as v4
             "Netto",
             "+ PRIS Pr. stk. max. 1,98. Gælder kun med Netto+ appen. Frit valg 85 kr.",
         ),
+        (
+            "Lidl",
+            "PLUS PRIS Pr. stk. max. 1,98. Gælder kun med Lidl Plus appen. Frit valg 85 kr.",
+        ),
     ],
 )
 def test_unit_price_can_never_win_structured_member_precedence(monkeypatch, retailer, text):
