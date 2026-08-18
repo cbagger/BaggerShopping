@@ -8,7 +8,7 @@ from datetime import date, datetime
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from .flyer_adapters import RETAILER_ORDER, fetch_all_publications
+from .flyer_publications import RETAILER_ORDER, fetch_all_publications
 from .flyer_intelligence import (
     feedback_key,
     learned_adjustment,
@@ -177,17 +177,12 @@ async def _publications() -> list[Publication]:
                 _schedule_publication_refresh()
                 return fallback
 
-        # Cold-start from the last verified persistent serving generation. This
-        # is local disk I/O only, so a NAS/router restart does not make the first
-        # iPhone request wait for every retailer/provider to come back online.
         cached = _usable_publications(load_verified_publications())
         if cached:
             _replace_publication_cache(cached, now=now)
             _schedule_publication_refresh()
             return cached
 
-        # First install / empty cache: there is no safe generation to serve, so
-        # this one request must build the initial provider generation normally.
         refreshed = await _refresh_publications_once()
         if refreshed:
             return refreshed
@@ -328,7 +323,6 @@ def _offer_payload(
 
 @router.post("/quality/feedback")
 async def flyer_quality_feedback(request: FlyerQualityFeedbackRequest):
-    """Persist anonymous source-quality feedback shared across families."""
     publications = await _publications()
     publication = next(
         (value for value in publications if value.id == request.publication_id), None,
@@ -396,13 +390,6 @@ async def flyer_quality_status():
 
 
 def _search_match_result(item_name: str, offer: Offer) -> tuple[int, Offer, MatchResult] | None:
-    """Search is broader than automatic item matching, but remains explainable.
-
-    A literal hit in the advert, brand or one of its variants must never be
-    discarded by the conservative identity engine.  The full campaign is
-    retained so the iPhone can show every choice from the flyer; matching
-    variants are merely marked and sorted first by the client.
-    """
     query_domain = _product_domain(item_name)
     if _is_pet_offer(offer) and query_domain != "pet":
         return None
@@ -420,10 +407,6 @@ def _search_match_result(item_name: str, offer: Offer) -> tuple[int, Offer, Matc
         )
     }
 
-    # Product names, brands and structured variants are authoritative direct
-    # matches. Raw advert/OCR text is useful too, but only when the identity or
-    # grocery domain agrees; otherwise neighboring legal/recipe text can leak
-    # an unrelated offer into the result list.
     raw_identity = compare(item_name, offer.raw_text) if raw_match else None
     offer_domains = {
         value for candidate in [offer.product_name, *(variant.name for variant in offer.variants)]
@@ -470,7 +453,6 @@ def _search_match_result(item_name: str, offer: Offer) -> tuple[int, Offer, Matc
 
 
 def _search_deduplication_key(offer: Offer) -> tuple:
-    """Collapse duplicate hotspots while preserving real price/size choices."""
     return (
         offer.retailer.casefold(), offer.publication_id, offer.page_number,
         " ".join(offer.product_name.casefold().split()), offer.price,
@@ -495,9 +477,6 @@ def _matched_offer(
             for variant in matched.variants
             if _text_match_score(item_name, variant.name) >= _MATCH_THRESHOLD
         ]
-        # If the campaign heading itself is the match, retaining the campaign
-        # variants is more informative than throwing them away. Otherwise only
-        # expose the variants that actually matched the list item.
         if preserve_variants:
             relevant_ids = {variant.id for variant in relevant}
             matched.variants = [
@@ -599,9 +578,6 @@ async def search_offers(
         raise HTTPException(status_code=404, detail="Der er ingen aktuel eller kommende avis for den valgte butik")
     ranked: dict[tuple, tuple[int, Offer, MatchResult, str]] = {}
     for publication in items:
-        # Search the complete structured campaign objects.  search_publication
-        # intentionally narrows variants for indexing; using those copies as
-        # response objects was the reason Tilbud lost choices visible in Aviser.
         for offer in publication.structured_offers:
             match = _search_match_result(term, offer)
             if match is not None:
@@ -634,12 +610,6 @@ async def search_offers(
 
 @router.post("/matches")
 async def smart_offer_matches(request: OfferMatchRequest):
-    """Return conservative current-offer suggestions for ordinary list items.
-
-    This route is read-only: it never changes Samsung items or shared offer
-    metadata. A client must explicitly persist one of the returned offers after
-    the user approves it.
-    """
     groups = match_items_to_publications(request.items, await _publications())
     return {
         "ok": True,
@@ -653,9 +623,6 @@ async def smart_offer_matches(request: OfferMatchRequest):
 async def publication_offers(publication_id: str):
     publication = next((item for item in await _publications() if item.id == publication_id), None)
     if publication is None:
-        # Returning a different retailer's/current MENY flyer for a stale id is
-        # more dangerous than an explicit miss: it can place valid-looking plus
-        # markers on the wrong page. Let the client refresh the shelf instead.
         raise HTTPException(status_code=404, detail="Tilbudsavisen findes ikke længere")
     return {
         "ok": True,
@@ -669,12 +636,6 @@ async def publication_offers(publication_id: str):
 
 @router.get("/current-offers")
 async def current_publication_offers():
-    """Return offers for the current flyer without a client-supplied id.
-
-    There is currently one publication per retailer. Keeping this as a static
-    route also makes it straightforward for deployment smoke tests to prove
-    that the complete offers router is running.
-    """
     publication = await _publication()
     return {
         "ok": True,
@@ -688,7 +649,6 @@ async def current_publication_offers():
     }
 
 
-# Compatibility for the already deployed proof-of-concept iOS build.
 @router.get("/meny")
 async def meny_offer_status():
     publication = await _publication()
