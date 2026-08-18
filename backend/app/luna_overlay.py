@@ -155,11 +155,20 @@ def _serve_stable_publications(publications: list[Publication]) -> list[Publicat
                 changed = True
             continue
 
-        if cached is not None and _publication_not_expired(cached):
+        # Only a previously verified generation may bridge a processing window.
+        # A brand-new, unverified flyer must never leak raw provider pricing to
+        # customers while Luna is still establishing ordinary/member roles.
+        if (
+            isinstance(row, dict)
+            and row.get("verified") is True
+            and cached is not None
+            and _publication_not_expired(cached)
+        ):
             result.append(cached)
             continue
 
-        result.append(publication)
+        # Keep a provisional diagnostic snapshot, but deliberately do not serve
+        # it until readiness marks this exact source fingerprint as verified.
         rows[publication.id] = _publication_snapshot(publication, verified=False)
         changed = True
 
