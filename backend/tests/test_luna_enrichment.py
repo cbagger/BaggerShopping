@@ -191,6 +191,66 @@ def test_budget_guard_stops_new_requests(monkeypatch, tmp_path):
     assert luna.budget_allows_request() is False
 
 
+def test_legacy_2000_request_default_migrates_to_emergency_cap(monkeypatch, tmp_path):
+    config_path, _ = _isolated_luna(monkeypatch, tmp_path, enabled=True)
+    config_path.write_text(json.dumps({
+        "enabled": True,
+        "apply_results": True,
+        "monthly_budget_dkk": 20.0,
+        "max_requests_per_month": 2000,
+    }), encoding="utf-8")
+    monkeypatch.setattr(luna, "_config_cache", None)
+    monkeypatch.setattr(luna, "_config_signature", None)
+
+    config = luna.load_config()
+    assert config["config_version"] == luna.CONFIG_VERSION
+    assert config["max_requests_per_month"] == luna.EMERGENCY_REQUEST_LIMIT
+
+    month = luna.month_key()
+    luna.save_store({
+        "records": {}, "pricing_index": {}, "events": [],
+        "usage": {month: {"requests": 2000, "estimated_cost_dkk": 14.3}},
+    })
+    assert luna.budget_allows_request(config) is True
+
+
+def test_custom_request_limit_remains_authoritative(monkeypatch, tmp_path):
+    _isolated_luna(monkeypatch, tmp_path, enabled=True)
+    config = luna.load_config()
+    assert config["config_version"] == luna.CONFIG_VERSION
+    assert config["max_requests_per_month"] == 250
+
+    month = luna.month_key()
+    luna.save_store({
+        "records": {}, "pricing_index": {}, "events": [],
+        "usage": {month: {"requests": 250, "estimated_cost_dkk": 1.0}},
+    })
+    assert luna.budget_allows_request(config) is False
+
+
+def test_emergency_request_cap_still_stops_runaway_usage(monkeypatch, tmp_path):
+    config_path, _ = _isolated_luna(monkeypatch, tmp_path, enabled=True)
+    config_path.write_text(json.dumps({
+        "config_version": luna.CONFIG_VERSION,
+        "enabled": True,
+        "monthly_budget_dkk": 20.0,
+        "max_requests_per_month": luna.EMERGENCY_REQUEST_LIMIT,
+    }), encoding="utf-8")
+    monkeypatch.setattr(luna, "_config_cache", None)
+    monkeypatch.setattr(luna, "_config_signature", None)
+    config = luna.load_config()
+
+    month = luna.month_key()
+    luna.save_store({
+        "records": {}, "pricing_index": {}, "events": [],
+        "usage": {month: {
+            "requests": luna.EMERGENCY_REQUEST_LIMIT,
+            "estimated_cost_dkk": 1.0,
+        }},
+    })
+    assert luna.budget_allows_request(config) is False
+
+
 def test_mocked_response_is_cached_once_with_usage_and_pricing_index(monkeypatch, tmp_path):
     _isolated_luna(monkeypatch, tmp_path, enabled=True)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")

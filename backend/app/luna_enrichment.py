@@ -18,7 +18,11 @@ from .meny_flyer import Offer, Publication
 
 CONFIG_PATH = Path(os.getenv("LUNA_CONFIG_PATH", "/data/luna-config.json"))
 STORE_PATH = Path(os.getenv("LUNA_STORE_PATH", "/data/luna-enrichment-store.json"))
+CONFIG_VERSION = 2
+LEGACY_DEFAULT_REQUEST_LIMIT = 2000
+EMERGENCY_REQUEST_LIMIT = 10000
 DEFAULT_CONFIG: dict[str, Any] = {
+    "config_version": CONFIG_VERSION,
     "enabled": False,
     "apply_results": True,
     "model": "gpt-5.6-luna",
@@ -26,7 +30,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # installation cannot silently spend beyond this monthly amount.
     "monthly_budget_dkk": 20.0,
     "recommended_monthly_budget_dkk": 20.0,
-    "max_requests_per_month": 2000,
+    # The monetary budget is the primary guard. This is only a high emergency
+    # ceiling for runaway tiny requests or incomplete usage accounting.
+    "max_requests_per_month": EMERGENCY_REQUEST_LIMIT,
     "max_requests_per_scan": 20,
     "scan_interval_seconds": 3600,
     "min_apply_confidence": 0.96,
@@ -102,7 +108,16 @@ def load_config() -> dict[str, Any]:
     with _store_lock:
         if _config_cache is not None and signature == _config_signature:
             return dict(_config_cache)
-        merged = {**DEFAULT_CONFIG, **_read_json(CONFIG_PATH, {})}
+        persisted = _read_json(CONFIG_PATH, {})
+        # Build <=61 used 2000 as a generic default request ceiling. Current
+        # Luna pricing makes that cap hit before the explicit DKK budget. Only
+        # that exact unversioned legacy default is migrated; custom limits stay
+        # authoritative.
+        if "config_version" not in persisted:
+            if int(persisted.get("max_requests_per_month") or 0) == LEGACY_DEFAULT_REQUEST_LIMIT:
+                persisted["max_requests_per_month"] = EMERGENCY_REQUEST_LIMIT
+            persisted["config_version"] = CONFIG_VERSION
+        merged = {**DEFAULT_CONFIG, **persisted}
         _config_cache = merged
         _config_signature = signature
         return dict(merged)
