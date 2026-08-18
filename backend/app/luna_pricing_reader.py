@@ -19,26 +19,36 @@ class LunaPricingReader:
     """
 
     def __init__(self, store_path: Path | None = None) -> None:
-        self.store_path = store_path or luna_enrichment.STORE_PATH
+        # ``None`` deliberately means "follow luna_enrichment.STORE_PATH" rather
+        # than capturing its current value at import time. Tests, recovery tools
+        # and alternate deployments can therefore swap the public store path
+        # without leaving a stale process-global reader behind.
+        self._fixed_store_path = store_path
         self._lock = threading.RLock()
-        self._signature: tuple[int, int] | None = None
+        self._signature: tuple[str, int, int] | tuple[str, None, None] | None = None
         self._store: dict[str, Any] | None = None
 
-    def _file_signature(self) -> tuple[int, int] | None:
+    @property
+    def store_path(self) -> Path:
+        return self._fixed_store_path or luna_enrichment.STORE_PATH
+
+    def _file_signature(self) -> tuple[str, int, int] | tuple[str, None, None]:
+        path = self.store_path
         try:
-            stat = self.store_path.stat()
-            return stat.st_mtime_ns, stat.st_size
+            stat = path.stat()
+            return str(path), stat.st_mtime_ns, stat.st_size
         except OSError:
-            return None
+            return str(path), None, None
 
     def _load_reference(self) -> dict[str, Any]:
         signature = self._file_signature()
+        path = self.store_path
         with self._lock:
             if self._store is not None and signature == self._signature:
                 return self._store
 
             try:
-                value = json.loads(self.store_path.read_text(encoding="utf-8"))
+                value = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 value = {}
 
