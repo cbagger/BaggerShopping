@@ -20,6 +20,7 @@ venv/
 # macOS / Xcode
 .DS_Store
 DerivedData/
+ios/BaggerShopping.xcodeproj/
 *.xcuserstate
 xcuserdata/
 *.xccheckout
