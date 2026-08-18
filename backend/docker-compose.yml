@@ -85,7 +85,7 @@ services:
     command:
       - python
       - -m
-      - app.luna_resilient_worker
+      - app.luna_resilient_strong_worker
     volumes:
       - ./data:/data
     shm_size: "256mb"
