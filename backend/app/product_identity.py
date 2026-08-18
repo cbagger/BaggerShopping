@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import functools
 import json
 import os
 import re
+import threading
+import time
 import unicodedata
 from pathlib import Path
 from typing import Any, Literal
@@ -16,6 +20,14 @@ from .flyer_intelligence import extract_variants
 
 router = APIRouter(prefix="/api/mobile/v1/product-identity", tags=["product-identity"])
 LOCK = asyncio.Lock()
+
+_STORE_CACHE_LOCK = threading.RLock()
+_STORE_CACHE: dict[str, Any] | None = None
+_STORE_CACHE_PATH: Path | None = None
+_STORE_CACHE_SIGNATURE: tuple[int, int] | None = None
+_STORE_CACHE_CHECKED_AT = 0.0
+_ANALYSIS_GENERATION = 0
+_STORE_STAT_INTERVAL_SECONDS = 1.0
 
 STOPWORDS = {
     "af", "den", "det", "eller", "fra", "i", "med", "og", "pak", "pk",
@@ -173,6 +185,110 @@ def store_path() -> Path:
     return Path(os.getenv("PRODUCT_IDENTITY_STORE_PATH", "/data/product-identity.json"))
 
 
+def _clear_analysis_cache() -> None:
+    cached = globals().get("_cached_analysis_value")
+    if cached is not None:
+        cached.cache_clear()
+
+
+def _store_file_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        stat = path.stat()
+        return stat.st_mtime_ns, stat.st_size
+    except OSError:
+        return None
+
+
+def _read_store_from_disk(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _refresh_store_cache_locked(path: Path, now: float) -> dict[str, Any]:
+    global _STORE_CACHE, _STORE_CACHE_PATH, _STORE_CACHE_SIGNATURE
+    global _STORE_CACHE_CHECKED_AT, _ANALYSIS_GENERATION
+
+    if _STORE_CACHE_PATH != path:
+        _STORE_CACHE_PATH = path
+        _STORE_CACHE = None
+        _STORE_CACHE_SIGNATURE = None
+        _STORE_CACHE_CHECKED_AT = 0.0
+        _ANALYSIS_GENERATION += 1
+        _clear_analysis_cache()
+
+    if (
+        _STORE_CACHE is not None
+        and now - _STORE_CACHE_CHECKED_AT < _STORE_STAT_INTERVAL_SECONDS
+    ):
+        return _STORE_CACHE
+
+    signature = _store_file_signature(path)
+    if _STORE_CACHE is not None and signature == _STORE_CACHE_SIGNATURE:
+        _STORE_CACHE_CHECKED_AT = now
+        return _STORE_CACHE
+
+    previous_signature = _STORE_CACHE_SIGNATURE
+    previous_cache = _STORE_CACHE
+    store = _read_store_from_disk(path)
+    _STORE_CACHE = store
+    _STORE_CACHE_SIGNATURE = signature
+    _STORE_CACHE_CHECKED_AT = now
+
+    if previous_cache is not None and signature != previous_signature:
+        _ANALYSIS_GENERATION += 1
+        _clear_analysis_cache()
+
+    return store
+
+
+def _read_store() -> dict[str, Any]:
+    """Return the process-cached product-identity store for read-only use."""
+    path = store_path()
+    now = time.monotonic()
+    with _STORE_CACHE_LOCK:
+        return _refresh_store_cache_locked(path, now)
+
+
+def _load_store() -> dict[str, Any]:
+    """Return a mutable copy for feedback/update code."""
+    with _STORE_CACHE_LOCK:
+        return copy.deepcopy(_read_store())
+
+
+def _save_store(store: dict[str, Any]) -> None:
+    global _STORE_CACHE, _STORE_CACHE_PATH, _STORE_CACHE_SIGNATURE
+    global _STORE_CACHE_CHECKED_AT, _ANALYSIS_GENERATION
+
+    path = store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(store, ensure_ascii=False, indent=2, sort_keys=True), "utf-8")
+    temporary.replace(path)
+
+    with _STORE_CACHE_LOCK:
+        _STORE_CACHE_PATH = path
+        _STORE_CACHE = copy.deepcopy(store)
+        _STORE_CACHE_SIGNATURE = _store_file_signature(path)
+        _STORE_CACHE_CHECKED_AT = time.monotonic()
+        _ANALYSIS_GENERATION += 1
+        _clear_analysis_cache()
+
+
+def _analysis_cache_token() -> tuple[str, int]:
+    path = store_path()
+    now = time.monotonic()
+    with _STORE_CACHE_LOCK:
+        _refresh_store_cache_locked(path, now)
+        return str(path), _ANALYSIS_GENERATION
+
+
+def _pair_key(left: str, right: str) -> str:
+    return "|".join(sorted((normalize(left), normalize(right))))
+
+
 def _fold(value: str) -> str:
     folded = unicodedata.normalize("NFKD", value.casefold())
     return "".join(character for character in folded if not unicodedata.combining(character))
@@ -188,26 +304,6 @@ def _canonical_family(normalized: str) -> str | None:
         (family for family, pattern in CANONICAL_FAMILY_PATTERNS if pattern.search(normalized)),
         None,
     )
-
-
-def _load_store() -> dict[str, Any]:
-    try:
-        data = json.loads(store_path().read_text("utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def _save_store(store: dict[str, Any]) -> None:
-    path = store_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(store, ensure_ascii=False, indent=2, sort_keys=True), "utf-8")
-    temporary.replace(path)
-
-
-def _pair_key(left: str, right: str) -> str:
-    return "|".join(sorted((normalize(left), normalize(right))))
 
 
 def family_preference(item_name: str) -> FamilyProductPreference | None:
@@ -256,7 +352,7 @@ def _external_amount(quantity: float | None, unit: str | None) -> tuple[float | 
     return quantity * factor, dimension
 
 
-def analyze(
+def _analyze_uncached(
     value: str,
     *,
     quantity: float | None = None,
@@ -329,7 +425,7 @@ def analyze(
             product_tokens = product_tokens[len(brand_tokens):]
     product = " ".join(product_tokens) or normalized
 
-    store = _load_store()
+    store = _read_store()
     canonical_id = store.get("aliases", {}).get(normalized)
     canonical_family = store.get("families", {}).get(normalized) or _canonical_family(normalized)
     evidence: list[str] = []
@@ -364,6 +460,30 @@ def analyze(
         amount_text=amount_text, canonical_id=canonical_id,
         canonical_family=canonical_family, evidence=evidence,
     )
+
+
+@functools.lru_cache(maxsize=4096)
+def _cached_analysis_value(
+    value: str,
+    quantity: float | None,
+    unit: str | None,
+    price: float | None,
+    store_path_key: str,
+    generation: int,
+) -> ProductAnalysis:
+    del store_path_key, generation
+    return _analyze_uncached(value, quantity=quantity, unit=unit, price=price)
+
+
+def analyze(
+    value: str,
+    *,
+    quantity: float | None = None,
+    unit: str | None = None,
+    price: float | None = None,
+) -> ProductAnalysis:
+    store_path_key, generation = _analysis_cache_token()
+    return _cached_analysis_value(value, quantity, unit, price, store_path_key, generation)
 
 
 def _product_overlap(left: ProductAnalysis, right: ProductAnalysis) -> float:
@@ -416,7 +536,7 @@ def compare(
             evidence=evidence or [], conflicts=conflicts or [],
         )
 
-    store = _load_store()
+    store = _read_store()
     learned = store.get("matches", {}).get(_pair_key(left_text, right_text))
     if learned == "never_match":
         return result(

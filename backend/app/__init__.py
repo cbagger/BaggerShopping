@@ -12,15 +12,10 @@ Derived member-pricing metadata now lives behind the explicit
 
 from __future__ import annotations
 
-import copy
-import functools
-import threading
-import time
 from typing import Iterable, Sequence
 
 from . import flyer_intelligence as _fi
 from . import meny_flyer as _mf
-from . import product_identity as _pi
 from .member_pricing_sources import (
     enrich_ipaper_offers,
     enrich_schwarz_publication,
@@ -205,85 +200,3 @@ async def _luna_aware_fetch_all_publications(*args, **kwargs):
 
 
 _fa.fetch_all_publications = _luna_aware_fetch_all_publications
-
-
-# Product identity is used hundreds of times while one Tilbud search is ranked.
-# Avoid re-reading the same JSON store and re-parsing the same product strings
-# for every comparison. Persistent learning remains authoritative: every save
-# invalidates the analysis cache immediately.
-_product_store_lock = threading.RLock()
-_product_store_cache: dict | None = None
-_product_store_signature: tuple[int, int] | None = None
-_product_store_checked_at = 0.0
-_product_analysis_generation = 0
-_original_product_load_store = _pi._load_store
-_original_product_save_store = _pi._save_store
-_original_product_analyze = _pi.analyze
-
-
-def _product_store_file_signature() -> tuple[int, int] | None:
-    try:
-        stat = _pi.store_path().stat()
-        return stat.st_mtime_ns, stat.st_size
-    except OSError:
-        return None
-
-
-def _cached_product_load_store():
-    global _product_store_cache, _product_store_signature, _product_store_checked_at
-    now = time.monotonic()
-    with _product_store_lock:
-        if _product_store_cache is not None and now - _product_store_checked_at < 1.0:
-            return copy.deepcopy(_product_store_cache)
-
-        signature = _product_store_file_signature()
-        if _product_store_cache is not None and signature == _product_store_signature:
-            _product_store_checked_at = now
-            return copy.deepcopy(_product_store_cache)
-
-        store = _original_product_load_store()
-        _product_store_cache = copy.deepcopy(store)
-        _product_store_signature = signature
-        _product_store_checked_at = now
-        return store
-
-
-@functools.lru_cache(maxsize=4096)
-def _cached_product_analysis_value(
-    value: str,
-    quantity: float | None,
-    unit: str | None,
-    price: float | None,
-    generation: int,
-):
-    del generation  # generation is part of the cache key only
-    return _original_product_analyze(value, quantity=quantity, unit=unit, price=price)
-
-
-def _cached_product_analyze(
-    value: str,
-    *,
-    quantity: float | None = None,
-    unit: str | None = None,
-    price: float | None = None,
-):
-    with _product_store_lock:
-        generation = _product_analysis_generation
-    return _cached_product_analysis_value(value, quantity, unit, price, generation)
-
-
-def _cached_product_save_store(store):
-    global _product_store_cache, _product_store_signature, _product_store_checked_at
-    global _product_analysis_generation
-    _original_product_save_store(store)
-    with _product_store_lock:
-        _product_store_cache = copy.deepcopy(store)
-        _product_store_signature = _product_store_file_signature()
-        _product_store_checked_at = time.monotonic()
-        _product_analysis_generation += 1
-        _cached_product_analysis_value.cache_clear()
-
-
-_pi._load_store = _cached_product_load_store
-_pi._save_store = _cached_product_save_store
-_pi.analyze = _cached_product_analyze

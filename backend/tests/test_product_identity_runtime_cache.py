@@ -1,64 +1,71 @@
 from __future__ import annotations
 
-import app
+from app import product_identity
 
 
 def _reset_cache() -> None:
-    app._product_store_cache = None
-    app._product_store_signature = None
-    app._product_store_checked_at = 0.0
-    app._product_analysis_generation = 0
-    app._cached_product_analysis_value.cache_clear()
+    with product_identity._STORE_CACHE_LOCK:
+        product_identity._STORE_CACHE = None
+        product_identity._STORE_CACHE_PATH = None
+        product_identity._STORE_CACHE_SIGNATURE = None
+        product_identity._STORE_CACHE_CHECKED_AT = 0.0
+        product_identity._ANALYSIS_GENERATION = 0
+        product_identity._cached_analysis_value.cache_clear()
 
 
-def test_product_identity_store_is_not_reloaded_for_each_compare(monkeypatch):
+def test_product_identity_store_is_not_reloaded_for_each_compare(monkeypatch, tmp_path):
     calls = 0
+    path = tmp_path / "identity.json"
+    monkeypatch.setenv("PRODUCT_IDENTITY_STORE_PATH", str(path))
 
-    def load_store():
+    def load_store(_path):
         nonlocal calls
         calls += 1
         return {"matches": {}}
 
-    monkeypatch.setattr(app, "_original_product_load_store", load_store)
-    monkeypatch.setattr(app, "_product_store_file_signature", lambda: (1, 10))
+    monkeypatch.setattr(product_identity, "_read_store_from_disk", load_store)
+    monkeypatch.setattr(product_identity, "_store_file_signature", lambda _path: (1, 10))
     _reset_cache()
 
-    first = app._cached_product_load_store()
-    second = app._cached_product_load_store()
+    first = product_identity._load_store()
+    second = product_identity._load_store()
 
     assert first == {"matches": {}}
     assert second == first
     assert calls == 1
 
 
-def test_identical_product_analysis_is_computed_once(monkeypatch):
+def test_identical_product_analysis_is_computed_once(monkeypatch, tmp_path):
     calls = 0
+    path = tmp_path / "identity.json"
+    monkeypatch.setenv("PRODUCT_IDENTITY_STORE_PATH", str(path))
+    monkeypatch.setattr(product_identity, "_read_store_from_disk", lambda _path: {})
+    monkeypatch.setattr(product_identity, "_store_file_signature", lambda _path: None)
+
+    original = product_identity._analyze_uncached
 
     def analyze(value, *, quantity=None, unit=None, price=None):
         nonlocal calls
         calls += 1
-        return (value, quantity, unit, price)
+        return original(value, quantity=quantity, unit=unit, price=price)
 
-    monkeypatch.setattr(app, "_original_product_analyze", analyze)
+    monkeypatch.setattr(product_identity, "_analyze_uncached", analyze)
     _reset_cache()
 
-    first = app._cached_product_analyze("Lurpak 200 g", price=20)
-    second = app._cached_product_analyze("Lurpak 200 g", price=20)
+    first = product_identity.analyze("Lurpak 200 g", price=20)
+    second = product_identity.analyze("Lurpak 200 g", price=20)
 
-    assert first == second
+    assert first is second
     assert calls == 1
 
 
-def test_product_identity_save_refreshes_runtime_cache(monkeypatch):
-    saved = []
-
-    monkeypatch.setattr(app, "_original_product_save_store", lambda value: saved.append(value.copy()))
-    monkeypatch.setattr(app, "_product_store_file_signature", lambda: (2, 20))
+def test_product_identity_save_refreshes_runtime_cache(monkeypatch, tmp_path):
+    path = tmp_path / "identity.json"
+    monkeypatch.setenv("PRODUCT_IDENTITY_STORE_PATH", str(path))
     _reset_cache()
 
-    app._cached_product_save_store({"matches": {"a|b": "same_item"}})
-    loaded = app._cached_product_load_store()
+    product_identity._save_store({"matches": {"a|b": "same_item"}})
+    loaded = product_identity._load_store()
 
-    assert saved == [{"matches": {"a|b": "same_item"}}]
     assert loaded == {"matches": {"a|b": "same_item"}}
-    assert app._product_analysis_generation == 1
+    assert product_identity._ANALYSIS_GENERATION == 1
