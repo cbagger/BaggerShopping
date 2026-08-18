@@ -285,7 +285,7 @@ def _normal_price_is_plausible(normal_price: float | None, *, price: float | Non
 
 def _luna_override(*, retailer: str, price: float | None, normal_price: float | None, text: str, unit_price: str | None):
     try:
-        from .luna_enrichment import member_pricing_override
+        from .luna_pricing_reader import member_pricing_override
     except (ImportError, AttributeError):
         return None
     try:
