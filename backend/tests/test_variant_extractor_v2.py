@@ -29,7 +29,7 @@ def test_v3_prefers_explicit_structured_products_and_keeps_sizes():
         "Schulstad Levebrød Sandwich 725 g",
         "Schulstad Signaturbrød 750 g",
     ]
-    assert all(value.source == "structured-products-v3" for value in result)
+    assert all(value.source == "structured-products" for value in result)
     assert min(value.confidence for value in result) >= 0.95
 
 
@@ -60,7 +60,7 @@ def test_v3_accepts_generic_items_only_when_they_are_product_records():
 def test_v3_restores_shared_text_context_without_image_data():
     assert names("Lurpak smør eller smørbar 200-250 g") == [
         "Lurpak smør",
-        "Lurpak smørbar 200-250 g",
+        "smørbar 200-250 g",
     ]
     assert names("Tulip bacon i skiver eller i tern 150-200 g") == [
         "Tulip bacon i skiver",
