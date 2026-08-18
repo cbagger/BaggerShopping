@@ -26,6 +26,7 @@ def _publication(*, title="Uge 34", price=15.0, status="current") -> Publication
         product_name="Kohberg brød",
         price=price,
         source_url=publication.source_url,
+        raw_text=f"Kohberg brød {price} kr",
         page_number=1,
         hotspot_x=0.1,
         hotspot_y=0.2,
