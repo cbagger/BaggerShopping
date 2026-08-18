@@ -39,15 +39,24 @@ _DIRECT_CONTEXT_PRICE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Unit/reference prices are not the same thing as a selling price written
+# "PR. STK. 29,-". kg/l/100g/100ml are inherently comparison units; a per-piece
+# value is only treated as comparison pricing when the advert explicitly marks
+# it as max/maks (the live Neophos shape: "Pr. stk. max. 1,98").
 _UNIT_PRICE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"(?<!\d)(?P<price>\d{1,4}(?:[,.]\d{1,2})?)\s*kr\.?\s*(?:/|pr\.?)\s*"
-        r"(?:kg|kilo|l(?:iter)?|100\s*g|100\s*ml|stk\.?|styk(?:ker)?)\b",
+        r"(?:kg|kilo|l(?:iter)?|100\s*g|100\s*ml)\b",
         re.IGNORECASE,
     ),
     re.compile(
-        r"\bpr\.?\s*(?:kg|kilo|l(?:iter)?|100\s*g|100\s*ml|stk\.?|styk(?:ker)?)\b"
+        r"\bpr\.?\s*(?:kg|kilo|l(?:iter)?|100\s*g|100\s*ml)\b"
         r"[^\d]{0,24}(?P<price>\d{1,4}(?:[,.]\d{1,2})?)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bpr\.?\s*(?:stk\.?|styk(?:ker)?)\s*(?:max|maks)\.?\s*"
+        r"(?:kr\.?\s*)?(?P<price>\d{1,4}(?:[,.]\d{1,2})?)",
         re.IGNORECASE,
     ),
 )
@@ -167,10 +176,10 @@ def _build_from_selected(
     member_price = selected.value
 
     # Final structured-price safety net: a value that the same advert describes
-    # as kg/l/100g/100ml/stk comparison pricing can never become the customer
-    # member price merely because a PLUS/MEDLEMSPRIS marker is textually nearby.
-    # Reject the deterministic interpretation and let v3 consult Luna's verified
-    # visual pricing record instead.
+    # as kg/l/100g/100ml or explicit max-per-piece comparison pricing can never
+    # become the customer member price merely because a PLUS/MEDLEMSPRIS marker
+    # is textually nearby. Reject that deterministic interpretation and let v3
+    # consult Luna's verified visual pricing record instead.
     unit_values = _unit_price_values(text, unit_price)
     if selected.unit_price_context or any(
         v3._same_price(member_price, value) for value in unit_values
