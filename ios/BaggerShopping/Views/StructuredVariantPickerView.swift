@@ -84,6 +84,12 @@ struct StructuredVariantPickerView: View {
                                             .font(.caption2.weight(.semibold)).foregroundStyle(.green)
                                     }
                                 }
+                                if let detail = variantPackDetail(option.variant),
+                                   option.name.range(of: detail, options: [.caseInsensitive, .diacriticInsensitive]) == nil {
+                                    Label(detail, systemImage: "shippingbox")
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(.secondary)
+                                }
                                 identityChips(option.variant?.identity)
                                 unitPrice(option.variant?.identity)
                             }
@@ -156,6 +162,18 @@ struct StructuredVariantPickerView: View {
             Text("\(minimum.formatted(.currency(code: "DKK").precision(.fractionLength(2))))–\(maximum.formatted(.currency(code: "DKK").precision(.fractionLength(2)))) pr. \(unit)")
                 .font(.caption).foregroundStyle(.secondary)
         }
+    }
+
+    private func variantPackDetail(_ variant: OfferVariant?) -> String? {
+        guard let variant,
+              let quantity = variant.quantity,
+              quantity > 0,
+              let unit = variant.unit?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !unit.isEmpty else { return nil }
+        let amount = quantity.rounded() == quantity
+            ? String(Int(quantity))
+            : quantity.formatted(.number.precision(.fractionLength(0...1)))
+        return "\(amount) \(unit)"
     }
 
     private func typeLabel(_ type: String) -> String {
