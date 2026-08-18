@@ -164,12 +164,46 @@ def test_v1_migration_does_not_replay_known_same_release(tmp_path, monkeypatch):
     )
 
     assert readiness.readiness_store_version() == 1
-    result = readiness.observe_publications([flyer], bootstrap_ready_ids={"known"})
+    result = readiness.observe_publications([flyer], bootstrap_ready_ids=set())
     assert result["migrated"] == ["known"]
     assert result["queued"] == []
     assert readiness.readiness_store_version() == 2
     assert readiness.pending_publication_records() == []
     assert readiness.publication_is_ready(flyer) is True
+
+
+def test_v1_migration_discards_ambiguous_legacy_processing_backlog(tmp_path, monkeypatch):
+    isolate(tmp_path, monkeypatch)
+    flyer = publication("pending")
+    path = readiness.store_path()
+    path.write_text(
+        json.dumps({
+            "version": 1,
+            "initialized": True,
+            "publications": {
+                "pending": {
+                    "publication_id": "pending",
+                    "retailer": "Bilka",
+                    "title": "Uge 34",
+                    "valid_from": flyer.valid_from,
+                    "valid_until": flyer.valid_until,
+                    "fingerprint": "legacy-member-coverage-fingerprint",
+                    "page_fingerprints": {"1": "legacy-page"},
+                    "status": "processing",
+                    "changed_pages": [1],
+                    "attempts": 0,
+                    "last_error": None,
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    result = readiness.observe_publications([flyer], bootstrap_ready_ids=set())
+    assert result["migrated"] == ["pending"]
+    assert result["queued"] == []
+    assert readiness.status_payload()["counts"] == {"ready": 1}
+    assert readiness.pending_publication_records() == []
 
 
 def test_v1_migration_still_queues_truly_new_release(tmp_path, monkeypatch):
