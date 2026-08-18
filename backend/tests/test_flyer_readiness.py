@@ -72,10 +72,6 @@ def test_changed_same_id_reopens_gate_and_tracks_changed_page(tmp_path, monkeypa
     assert readiness.publication_is_ready(original)
 
     changed = publication("same", price=12)
-
-    # Version matching is part of the read gate itself, not only detection.
-    # Therefore a provider change under the same publication ID is hidden even
-    # in the interval before flyer-push has observed/enqueued the new version.
     assert readiness.publication_is_ready(changed) is False
 
     result = readiness.observe_publications([changed], bootstrap_ready_ids={"same"})
@@ -83,6 +79,29 @@ def test_changed_same_id_reopens_gate_and_tracks_changed_page(tmp_path, monkeypa
     assert readiness.publication_is_ready(changed) is False
     pending = readiness.pending_publication_records()[0]
     assert pending["changed_pages"] == [1]
+
+
+def test_member_price_coverage_signal_reopens_only_relevant_page(tmp_path, monkeypatch):
+    isolate(tmp_path, monkeypatch)
+    original = publication("same")
+    readiness.observe_publications([original], bootstrap_ready_ids=None)
+
+    changed = original.model_copy(deep=True)
+    changed.structured_offers[0].quality_signals = ["member-price-context-nearby-v3"]
+
+    assert readiness.publication_fingerprint(changed) != readiness.publication_fingerprint(original)
+    result = readiness.observe_publications([changed], bootstrap_ready_ids={"same"})
+    assert result["changed"] == ["same"]
+    assert readiness.pending_publication_records()[0]["changed_pages"] == [1]
+
+
+def test_unrelated_quality_signal_does_not_create_readiness_version(tmp_path, monkeypatch):
+    isolate(tmp_path, monkeypatch)
+    original = publication("same")
+    changed = original.model_copy(deep=True)
+    changed.structured_offers[0].quality_signals = ["positioned-ocr"]
+
+    assert readiness.publication_fingerprint(changed) == readiness.publication_fingerprint(original)
 
 
 def test_signed_image_query_rotation_does_not_create_new_version(tmp_path, monkeypatch):
