@@ -143,23 +143,43 @@ def box_from_polygon(
     vertical_scale: float = 1.0,
     source: str = "native-polygon",
 ) -> HotspotBox | None:
+    """Build a recall-first bounding box from provider polygon coordinates."""
     if vertical_scale <= 0 or vertical_scale != vertical_scale:
         return None
+
     parsed: list[tuple[float, float]] = []
     for point in points:
         if len(point) < 2:
             continue
-        x, y = _number(point[0]), _number(point[1])
+        x = _number(point[0])
+        y = _number(point[1])
         if x is not None and y is not None:
             parsed.append((x, y / vertical_scale))
+
     if len(parsed) < 2:
         return None
+
     xs, ys = zip(*parsed)
-    return box_from_mapping(
-        {
-            "x": min(xs), "y": min(ys),
-            "width": max(xs) - min(xs), "height": max(ys) - min(ys),
-        },
+    x = max(0.0, min(1.0, min(xs)))
+    y = max(0.0, min(1.0, min(ys)))
+    width = max(0.0001, min(1.0 - x, max(xs) - min(xs)))
+    height = max(0.0001, min(1.0 - y, max(ys) - min(ys)))
+    if width <= 0 or height <= 0:
+        return None
+
+    area = width * height
+    confidence = 0.97 if source in {"native", "tjek-polygon", "ipaper-marker"} else 0.82
+    if area > 0.65:
+        confidence -= 0.25
+    elif area < 0.0015:
+        confidence -= 0.12
+
+    return HotspotBox(
+        x=x,
+        y=y,
+        width=width,
+        height=height,
+        confidence=max(0.35, confidence),
         source=source,
     )
 
@@ -306,55 +326,17 @@ def extract_variants(
     *,
     payload: object = None,
 ) -> list[VariantCandidate]:
-    """Extract alternatives from structured data, headings and OCR-like text.
+    """Use Kurv's text/structure-only Variant Extractor v2 as the normal path."""
+    # Lazy import avoids a module cycle: variant_extractor_v2 uses the shared
+    # VariantCandidate model defined above.
+    from .variant_extractor_v2 import extract_variants_v2
 
-    Structured product arrays win. Heading/description parsing is deliberately
-    conservative: uncertainty is represented by confidence rather than by
-    inventing product names.
-    """
-    names = _explicit_names(payload)
-    source = "structured-products" if names else "heading"
-    confidence = 0.98 if names else 0.90
-
-    normalized_heading = _space(heading).replace(" / ", ", ")
-
-    def restore_compound(match: re.Match[str]) -> str:
-        first, second = match.group(1), match.group(2)
-        for ending in ("over", "under", "inder", "yder"):
-            if first.casefold().endswith(ending):
-                return f"{first}, {first[:-len(ending)]}{second}"
-        return match.group(0)
-
-    normalized_heading = re.sub(
-        r"\b([\wæøå]+)-\s+eller\s+([\wæøå]+)\b",
-        restore_compound,
-        normalized_heading,
-        flags=re.IGNORECASE,
+    return extract_variants_v2(
+        identity,
+        heading,
+        description,
+        payload=payload,
     )
-    if not names:
-        names = [_space(part).strip(" *") for part in re.split(r"\s*,\s*|\s+eller\s+", normalized_heading, flags=re.IGNORECASE)]
-
-    if len(names) <= 1 and description:
-        first_clause = BOILERPLATE_RE.sub("", _space(description)).split(".", 1)[0]
-        described = [
-            _space(part).strip(" *")
-            for part in re.split(r"\s*,\s*|\s+eller\s+|\s+/\s+", first_clause, flags=re.IGNORECASE)
-        ]
-        described = [name for name in described if 2 <= len(name) <= 80 and not MEASURE_ONLY_RE.fullmatch(name)]
-        if len(described) > 1:
-            names, source, confidence = described, "description-text", 0.78
-
-    names = _restore_variant_context([name for name in names if 2 <= len(name) <= 120])
-    names = list(dict.fromkeys(names))
-    if not 1 < len(names) <= 16:
-        names, source, confidence = [_space(heading)], "campaign-heading", 0.65
-    return [
-        VariantCandidate(
-            id=f"{identity}-{index}", name=name,
-            confidence=confidence, source=source,
-        )
-        for index, name in enumerate(names)
-    ]
 
 
 def assess_quality(
@@ -429,7 +411,7 @@ def _offer_box(offer: "Offer") -> HotspotBox | None:
 
 
 def couple_offers(offers: Sequence["Offer"]) -> list["Offer"]:
-    """Join duplicate source rows that describe one visual campaign region."""
+    """Merge only near-identical duplicate source rows for one visual offer."""
     result: list["Offer"] = []
     for offer in offers:
         box = _offer_box(offer)
@@ -440,7 +422,9 @@ def couple_offers(offers: Sequence["Offer"]) -> list["Offer"]:
             existing_box = _offer_box(existing)
             same_label = _space(existing.product_name).casefold() == _space(offer.product_name).casefold()
             if same_label and (
-                existing_box is None or box is None or intersection_over_union(existing_box, box) >= 0.72
+                existing_box is None
+                or box is None
+                or intersection_over_union(existing_box, box) >= 0.90
             ):
                 match_index = index
                 break
@@ -455,6 +439,7 @@ def couple_offers(offers: Sequence["Offer"]) -> list["Offer"]:
             if key not in seen:
                 variants.append(variant)
                 seen.add(key)
+        existing_box = _offer_box(existing)
         union = union_boxes(value for value in (existing_box, box) if value is not None)
         updates = {
             "variants": variants,
