@@ -20,6 +20,7 @@ from .meny_flyer import (
     Offer, Publication, _contains_query_term, _is_pet_offer, _product_domain,
     _query_terms, search_publication,
 )
+from .offer_serialization import customer_offer_payload
 from .product_identity import MatchResult, analyze, apply_family_preference, compare
 
 
@@ -218,8 +219,10 @@ def _offer_payload(
     offer: Offer,
     identity: MatchResult | None = None,
     publication_status: str | None = None,
+    *,
+    include_identity: bool = True,
 ) -> dict:
-    payload = offer.model_dump()
+    payload = customer_offer_payload(offer)
     learning = learned_adjustment(
         load_feedback_store(_QUALITY_STORE_PATH), offer.retailer,
         offer.quality_source, offer.publication_id,
@@ -235,19 +238,24 @@ def _offer_payload(
         "wrong_position": learning.position_reports,
         "wrong_variants": learning.variant_reports,
     }
-    payload["product_identity"] = analyze(
-        offer.product_name, quantity=offer.quantity, unit=offer.unit, price=offer.price,
-    ).model_dump()
+
     payload["variants"] = []
-    for variant in offer.variants:
-        value = variant.model_dump()
-        value["identity"] = analyze(
-            variant.name,
-            quantity=variant.quantity if variant.quantity is not None else offer.quantity,
-            unit=variant.unit or offer.unit,
-            price=offer.price,
+    if include_identity:
+        payload["product_identity"] = analyze(
+            offer.product_name, quantity=offer.quantity, unit=offer.unit, price=offer.price,
         ).model_dump()
-        payload["variants"].append(value)
+        for variant in offer.variants:
+            value = variant.model_dump()
+            value["identity"] = analyze(
+                variant.name,
+                quantity=variant.quantity if variant.quantity is not None else offer.quantity,
+                unit=variant.unit or offer.unit,
+                price=offer.price,
+            ).model_dump()
+            payload["variants"].append(value)
+    else:
+        payload["variants"] = [variant.model_dump() for variant in offer.variants]
+
     if identity is not None:
         payload["identity_match"] = identity.model_dump()
     if publication_status is not None:
@@ -580,18 +588,19 @@ async def smart_offer_matches(request: OfferMatchRequest):
 
 @router.get("/publications/{publication_id}/offers")
 async def publication_offers(publication_id: str):
-    try:
-        publication = next((item for item in await _publications() if item.id == publication_id), None)
-    except HTTPException:
-        publication = None
+    publication = next((item for item in await _publications() if item.id == publication_id), None)
     if publication is None:
-        # Compatibility with builds where MENY's upstream redirect changed the
-        # derived id between the shelf request and opening the reader.
-        publication = await _publication()
+        # Returning a different retailer's/current MENY flyer for a stale id is
+        # more dangerous than an explicit miss: it can place valid-looking plus
+        # markers on the wrong page. Let the client refresh the shelf instead.
+        raise HTTPException(status_code=404, detail="Tilbudsavisen findes ikke længere")
     return {
         "ok": True,
         "publication": _publication_payload(publication),
-        "offers": [_offer_payload(offer) for offer in publication.structured_offers],
+        "offers": [
+            _offer_payload(offer, include_identity=False)
+            for offer in publication.structured_offers
+        ],
     }
 
 
@@ -599,7 +608,7 @@ async def publication_offers(publication_id: str):
 async def current_publication_offers():
     """Return offers for the current flyer without a client-supplied id.
 
-    There is currently one publication per retailer.  Keeping this as a static
+    There is currently one publication per retailer. Keeping this as a static
     route also makes it straightforward for deployment smoke tests to prove
     that the complete offers router is running.
     """
@@ -609,7 +618,10 @@ async def current_publication_offers():
         "publication": _publication_payload(publication),
         "offer_count": len(publication.structured_offers),
         "coverage": _coverage_payload(publication),
-        "offers": [_offer_payload(offer) for offer in publication.structured_offers],
+        "offers": [
+            _offer_payload(offer, include_identity=False)
+            for offer in publication.structured_offers
+        ],
     }
 
 
