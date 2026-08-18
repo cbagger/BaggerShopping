@@ -165,6 +165,18 @@ def _build_from_selected(
     confidence: float,
 ) -> MemberPricing | None:
     member_price = selected.value
+
+    # Final structured-price safety net: a value that the same advert describes
+    # as kg/l/100g/100ml/stk comparison pricing can never become the customer
+    # member price merely because a PLUS/MEDLEMSPRIS marker is textually nearby.
+    # Reject the deterministic interpretation and let v3 consult Luna's verified
+    # visual pricing record instead.
+    unit_values = _unit_price_values(text, unit_price)
+    if selected.unit_price_context or any(
+        v3._same_price(member_price, value) for value in unit_values
+    ):
+        return None
+
     if price is not None and price < member_price - 0.005:
         return None
 
@@ -177,6 +189,10 @@ def _build_from_selected(
         member_price=member_price,
         unit_price=unit_price,
     )
+    if ordinary is not None and any(
+        v3._same_price(ordinary, value) for value in unit_values
+    ):
+        ordinary = None
     if ordinary is not None and member_price >= ordinary - 0.005:
         return None
 
