@@ -15,21 +15,23 @@ from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-# Discovery must use the raw deterministic provider objects. Otherwise Luna's
-# own cached overlay could change variants/prices and accidentally look like a
-# new flyer version, creating a self-triggering enrichment loop.
 from .flyer_publications import fetch_raw_publications as fetch_all_publications
 from .flyer_adapters import RETAILER_ORDER
 from .flyer_readiness import (
     observe_publications,
     publication_fingerprint,
-    publication_is_ready,
     ready_publication_records,
 )
 from .households import current_household
 
 router = APIRouter(prefix="/api/mobile/v1/flyer-notifications", tags=["flyer-notifications"])
 STORE_LOCK = asyncio.Lock()
+
+_TERMINAL_APNS_REASONS = {
+    "BadDeviceToken",
+    "DeviceTokenNotForTopic",
+    "Unregistered",
+}
 
 
 def _store_path() -> Path:
@@ -111,6 +113,43 @@ def _provider_token() -> str:
     return f"{header}.{claims}.{_b64(r.to_bytes(32, 'big') + s.to_bytes(32, 'big'))}"
 
 
+def _apns_delivery_result(status_code: int, reason: str | None = None) -> dict[str, Any]:
+    normalized_reason = str(reason or "").strip() or None
+    ok = status_code == 200
+    terminal = bool(
+        not ok
+        and (
+            status_code == 410
+            or normalized_reason in _TERMINAL_APNS_REASONS
+        )
+    )
+    return {
+        "ok": ok,
+        "terminal": terminal,
+        "reason": normalized_reason,
+        "status_code": status_code,
+    }
+
+
+def _normalize_delivery_result(value: object) -> dict[str, Any]:
+    """Accept legacy bool test doubles while production returns APNs details."""
+    if isinstance(value, bool):
+        return {
+            "ok": value,
+            "terminal": False,
+            "reason": None,
+            "status_code": 200 if value else 0,
+        }
+    if isinstance(value, dict):
+        return {
+            "ok": bool(value.get("ok")),
+            "terminal": bool(value.get("terminal")),
+            "reason": value.get("reason"),
+            "status_code": int(value.get("status_code") or 0),
+        }
+    return {"ok": False, "terminal": False, "reason": None, "status_code": 0}
+
+
 async def _send(
     device_token: str,
     environment: str,
@@ -118,7 +157,7 @@ async def _send(
     body: str,
     publication_id: str,
     retailer: str,
-) -> bool:
+) -> dict[str, Any]:
     host = "api.sandbox.push.apple.com" if environment == "sandbox" else "api.push.apple.com"
     payload = {
         "aps": {"alert": {"title": title, "body": body}, "sound": "default"},
@@ -134,7 +173,16 @@ async def _send(
     }
     async with httpx.AsyncClient(http2=True, timeout=20) as client:
         response = await client.post(f"https://{host}/3/device/{device_token}", headers=headers, json=payload)
-    return response.status_code == 200
+
+    reason: str | None = None
+    if response.content:
+        try:
+            payload = response.json()
+            if isinstance(payload, dict) and isinstance(payload.get("reason"), str):
+                reason = payload["reason"]
+        except (ValueError, json.JSONDecodeError):
+            pass
+    return _apns_delivery_result(response.status_code, reason)
 
 
 def _notification_name(publication: Any) -> str:
@@ -148,14 +196,6 @@ def _notification_release_key(
     valid_from: object,
     valid_until: object,
 ) -> str:
-    """Stable identity for one customer-visible flyer release.
-
-    Content fingerprints intentionally change whenever provider page/offer data
-    changes because readiness/Luna must re-audit those revisions. A push titled
-    "Ny tilbudsavis" has different semantics: the same publication and validity
-    window is still the same flyer, even if Tjek/iPaper mutates metadata or a
-    backend/container restart observes a slightly different content fingerprint.
-    """
     return "|".join(
         str(value or "").strip()
         for value in (publication_id, valid_from, valid_until)
@@ -178,14 +218,33 @@ def _record_release_key(record: dict[str, Any]) -> str:
     )
 
 
-async def _deliver_ready_records(records: list[dict[str, Any]]) -> dict[str, int]:
-    """Acknowledge ready content revisions and notify only new flyer releases.
+async def _disable_terminal_device(device_id: str, result: dict[str, Any]) -> None:
+    async with STORE_LOCK:
+        latest = _load()
+        record = latest.setdefault("devices", {}).get(device_id)
+        if record is None:
+            return
+        record["enabled"] = False
+        record["disabled_at"] = int(time.time())
+        record["disabled_reason"] = f"apns:{result.get('reason') or result.get('status_code') or 'invalid-token'}"
+        _save(latest)
 
-    Readiness is fingerprint-based so any meaningful provider revision can be
-    reprocessed. Notification identity is deliberately release-based so the
-    same flyer cannot be pushed again merely because a worker/container restarts
-    or provider metadata changes within the same validity window.
-    """
+
+async def _record_delivered_release(device_id: str, release_key: str) -> None:
+    async with STORE_LOCK:
+        latest = _load()
+        record = latest.setdefault("devices", {}).get(device_id)
+        if record is None:
+            return
+        history = list(dict.fromkeys([
+            *record.get("delivered_publication_releases", []),
+            release_key,
+        ]))[-300:]
+        record["delivered_publication_releases"] = history
+        _save(latest)
+
+
+async def _deliver_ready_records(records: list[dict[str, Any]]) -> dict[str, int]:
     async with STORE_LOCK:
         store = _load()
         if not store.get("initialized"):
@@ -225,29 +284,24 @@ async def _deliver_ready_records(records: list[dict[str, Any]]) -> dict[str, int
                 if release_key in delivered_releases:
                     continue
 
-                ok = await _send(
+                delivery = _normalize_delivery_result(await _send(
                     device["device_token"],
                     device.get("environment", "production"),
                     "Ny tilbudsavis",
                     f"{notification_name} er nu tilgængelig",
                     publication_id,
                     retailer,
-                )
+                ))
+                ok = bool(delivery["ok"])
+                terminal = bool(delivery["terminal"])
                 sent += int(ok)
                 failed += int(not ok)
-                publication_failed = publication_failed or not ok
+                publication_failed = publication_failed or (not ok and not terminal)
 
                 if ok:
-                    async with STORE_LOCK:
-                        latest = _load()
-                        record = latest.setdefault("devices", {}).get(device_id)
-                        if record is not None:
-                            history = list(dict.fromkeys([
-                                *record.get("delivered_publication_releases", []),
-                                release_key,
-                            ]))[-300:]
-                            record["delivered_publication_releases"] = history
-                            _save(latest)
+                    await _record_delivered_release(device_id, release_key)
+                elif terminal:
+                    await _disable_terminal_device(device_id, delivery)
 
         if not should_notify or targets == 0 or not publication_failed:
             completed_versions[publication_id] = fingerprint
@@ -273,7 +327,6 @@ async def _deliver_ready_records(records: list[dict[str, Any]]) -> dict[str, int
 
 
 async def deliver_ready_notifications() -> dict[str, int]:
-    """Local, provider-free delivery path used after Luna marks a flyer ready."""
     return await _deliver_ready_records(ready_publication_records())
 
 
