@@ -62,7 +62,7 @@ def test_nearby_member_context_is_recall_signal_not_customer_price_truth():
     assert pricing is None
 
 
-def test_one_member_offer_escalates_other_hotspots_on_same_page_only():
+def test_one_member_offer_does_not_escalate_other_hotspots_on_same_page():
     spir = offer(name="SPIR plantedrik", price=12.0).model_copy(
         update={
             "id": "spir-1",
@@ -81,7 +81,7 @@ def test_one_member_offer_escalates_other_hotspots_on_same_page_only():
     marked = _mark_member_signal_pages([spir, riberhus, next_page])
 
     assert COVERAGE_SIGNAL in marked[0].quality_signals
-    assert COVERAGE_SIGNAL in marked[1].quality_signals
+    assert COVERAGE_SIGNAL not in marked[1].quality_signals
     assert COVERAGE_SIGNAL not in marked[2].quality_signals
 
     pricing = detect_member_pricing(
@@ -105,7 +105,7 @@ def test_one_member_offer_escalates_other_hotspots_on_same_page_only():
             "unit_price": None,
         },
     )
-    assert "page-audit-provider-member-context-unresolved" in reasons
+    assert "page-audit-provider-member-context-unresolved" not in reasons
 
 
 def test_page_audit_that_misses_nearby_member_signal_is_forced_to_exact_crop():
