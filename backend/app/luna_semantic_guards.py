@@ -21,7 +21,7 @@ import hashlib
 import re
 
 from . import luna_semantic_audit as semantic
-from .luna_enrichment import load_store, offer_fingerprint
+from .luna_enrichment import load_config, load_store, offer_fingerprint
 
 
 SEMANTIC_AUDIT_CONTRACT_VERSION = "member-price-sanity-v2"
@@ -128,6 +128,58 @@ def _pricing_sanity_reasons(offer, facts) -> tuple[str, ...]:
         reasons.append("page-audit-extreme-member-discount-needs-verification")
 
     return tuple(dict.fromkeys(reasons))
+
+
+def mandatory_pricing_crop_resolved(offer, facts, config: dict | None = None) -> bool:
+    """Return whether an exact crop is final enough to leave the paid queue.
+
+    Page-level recall hints may intentionally force one exact crop. Once that
+    crop has confidently confirmed either a real price pair or the absence of a
+    membership price on the exact advert, the persistent provider/page hint must
+    not force the same paid crop again. Hard price-role contradictions still
+    fail closed.
+    """
+    if not isinstance(facts, dict) or not (facts.get("visible") or facts.get("same_offer")):
+        return False
+
+    config = config or load_config()
+    threshold = float(config.get("min_apply_confidence", 0.96))
+    if float(facts.get("pricing_confidence") or 0) < threshold:
+        return False
+
+    ordinary = facts.get("ordinary_price")
+    member = facts.get("member_price")
+    if ordinary is None and member is None:
+        return False
+
+    for value in (ordinary, member):
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) <= 0:
+            return False
+
+    if member is not None and ordinary is None:
+        return False
+    if member is not None and ordinary is not None and float(member) >= float(ordinary):
+        return False
+
+    member_visible = facts.get("membership_price_visible") is True
+    member_program = str(facts.get("member_program") or "").strip()
+    member_app = str(facts.get("member_app") or "").strip()
+    if member is not None and not member_visible:
+        return False
+    if member is None and member_visible:
+        return False
+    if member is None and (member_program or member_app):
+        return False
+
+    unit_values = _unit_price_values(facts.get("unit_price"))
+    if any(_same_numeric_price(member, value) for value in unit_values):
+        return False
+    if any(_same_numeric_price(ordinary, value) for value in unit_values):
+        return False
+
+    return True
 
 
 def _primary_member_role_ambiguous(offer, facts) -> bool:
@@ -263,13 +315,30 @@ def _crop_candidates_allowing_build58_reverification(publications):
 
             fingerprint = offer_fingerprint(offer)
             existing = records.get(fingerprint)
-            existing_facts = existing.get("facts") if isinstance(existing, dict) else None
-            existing_anomalous = bool(_pricing_sanity_reasons(offer, existing_facts))
+            existing_semantic_facts = (
+                existing.get("semantic_facts") if isinstance(existing, dict) else None
+            )
+            existing_facts = (
+                existing_semantic_facts
+                if isinstance(existing_semantic_facts, dict)
+                else existing.get("facts") if isinstance(existing, dict) else None
+            )
 
             if (
                 isinstance(existing, dict)
                 and existing.get("analysis_level") == "crop"
-                and existing.get("status") in {"completed", "no-change", "pending"}
+                and existing.get("status") == "completed"
+            ):
+                if not isinstance(existing_facts, dict) and not sanity_reasons:
+                    continue
+                if mandatory_pricing_crop_resolved(offer, existing_facts):
+                    continue
+
+            existing_anomalous = bool(_pricing_sanity_reasons(offer, existing_facts))
+            if (
+                isinstance(existing, dict)
+                and existing.get("analysis_level") == "crop"
+                and existing.get("status") in {"no-change", "pending"}
                 and (not isinstance(existing_facts, dict) or not existing_anomalous)
             ):
                 continue
