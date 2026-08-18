@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .households import HouseholdContext, require_household, require_owner, update_household
+from .samsung_broker_auth import broker_key as shared_broker_key
 
 router = APIRouter(prefix="/api/mobile/v1/integrations/samsung-food", tags=["samsung-login"])
 LOCK = asyncio.Lock()
@@ -164,8 +165,11 @@ async def broker_complete(
     broker_key: str | None = Header(default=None, alias="X-Kurv-Broker-Key"),
 ) -> dict[str, Any]:
     """Called on the private container network after the user finishes login."""
-    expected = os.getenv("SAMSUNG_LOGIN_BROKER_KEY", "")
-    if not expected or not broker_key or not secrets.compare_digest(expected, broker_key):
+    try:
+        expected = shared_broker_key()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="Samsung login-broker er ikke klar") from exc
+    if not broker_key or not secrets.compare_digest(expected, broker_key):
         raise HTTPException(status_code=401, detail="Ugyldig login-broker")
     async with LOCK:
         store = _load()
