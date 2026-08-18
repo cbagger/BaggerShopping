@@ -113,17 +113,22 @@ def _bounded_quarantine(kind: str, publication, candidate, reason: str) -> None:
         _original_quarantine(kind, publication, candidate, reason)
 
 
-# `_background_enrichment_once` resolves this global on every call, so replacing
-# it here changes only retry policy; all validated prompts, semantic guards,
-# price/member logic, budgeting and model selection remain untouched.
-base._quarantine = _bounded_quarantine
+def install_strength_policy() -> None:
+    """Install retry policy only in the real worker process.
+
+    Keeping installation explicit avoids import-time monkeypatch side effects in
+    tests or diagnostic tools while preserving every validated Luna primitive.
+    """
+    base._quarantine = _bounded_quarantine
 
 
 async def run_once() -> dict:
+    install_strength_policy()
     return await base.run_once()
 
 
 async def main() -> None:
+    install_strength_policy()
     await base.main()
 
 
