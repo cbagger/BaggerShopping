@@ -1,3 +1,5 @@
+import pytest
+
 from app.flyer_intelligence import box_from_polygon, couple_offers, extract_variants
 from app.meny_flyer import Offer
 
@@ -29,8 +31,8 @@ def test_small_provider_polygon_keeps_real_marker_recall():
     )
 
     assert box is not None
-    assert box.width == 0.005
-    assert box.height == 0.02
+    assert box.width == pytest.approx(0.005)
+    assert box.height == pytest.approx(0.02)
 
 
 def test_nearby_same_price_offers_are_not_coupled_without_near_identical_geometry():
