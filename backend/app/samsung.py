@@ -25,7 +25,10 @@ class SamsungFoodError(RuntimeError):
 
 class SamsungFoodClient:
     def __init__(self, *, list_id: str | None = None, auth: SamsungAuthManager | None = None) -> None:
-        self.list_id = list_id or settings.samsung_list_id
+        resolved_list_id = list_id or settings.samsung_list_id
+        if not resolved_list_id:
+            raise SamsungFoodError("Samsung Food list id is required when creating a client")
+        self.list_id = resolved_list_id
         self.auth = auth or SamsungAuthManager()
 
     async def _token(self) -> str:

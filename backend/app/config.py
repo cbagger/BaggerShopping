@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    samsung_list_id: str
+    samsung_list_id: str | None = None
 
     # Preferred long-term auth path
     samsung_account_email: str | None = None
