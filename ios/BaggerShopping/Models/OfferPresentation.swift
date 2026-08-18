@@ -30,9 +30,6 @@ extension GroceryOffer {
             }
 
         if names.count > 1 { return .variants(names) }
-        // Direct-add requires positive evidence for one concrete product. A
-        // weak provider heading or a Luna visual signal that the advert covers
-        // multiple products always falls back to the picker.
         if names.count == 1,
            !hasUnresolvedVariantLanguage,
            variantConfidence >= 0.90 {
@@ -41,10 +38,6 @@ extension GroceryOffer {
         return .unspecified
     }
 
-    /// Structured flyer hotspots remain authoritative. Luna may confirm that a
-    /// visually grouped campaign contains multiple products. If provider data
-    /// then contains only the campaign heading, do not show that heading as a
-    /// fake one-item "variant"; present the unresolved picker instead.
     var resolvedVariantNames: [String] {
         let structured = variants.map(\.name).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         if !structured.isEmpty {
@@ -99,15 +92,30 @@ extension GroceryOffer {
         ].contains(where: value.contains)
     }
 
-    /// Samsung Food interprets a trailing “6 stk” as shopping quantity = 6 and
-    /// strips it from the item name. That destroys Kurv's selected-offer key on
-    /// the next reconciliation. Keep the advertised pack choice in the name,
-    /// but express only a trailing package count as “6-pak”, which is product
-    /// metadata rather than shopping-list quantity. Weight/volume and all other
-    /// variant text remain untouched.
     func samsungSafeShoppingItemName(_ rawName: String) -> String {
-        let value = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        var value = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return value }
+
+        if let structuredVariant = variants.first(where: { variant in
+            let variantName = variant.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !variantName.isEmpty else { return false }
+            return value.caseInsensitiveCompare(variantName) == .orderedSame
+                || value.range(of: variantName, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+        }),
+           let quantity = structuredVariant.quantity,
+           quantity > 1,
+           let rawUnit = structuredVariant.unit?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+           ["stk", "styk", "stykker", "pk", "pakke", "pakker"].contains(rawUnit),
+           value.range(
+               of: #"\b\d+(?:[.,]\d+)?\s*(?:stk\.?|styk(?:ker)?|pk\.?|pakke(?:r)?|-pak)\s*$"#,
+               options: [.regularExpression, .caseInsensitive]
+           ) == nil {
+            let count = quantity.rounded() == quantity
+                ? String(Int(quantity))
+                : quantity.formatted(.number.precision(.fractionLength(0...1)))
+            value += " \(count)-pak"
+        }
+
         return value.replacingOccurrences(
             of: #"\s+(\d+)\s*(?:stk\.?|styk(?:ker)?)\s*$"#,
             with: " $1-pak",
@@ -187,9 +195,6 @@ extension GroceryOffer {
         return [identity, variant, noun.lowercased()].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
-    /// User-entered text is always a qualifier for the advertised product.
-    /// It must never be mistaken for a complete product name just because it
-    /// starts with a capital letter (for example "Havreflager" or "Æble").
     func shoppingItemName(customVariant: String) -> String {
         let base = manualVariantBaseName
         let custom = customVariant.trimmingCharacters(in: .whitespacesAndNewlines)
