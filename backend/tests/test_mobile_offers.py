@@ -164,7 +164,7 @@ def test_search_semantic_fallback_preserves_all_campaign_variants(monkeypatch):
     ]
 
 
-def test_publication_offers_returns_current_publication_when_client_id_is_stale(monkeypatch):
+def test_publication_offers_rejects_stale_client_id(monkeypatch):
     publication = parse_meny_flyer_html(
         '<p>MENY uge 3326</p><p>Avisen gælder fra fredag 07.08.2026 til og med torsdag 13.08.2026.</p>',
         source_url="https://ugensavis.meny.dk/?redirect=second-request",
@@ -179,14 +179,16 @@ def test_publication_offers_returns_current_publication_when_client_id_is_stale(
         "price": 9.95,
     }]}])
 
-    async def current_publication():
-        return publication
+    async def all_publications():
+        return [publication]
 
-    monkeypatch.setattr(mobile_offers, "_publication", current_publication)
-    response = asyncio.run(mobile_offers.publication_offers("id-from-first-request"))
+    monkeypatch.setattr(mobile_offers, "_publications", all_publications)
 
-    assert response["publication"]["id"] == publication.id
-    assert [offer["product_name"] for offer in response["offers"]] == ["Kakaomælk"]
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(mobile_offers.publication_offers("id-from-first-request"))
+
+    assert error.value.status_code == 404
+    assert error.value.detail == "Tilbudsavisen findes ikke længere"
 
 
 def test_current_offers_static_route_returns_live_offer_count(monkeypatch):
