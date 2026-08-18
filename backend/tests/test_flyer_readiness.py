@@ -56,7 +56,7 @@ def test_bootstrap_existing_publications_are_ready(tmp_path, monkeypatch):
     assert result["queued"] == []
     assert readiness.publication_is_ready(existing) is True
     assert readiness.status_payload()["counts"] == {"ready": 1}
-    assert readiness.status_payload()["version"] == 2
+    assert readiness.status_payload()["version"] == 3
 
 
 def test_new_publication_after_bootstrap_is_processing_until_mark_ready(tmp_path, monkeypatch):
@@ -135,62 +135,23 @@ def test_signed_image_query_rotation_does_not_create_new_version(tmp_path, monke
     assert readiness.publication_is_ready(second) is True
 
 
-def test_v1_migration_does_not_replay_known_same_release(tmp_path, monkeypatch):
-    isolate(tmp_path, monkeypatch)
-    flyer = publication("known")
-    path = readiness.store_path()
+def _write_old_store(path, version: int, flyer: Publication, status: str = "processing"):
     path.write_text(
         json.dumps({
-            "version": 1,
+            "version": version,
             "initialized": True,
             "updated_at": 1,
             "publications": {
-                "known": {
-                    "publication_id": "known",
-                    "retailer": "Bilka",
-                    "title": "Uge 34",
-                    "valid_from": "14.08.2026",
-                    "valid_until": "20.08.2026",
-                    "fingerprint": "legacy-derived-parser-fingerprint",
-                    "page_fingerprints": {"1": "legacy-page"},
-                    "status": "processing",
-                    "changed_pages": [1],
-                    "attempts": 17,
-                    "last_error": "completed",
-                }
-            },
-        }),
-        encoding="utf-8",
-    )
-
-    assert readiness.readiness_store_version() == 1
-    result = readiness.observe_publications([flyer], bootstrap_ready_ids=set())
-    assert result["migrated"] == ["known"]
-    assert result["queued"] == []
-    assert readiness.readiness_store_version() == 2
-    assert readiness.pending_publication_records() == []
-    assert readiness.publication_is_ready(flyer) is True
-
-
-def test_v1_migration_discards_ambiguous_legacy_processing_backlog(tmp_path, monkeypatch):
-    isolate(tmp_path, monkeypatch)
-    flyer = publication("pending")
-    path = readiness.store_path()
-    path.write_text(
-        json.dumps({
-            "version": 1,
-            "initialized": True,
-            "publications": {
-                "pending": {
-                    "publication_id": "pending",
+                flyer.id: {
+                    "publication_id": flyer.id,
                     "retailer": "Bilka",
                     "title": "Uge 34",
                     "valid_from": flyer.valid_from,
                     "valid_until": flyer.valid_until,
-                    "fingerprint": "legacy-member-coverage-fingerprint",
-                    "page_fingerprints": {"1": "legacy-page"},
-                    "status": "processing",
-                    "changed_pages": [1],
+                    "fingerprint": "pre-v3-fingerprint",
+                    "page_fingerprints": {"1": "pre-v3-page"},
+                    "status": status,
+                    "changed_pages": [1] if status == "processing" else [],
                     "attempts": 0,
                     "last_error": None,
                 }
@@ -199,9 +160,33 @@ def test_v1_migration_discards_ambiguous_legacy_processing_backlog(tmp_path, mon
         encoding="utf-8",
     )
 
+
+def test_v1_migration_does_not_replay_known_same_release(tmp_path, monkeypatch):
+    isolate(tmp_path, monkeypatch)
+    flyer = publication("known")
+    path = readiness.store_path()
+    _write_old_store(path, 1, flyer)
+
+    assert readiness.readiness_store_version() == 1
     result = readiness.observe_publications([flyer], bootstrap_ready_ids=set())
-    assert result["migrated"] == ["pending"]
+    assert result["migrated"] == ["known"]
     assert result["queued"] == []
+    assert readiness.readiness_store_version() == 3
+    assert readiness.pending_publication_records() == []
+    assert readiness.publication_is_ready(flyer) is True
+
+
+def test_v2_live_cutover_discards_ambiguous_processing_backlog(tmp_path, monkeypatch):
+    isolate(tmp_path, monkeypatch)
+    flyer = publication("pending-v2")
+    path = readiness.store_path()
+    _write_old_store(path, 2, flyer)
+
+    assert readiness.readiness_store_version() == 2
+    result = readiness.observe_publications([flyer], bootstrap_ready_ids=set())
+    assert result["migrated"] == ["pending-v2"]
+    assert result["queued"] == []
+    assert readiness.readiness_store_version() == 3
     assert readiness.status_payload()["counts"] == {"ready": 1}
     assert readiness.pending_publication_records() == []
 
@@ -210,23 +195,7 @@ def test_v1_migration_still_queues_truly_new_release(tmp_path, monkeypatch):
     isolate(tmp_path, monkeypatch)
     old = publication("old")
     path = readiness.store_path()
-    path.write_text(
-        json.dumps({
-            "version": 1,
-            "initialized": True,
-            "publications": {
-                "old": {
-                    "publication_id": "old",
-                    "valid_from": old.valid_from,
-                    "valid_until": old.valid_until,
-                    "fingerprint": "legacy",
-                    "page_fingerprints": {"1": "legacy"},
-                    "status": "ready",
-                }
-            },
-        }),
-        encoding="utf-8",
-    )
+    _write_old_store(path, 1, old, status="ready")
 
     new = publication("new")
     result = readiness.observe_publications([old, new], bootstrap_ready_ids={"old"})
