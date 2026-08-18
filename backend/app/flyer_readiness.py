@@ -13,8 +13,8 @@ from urllib.parse import urlsplit, urlunsplit
 from .meny_flyer import Publication
 
 
-STORE_VERSION = 1
-_MEMBER_COVERAGE_SIGNAL = "member-price-context-nearby-v3"
+STORE_VERSION = 2
+LEGACY_STORE_VERSION = 1
 
 
 def store_path() -> Path:
@@ -49,7 +49,10 @@ def _read_unlocked() -> dict[str, Any]:
         return _empty_store()
     if not isinstance(value, dict):
         return _empty_store()
-    value.setdefault("version", STORE_VERSION)
+    # Do not silently upgrade a legacy store merely by reading it. The v2
+    # migration needs the current provider releases and is performed by
+    # observe_publications().
+    value.setdefault("version", LEGACY_STORE_VERSION)
     value.setdefault("initialized", False)
     value.setdefault("publications", {})
     value.setdefault("updated_at", 0)
@@ -100,6 +103,10 @@ def load_store() -> dict[str, Any]:
         return _empty_store()
 
 
+def readiness_store_version() -> int:
+    return int(load_store().get("version") or LEGACY_STORE_VERSION)
+
+
 def readiness_revision() -> int:
     return int(load_store().get("updated_at") or 0)
 
@@ -112,39 +119,14 @@ def _stable_url(value: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
 
-def _offer_signature(offer: Any) -> dict[str, Any]:
-    payload = {
-        "id": getattr(offer, "id", None),
-        "page": getattr(offer, "page_number", None),
-        "name": getattr(offer, "product_name", None),
-        "price": getattr(offer, "price", None),
-        "normal_price": getattr(offer, "normal_price", None),
-        "raw_text": getattr(offer, "raw_text", None),
-        "box": [
-            getattr(offer, "hotspot_x", None),
-            getattr(offer, "hotspot_y", None),
-            getattr(offer, "hotspot_width", None),
-            getattr(offer, "hotspot_height", None),
-        ],
-        "variants": [getattr(value, "name", None) for value in getattr(offer, "variants", [])],
-    }
-    coverage_signals = sorted({
-        str(value)
-        for value in (getattr(offer, "quality_signals", None) or [])
-        if str(value) == _MEMBER_COVERAGE_SIGNAL
-    })
-    if coverage_signals:
-        payload["coverage_signals"] = coverage_signals
-    return payload
-
-
 def page_fingerprints(publication: Publication) -> dict[str, str]:
-    by_page: dict[int, list[Any]] = {}
-    for offer in publication.structured_offers:
-        page = offer.page_number
-        if isinstance(page, int) and page > 0:
-            by_page.setdefault(page, []).append(offer)
+    """Fingerprint only source-page identity, never Kurv's parsed interpretation.
 
+    Parser changes (offer text, pricing roles, variant extraction, quality signals,
+    Luna policy) must not turn an already-known flyer into a new paid Luna event.
+    Provider release IDs/dates and stable page image paths are the durable source
+    facts used for readiness change detection.
+    """
     result: dict[str, str] = {}
     for page_number in range(1, publication.page_count + 1):
         image = (
@@ -152,16 +134,9 @@ def page_fingerprints(publication: Publication) -> dict[str, str]:
             if page_number <= len(publication.page_image_urls)
             else ""
         )
-        page_text = (
-            publication.page_texts[page_number - 1]
-            if page_number <= len(publication.page_texts)
-            else ""
-        )
         payload = {
             "page": page_number,
             "image": _stable_url(image),
-            "text": page_text[:1600],
-            "offers": [_offer_signature(value) for value in by_page.get(page_number, [])],
         }
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         result[str(page_number)] = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
@@ -172,7 +147,6 @@ def publication_fingerprint(publication: Publication) -> str:
     payload = {
         "id": publication.id,
         "retailer": publication.retailer,
-        "title": publication.title,
         "valid_from": publication.valid_from,
         "valid_until": publication.valid_until,
         "page_count": publication.page_count,
@@ -184,7 +158,7 @@ def publication_fingerprint(publication: Publication) -> str:
 
 def _snapshot(publication: Publication) -> dict[str, Any]:
     pages = page_fingerprints(publication)
-    payload = {
+    return {
         "publication_id": publication.id,
         "retailer": publication.retailer,
         "title": publication.title,
@@ -193,7 +167,6 @@ def _snapshot(publication: Publication) -> dict[str, Any]:
         "fingerprint": publication_fingerprint(publication),
         "page_fingerprints": pages,
     }
-    return payload
 
 
 def _changed_pages(previous: dict[str, Any] | None, current: dict[str, str]) -> list[int]:
@@ -206,6 +179,14 @@ def _changed_pages(previous: dict[str, Any] | None, current: dict[str, str]) -> 
     )
 
 
+def _same_release(existing: dict[str, Any], snapshot: dict[str, Any]) -> bool:
+    return bool(
+        str(existing.get("publication_id") or "") == str(snapshot.get("publication_id") or "")
+        and str(existing.get("valid_from") or "") == str(snapshot.get("valid_from") or "")
+        and str(existing.get("valid_until") or "") == str(snapshot.get("valid_until") or "")
+    )
+
+
 def observe_publications(
     publications: Iterable[Publication],
     *,
@@ -215,14 +196,39 @@ def observe_publications(
     now = int(time.time())
     queued: list[str] = []
     changed: list[str] = []
+    migrated: list[str] = []
 
     with _exclusive_store() as store:
         rows = store.setdefault("publications", {})
         first_observation = not bool(store.get("initialized"))
+        legacy_migration = int(store.get("version") or LEGACY_STORE_VERSION) < STORE_VERSION
 
         for publication in current:
             snap = _snapshot(publication)
             existing = rows.get(publication.id)
+
+            # v1 fingerprints included parsed offer fields. Code/parser changes
+            # could therefore make every existing flyer look new and trigger a
+            # paid Luna replay. During the one-time v2 migration, a release that
+            # flyer-push already knows is preserved as ready and receives the new
+            # source-only fingerprint. Truly new publication IDs still queue.
+            if legacy_migration and isinstance(existing, dict) and _same_release(existing, snap):
+                known_release = bootstrap_ready_ids is None or publication.id in bootstrap_ready_ids
+                rows[publication.id] = {
+                    **existing,
+                    **snap,
+                    "status": "ready" if known_release else "processing",
+                    "changed_pages": [] if known_release else sorted(int(key) for key in snap["page_fingerprints"]),
+                    "detected_at": int(existing.get("detected_at") or now),
+                    "ready_at": now if known_release else None,
+                    "processing_started_at": None if known_release else now,
+                    "attempts": 0,
+                    "last_error": None,
+                }
+                migrated.append(publication.id)
+                if not known_release:
+                    queued.append(publication.id)
+                continue
 
             if first_observation and not isinstance(existing, dict):
                 ready = bootstrap_ready_ids is None or publication.id in bootstrap_ready_ids
@@ -256,6 +262,12 @@ def observe_publications(
 
             if existing.get("fingerprint") != snap["fingerprint"]:
                 pages = _changed_pages(existing.get("page_fingerprints"), snap["page_fingerprints"])
+                release_changed = (
+                    str(existing.get("valid_from") or "") != str(snap.get("valid_from") or "")
+                    or str(existing.get("valid_until") or "") != str(snap.get("valid_until") or "")
+                )
+                if not pages and release_changed:
+                    pages = sorted(int(key) for key in snap["page_fingerprints"])
                 rows[publication.id] = {
                     **existing,
                     **snap,
@@ -271,11 +283,13 @@ def observe_publications(
                 changed.append(publication.id)
 
         store["initialized"] = True
+        store["version"] = STORE_VERSION
 
     return {
         "initialized": True,
         "queued": queued,
         "changed": changed,
+        "migrated": migrated,
         "current": len(current),
     }
 
@@ -375,6 +389,7 @@ def status_payload() -> dict[str, Any]:
         status = str(row.get("status") or "unknown")
         counts[status] = counts.get(status, 0) + 1
     return {
+        "version": int(store.get("version") or LEGACY_STORE_VERSION),
         "initialized": bool(store.get("initialized")),
         "counts": counts,
         "pending": [
