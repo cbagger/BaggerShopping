@@ -16,6 +16,7 @@ from .flyer_intelligence import (
     save_feedback_store,
     stable_report_id,
 )
+from .flyer_readiness import readiness_revision
 from .flyer_serving_reader import load_verified_publications
 from .meny_flyer import (
     Offer, Publication, _contains_query_term, _is_pet_offer, _product_domain,
@@ -33,6 +34,7 @@ _publication_cache_time = 0.0
 _publication_lock = asyncio.Lock()
 _publications_cache: list[Publication] = []
 _publication_refresh_task: asyncio.Task[None] | None = None
+_publication_readiness_revision: str | None = None
 _QUALITY_STORE_PATH = os.getenv("FLYER_QUALITY_STORE_PATH", "/data/flyer-quality-feedback.json")
 _quality_store_lock = asyncio.Lock()
 
@@ -126,6 +128,31 @@ def _replace_publication_cache(publications: list[Publication], *, now: float | 
     _publication_cache_time = time.monotonic() if now is None else now
 
 
+async def _sync_readiness_revision() -> None:
+    """Invalidate RAM cache when Luna publishes a new verified generation."""
+    global _publication_cache, _publication_cache_time, _publications_cache
+    global _publication_readiness_revision
+
+    revision = readiness_revision()
+    if _publication_readiness_revision is None:
+        _publication_readiness_revision = revision
+        return
+    if revision == _publication_readiness_revision:
+        return
+
+    async with _publication_lock:
+        revision = readiness_revision()
+        if _publication_readiness_revision is None:
+            _publication_readiness_revision = revision
+            return
+        if revision == _publication_readiness_revision:
+            return
+        _publications_cache = []
+        _publication_cache = None
+        _publication_cache_time = 0.0
+        _publication_readiness_revision = revision
+
+
 async def _refresh_publications_once() -> list[Publication] | None:
     """Refresh provider data without ever invalidating the last usable cache."""
     try:
@@ -158,6 +185,8 @@ def _schedule_publication_refresh() -> None:
 
 
 async def _publications() -> list[Publication]:
+    await _sync_readiness_revision()
+
     now = time.monotonic()
     if _publications_cache:
         if now - _publication_cache_time < _CACHE_TTL_SECONDS:
@@ -205,7 +234,6 @@ def _parse_validity(value: str | None) -> date | None:
 
 
 def _health_problems(publication: Publication, *, today: date | None = None) -> list[str]:
-    """Report only failures that make the customer-facing flyer unusable."""
     today = today or date.today()
     problems: list[str] = []
     valid_until = _parse_validity(publication.valid_until)
@@ -226,7 +254,6 @@ def _health_problems(publication: Publication, *, today: date | None = None) -> 
 
 
 def _reader_problems(publication: Publication, *, today: date | None = None) -> list[str]:
-    """Report failures that make the page-based reader unusable."""
     today = today or date.today()
     problems: list[str] = []
     valid_until = _parse_validity(publication.valid_until)
@@ -335,28 +362,20 @@ async def flyer_quality_feedback(request: FlyerQualityFeedbackRequest):
     if request.decision != "missing_offer" and authoritative_offer is None:
         raise HTTPException(status_code=404, detail="Tilbuddet findes ikke i den valgte avis")
     retailer = authoritative_offer.retailer if authoritative_offer else publication.retailer
-    quality_source = (
-        authoritative_offer.quality_source
-        if authoritative_offer else publication.content_source or "unknown"
-    )
+    quality_source = authoritative_offer.quality_source if authoritative_offer else publication.content_source or "unknown"
     page_number = authoritative_offer.page_number if authoritative_offer else request.page_number
     created_at = int(time.time())
     async with _quality_store_lock:
         store = load_feedback_store(_QUALITY_STORE_PATH)
         source_key = feedback_key(retailer, quality_source)
-        publication_key = feedback_key(
-            retailer, quality_source, request.publication_id,
-        )
+        publication_key = feedback_key(retailer, quality_source, request.publication_id)
         for bucket, key in (("sources", source_key), ("publications", publication_key)):
             row = store.setdefault(bucket, {}).setdefault(key, {})
             row[request.decision] = int(row.get(request.decision, 0)) + 1
             row["updated_at"] = created_at
         reports = store.setdefault("reports", [])
         reports.append({
-            "id": stable_report_id(
-                request.publication_id, request.offer_id or "missing",
-                request.decision, created_at,
-            ),
+            "id": stable_report_id(request.publication_id, request.offer_id or "missing", request.decision, created_at),
             "publication_id": request.publication_id,
             "offer_id": request.offer_id,
             "retailer": retailer,
@@ -368,12 +387,7 @@ async def flyer_quality_feedback(request: FlyerQualityFeedbackRequest):
         })
         store["reports"] = reports[-1000:]
         save_feedback_store(_QUALITY_STORE_PATH, store)
-    return {
-        "ok": True,
-        "decision": request.decision,
-        "source_key": source_key,
-        "publication_key": publication_key,
-    }
+    return {"ok": True, "decision": request.decision, "source_key": source_key, "publication_key": publication_key}
 
 
 @router.get("/quality/status")
@@ -401,10 +415,7 @@ def _search_match_result(item_name: str, offer: Offer) -> tuple[int, Offer, Matc
     matching_ids = {
         variant.id for variant in offer.variants
         if _contains_query_term(variant.name, terms)
-        and (
-            query_domain is None
-            or _product_domain(variant.name) in {None, query_domain}
-        )
+        and (query_domain is None or _product_domain(variant.name) in {None, query_domain})
     }
 
     raw_identity = compare(item_name, offer.raw_text) if raw_match else None
@@ -412,13 +423,7 @@ def _search_match_result(item_name: str, offer: Offer) -> tuple[int, Offer, Matc
         value for candidate in [offer.product_name, *(variant.name for variant in offer.variants)]
         if (value := _product_domain(candidate)) is not None
     }
-    trusted_product_match = bool(
-        product_match and (
-            query_domain is None
-            or not offer_domains
-            or query_domain in offer_domains
-        )
-    )
+    trusted_product_match = bool(product_match and (query_domain is None or not offer_domains or query_domain in offer_domains))
     trusted_raw_match = bool(
         raw_match and (
             (raw_identity is not None and raw_identity.level != "not_same")
@@ -433,10 +438,7 @@ def _search_match_result(item_name: str, offer: Offer) -> tuple[int, Offer, Matc
             for variant in matched.variants
         ]
         candidates = [offer.product_name, *(variant.name for variant in offer.variants)]
-        identity = max(
-            (compare(item_name, candidate) for candidate in candidates),
-            key=_identity_score,
-        )
+        identity = max((compare(item_name, candidate) for candidate in candidates), key=_identity_score)
         if identity.level == "not_same":
             identity = identity.model_copy(update={
                 "level": "probably_same",
@@ -460,12 +462,7 @@ def _search_deduplication_key(offer: Offer) -> tuple:
     )
 
 
-def _matched_offer(
-    item_name: str,
-    offer: Offer,
-    *,
-    preserve_variants: bool = False,
-) -> tuple[int, Offer, MatchResult] | None:
+def _matched_offer(item_name: str, offer: Offer, *, preserve_variants: bool = False) -> tuple[int, Offer, MatchResult] | None:
     score, identity = _offer_match_result(item_name, offer)
     if score < _MATCH_THRESHOLD or offer.price is None:
         return None
@@ -594,10 +591,7 @@ async def search_offers(
             value[1].retailer.casefold(),
         ),
     )
-    offers = [
-        _offer_payload(offer, identity, publication_status)
-        for _, offer, identity, publication_status in ordered
-    ]
+    offers = [_offer_payload(offer, identity, publication_status) for _, offer, identity, publication_status in ordered]
     return {
         "ok": True,
         "query": term,
@@ -627,10 +621,7 @@ async def publication_offers(publication_id: str):
     return {
         "ok": True,
         "publication": _publication_payload(publication),
-        "offers": [
-            _offer_payload(offer, include_identity=False)
-            for offer in publication.structured_offers
-        ],
+        "offers": [_offer_payload(offer, include_identity=False) for offer in publication.structured_offers],
     }
 
 
@@ -642,10 +633,7 @@ async def current_publication_offers():
         "publication": _publication_payload(publication),
         "offer_count": len(publication.structured_offers),
         "coverage": _coverage_payload(publication),
-        "offers": [
-            _offer_payload(offer, include_identity=False)
-            for offer in publication.structured_offers
-        ],
+        "offers": [_offer_payload(offer, include_identity=False) for offer in publication.structured_offers],
     }
 
 

@@ -4,7 +4,6 @@ import asyncio
 import base64
 import json
 import os
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -19,13 +18,12 @@ from pydantic import BaseModel, Field
 # Discovery must use the raw deterministic provider objects. Otherwise Luna's
 # own cached overlay could change variants/prices and accidentally look like a
 # new flyer version, creating a self-triggering enrichment loop.
-from . import _original_fetch_all_publications as fetch_all_publications
+from .flyer_publications import fetch_raw_publications as fetch_all_publications
 from .flyer_adapters import RETAILER_ORDER
 from .flyer_readiness import (
     observe_publications,
     publication_fingerprint,
     publication_is_ready,
-    readiness_revision,
     ready_publication_records,
 )
 from .households import current_household
@@ -180,42 +178,6 @@ def _record_release_key(record: dict[str, Any]) -> str:
     )
 
 
-def _install_mobile_cache_readiness_guard() -> None:
-    """Invalidate the Mobile API flyer cache whenever readiness changes.
-
-    `mobile_main` imports `mobile_offers` before this module, so in that process
-    the module is already available and can be wrapped without a circular
-    import. The standalone flyer-push worker never imports mobile_offers, so the
-    hook is a no-op there. Endpoint functions resolve `_publications` from their
-    module globals at call time, making this safe for the existing router.
-    """
-    mobile = sys.modules.get(f"{__package__}.mobile_offers")
-    if mobile is None:
-        return
-    original = getattr(mobile, "_publications", None)
-    if original is None or getattr(original, "_readiness_guard_installed", False):
-        return
-
-    state = {"revision": readiness_revision()}
-
-    async def guarded_publications():
-        revision = readiness_revision()
-        if revision != state["revision"]:
-            lock = getattr(mobile, "_publication_lock")
-            async with lock:
-                mobile._publications_cache = []
-                mobile._publication_cache = None
-                mobile._publication_cache_time = 0.0
-            state["revision"] = revision
-        return await original()
-
-    guarded_publications._readiness_guard_installed = True
-    mobile._publications = guarded_publications
-
-
-_install_mobile_cache_readiness_guard()
-
-
 async def _deliver_ready_records(records: list[dict[str, Any]]) -> dict[str, int]:
     """Acknowledge ready content revisions and notify only new flyer releases.
 
@@ -287,9 +249,6 @@ async def _deliver_ready_records(records: list[dict[str, Any]]) -> dict[str, int
                             record["delivered_publication_releases"] = history
                             _save(latest)
 
-        # Same-release fingerprint changes are silently acknowledged after
-        # readiness completes. New releases are acknowledged only when all
-        # configured APNs deliveries succeeded (or there were no targets).
         if not should_notify or targets == 0 or not publication_failed:
             completed_versions[publication_id] = fingerprint
             if should_notify:
@@ -322,9 +281,6 @@ async def check_and_send() -> dict[str, int]:
     publications = [item for item in await fetch_all_publications() if item.status != "expired"]
     current = {item.id: item for item in publications}
 
-    # Migrate the existing push history into version-aware tracking. Content
-    # fingerprints remain the readiness acknowledgement, while customer-visible
-    # notification history is keyed separately by publication + validity range.
     async with STORE_LOCK:
         store = _load()
         initialized = bool(store.get("initialized"))
@@ -348,11 +304,6 @@ async def check_and_send() -> dict[str, int]:
             observe_publications(publications, bootstrap_ready_ids=None)
             return {"new": 0, "sent": 0, "failed": 0}
 
-        # Existing installations predate one or both tracking layers. Seed only
-        # publication IDs already known by the previous worker. An actually new
-        # flyer present during deployment therefore remains pending and can push
-        # after readiness, while a known 365discount flyer cannot be re-pushed
-        # just because its content fingerprint changed during a restart.
         changed_store = False
         if not seen_versions and previous_ids:
             seen_versions = {
@@ -383,9 +334,6 @@ async def check_and_send() -> dict[str, int]:
         if seen_versions.get(publication.id) != publication_fingerprint(publication)
     ]
 
-    # Detection only queues processing versions. Delivery is driven by the
-    # shared local readiness store, so no second provider fetch is needed when
-    # Luna later flips the version to ready.
     delivery = await deliver_ready_notifications()
 
     async with STORE_LOCK:

@@ -97,16 +97,12 @@ def test_new_publication_is_not_pushed_until_luna_marks_ready(tmp_path, monkeypa
     monkeypatch.setattr(flyer_push, "fetch_all_publications", publications)
     monkeypatch.setattr(flyer_push, "_send", send)
 
-    # Provider detection creates a processing event, but push remains blocked.
     result = asyncio.run(flyer_push.check_and_send())
     assert result == {"new": 1, "sent": 0, "failed": 0}
     assert sent == []
     assert publication_is_ready(new) is False
     assert "new" not in flyer_push._load()["seen_publications"]
 
-    # Luna's publication-complete marker opens the API gate. Notification can
-    # then be delivered from local readiness metadata without another provider
-    # fetch, which is the production fast path.
     assert mark_ready(new) is True
 
     async def must_not_fetch():
@@ -143,9 +139,7 @@ def test_same_publication_content_revision_is_gated_without_duplicate_push(tmp_p
     }
     flyer_push._save(store)
 
-    changed = original.model_copy(update={
-        "page_image_urls": ["https://example.test/changed.jpg"],
-    })
+    changed = original.model_copy(update={"page_image_urls": ["https://example.test/changed.jpg"]})
     sent = []
 
     async def changed_publications(): return [changed]
@@ -212,8 +206,6 @@ def test_same_publication_id_new_validity_window_notifies_once(tmp_path, monkeyp
     assert delivery == {"ready": 1, "sent": 1, "failed": 0}
     assert len(sent) == 1
     assert "MENY Uge 35 er nu tilgængelig" in sent[0][3]
-
-    # Polling or restarting again cannot duplicate the already delivered release.
     assert asyncio.run(flyer_push.deliver_ready_notifications()) == {"ready": 0, "sent": 0, "failed": 0}
 
 
@@ -236,11 +228,7 @@ def test_legacy_push_store_migrates_known_release_without_restart_push(tmp_path,
         },
     })
 
-    # Simulate the real production symptom: a container restart sees the same
-    # 365discount release with a changed provider/content fingerprint.
-    changed = original.model_copy(update={
-        "page_image_urls": ["https://example.test/restart-mutated.jpg"],
-    })
+    changed = original.model_copy(update={"page_image_urls": ["https://example.test/restart-mutated.jpg"]})
     sent = []
 
     async def publications(): return [changed]
@@ -265,30 +253,29 @@ def test_readiness_revision_invalidates_mobile_publication_cache(tmp_path, monke
     stale = usable_publication("stale")
     fresh = usable_publication("fresh")
 
-    original_publications = mobile_offers._publications
     original_cache = list(mobile_offers._publications_cache)
     original_single = mobile_offers._publication_cache
     original_time = mobile_offers._publication_cache_time
+    original_revision = mobile_offers._publication_readiness_revision
 
     mobile_offers._publications_cache = [stale]
     mobile_offers._publication_cache = stale
     mobile_offers._publication_cache_time = time.monotonic()
+    mobile_offers._publication_readiness_revision = readiness.readiness_revision()
 
     async def fetch_fresh():
         return [fresh]
 
     monkeypatch.setattr(mobile_offers, "fetch_all_publications", fetch_fresh)
+    monkeypatch.setattr(mobile_offers, "load_verified_publications", lambda: [fresh])
+    monkeypatch.setattr(mobile_offers, "_schedule_publication_refresh", lambda: None)
 
     try:
-        # This test process imports flyer_push before mobile_main, unlike the
-        # production mobile process. Install the hook explicitly to test the
-        # same runtime behaviour.
-        flyer_push._install_mobile_cache_readiness_guard()
         readiness.observe_publications([fresh], bootstrap_ready_ids=None)
         result = asyncio.run(mobile_offers._publications())
         assert [value.id for value in result] == ["fresh"]
     finally:
-        mobile_offers._publications = original_publications
         mobile_offers._publications_cache = original_cache
         mobile_offers._publication_cache = original_single
         mobile_offers._publication_cache_time = original_time
+        mobile_offers._publication_readiness_revision = original_revision
