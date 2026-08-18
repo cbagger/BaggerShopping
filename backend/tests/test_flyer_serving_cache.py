@@ -90,9 +90,10 @@ def _seafood_publication():
     return publication
 
 
-def test_processing_replacement_keeps_last_served_hotspots(monkeypatch, tmp_path):
+def test_processing_replacement_keeps_last_verified_hotspots(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
-    monkeypatch.setattr(luna_overlay, "publication_is_ready", lambda publication: False)
+    state = {"ready": True}
+    monkeypatch.setattr(luna_overlay, "publication_is_ready", lambda publication: state["ready"])
 
     first = _publication(title="Uge 34", price=15.0, with_offer=True)
     served = luna_overlay.apply_cached_enrichment([first])
@@ -100,12 +101,30 @@ def test_processing_replacement_keeps_last_served_hotspots(monkeypatch, tmp_path
     assert len(served[0].structured_offers) == 1
     assert served[0].structured_offers[0].hotspot_x == 0.1
 
+    state["ready"] = False
     replacement = _publication(title="Uge 35", price=12.0, with_offer=False)
     served_while_processing = luna_overlay.apply_cached_enrichment([replacement])
 
     assert served_while_processing[0].title == "Uge 34"
     assert len(served_while_processing[0].structured_offers) == 1
     assert served_while_processing[0].structured_offers[0].hotspot_width == 0.3
+
+
+def test_brand_new_unverified_publication_is_not_customer_visible(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(luna_overlay, "publication_is_ready", lambda publication: False)
+
+    upcoming = _publication(title="Ny weekendavis", price=10.0, with_offer=True)
+    served = luna_overlay.apply_cached_enrichment([upcoming])
+
+    assert served == []
+    cache = json.loads((tmp_path / "flyer-serving-cache.json").read_text("utf-8"))
+    row = cache["publications"][upcoming.id]
+    assert row["verified"] is False
+    assert row["publication"]["structured_offers"][0]["price"] == 10.0
+
+    served_again = luna_overlay.apply_cached_enrichment([upcoming])
+    assert served_again == []
 
 
 def test_ready_replacement_atomically_replaces_cached_generation(monkeypatch, tmp_path):
@@ -118,14 +137,14 @@ def test_ready_replacement_atomically_replaces_cached_generation(monkeypatch, tm
     )
 
     original = _publication(title="Uge 34", price=15.0, with_offer=True)
-    luna_overlay.apply_cached_enrichment([original])
+    assert luna_overlay.apply_cached_enrichment([original]) == []
 
+    state["ready"] = True
     replacement = _publication(title="Uge 35", price=12.0, with_offer=True)
     replacement.structured_offers[0] = replacement.structured_offers[0].model_copy(
         update={"product_name": "Ny vare", "hotspot_x": 0.7}
     )
 
-    state["ready"] = True
     served = luna_overlay.apply_cached_enrichment([replacement])
 
     assert served[0].title == "Uge 35"
