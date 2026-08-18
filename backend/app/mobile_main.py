@@ -20,6 +20,7 @@ from .product_identity import router as product_identity_router
 from .samsung_login import router as samsung_login_router
 from .households import HouseholdContext, read_household, require_household, require_owner, router as households_router, update_household
 from .flyer_push import router as flyer_push_router
+from .samsung_request_policy import family_samsung_client
 
 
 class MobileSettings(BaseSettings):
@@ -213,26 +214,6 @@ async def core_patch(path: str, json: dict[str, Any]) -> httpx.Response:
 async def core_delete(path: str) -> httpx.Response:
     async with httpx.AsyncClient(timeout=settings.request_timeout_seconds, follow_redirects=False) as client:
         return await client.delete(f"{settings.core_api_base}{path}")
-
-
-async def family_samsung_client(context: HouseholdContext) -> Any | None:
-    household = await read_household(context)
-    integration = household.get("integrations", {}).get("samsung_food", {})
-    list_id = integration.get("list_id")
-    auth_state = integration.get("auth_state_path")
-    browser_profile = integration.get("browser_profile_path")
-    if not all(isinstance(value, str) and value for value in (list_id, auth_state, browser_profile)):
-        return None
-    # Keep the public/local-family mobile API importable without requiring the
-    # legacy SAMSUNG_LIST_ID environment variable.
-    from .auth import SamsungAuthManager
-    from .samsung import SamsungFoodClient
-    auth = SamsungAuthManager(
-        state_file=Path(auth_state),
-        browser_user_data_dir=Path(browser_profile),
-        allow_credential_fallback=False,
-    )
-    return SamsungFoodClient(list_id=list_id, auth=auth)
 
 
 @app.get("/api/mobile/v1/health")
