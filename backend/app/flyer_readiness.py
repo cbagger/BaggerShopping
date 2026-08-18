@@ -49,9 +49,9 @@ def _read_unlocked() -> dict[str, Any]:
         return _empty_store()
     if not isinstance(value, dict):
         return _empty_store()
-    # Do not silently upgrade an older store merely by reading it. The source-
-    # stable v3 migration needs current provider releases and is performed by
-    # observe_publications().
+    # Do not silently upgrade an older store merely by reading it. A migration
+    # needs the current provider release so processing/ready provenance can be
+    # preserved rather than inferred from parser output.
     value.setdefault("version", LEGACY_STORE_VERSION)
     value.setdefault("initialized", False)
     value.setdefault("publications", {})
@@ -187,6 +187,19 @@ def _same_release(existing: dict[str, Any], snapshot: dict[str, Any]) -> bool:
     )
 
 
+def _valid_processing_pages(existing: dict[str, Any], snapshot: dict[str, Any]) -> list[int]:
+    available = {int(key) for key in snapshot.get("page_fingerprints", {}) if str(key).isdigit()}
+    pages: set[int] = set()
+    for value in existing.get("changed_pages", []):
+        try:
+            page = int(value)
+        except (TypeError, ValueError):
+            continue
+        if page in available:
+            pages.add(page)
+    return sorted(pages or available)
+
+
 def observe_publications(
     publications: Iterable[Publication],
     *,
@@ -207,26 +220,35 @@ def observe_publications(
             snap = _snapshot(publication)
             existing = rows.get(publication.id)
 
-            # Older readiness versions included parsed offer fields or were
-            # written during the v2 transition. A parser/code change could leave
-            # an already-observed same release in `processing`. The one-time v3
-            # cutover deliberately trusts every existing same-release readiness
-            # row as already known and discards that ambiguous pre-v3 backlog.
-            # Publication IDs absent from the existing store still queue normally
-            # below, so genuinely new releases after cutover remain fail-shut and
-            # receive Luna review.
+            # A migration may change how source identity is fingerprinted, but
+            # it must never turn unfinished paid work into a verified flyer.
+            # Preserve `processing` and its changed-page scope for the same
+            # release. Only a row that was already ready may migrate as ready.
             if cutover_migration and isinstance(existing, dict) and _same_release(existing, snap):
-                rows[publication.id] = {
-                    **existing,
-                    **snap,
-                    "status": "ready",
-                    "changed_pages": [],
-                    "detected_at": int(existing.get("detected_at") or now),
-                    "ready_at": now,
-                    "processing_started_at": None,
-                    "attempts": 0,
-                    "last_error": None,
-                }
+                if existing.get("status") == "processing":
+                    rows[publication.id] = {
+                        **existing,
+                        **snap,
+                        "status": "processing",
+                        "changed_pages": _valid_processing_pages(existing, snap),
+                        "ready_at": None,
+                        "processing_started_at": int(existing.get("processing_started_at") or now),
+                        "last_error": existing.get("last_error"),
+                        "verification_source": None,
+                    }
+                    queued.append(publication.id)
+                else:
+                    rows[publication.id] = {
+                        **existing,
+                        **snap,
+                        "status": "ready",
+                        "changed_pages": [],
+                        "detected_at": int(existing.get("detected_at") or now),
+                        "ready_at": int(existing.get("ready_at") or now),
+                        "processing_started_at": None,
+                        "last_error": None,
+                        "verification_source": existing.get("verification_source") or "legacy-ready",
+                    }
                 migrated.append(publication.id)
                 continue
 
@@ -241,6 +263,7 @@ def observe_publications(
                     "processing_started_at": None if ready else now,
                     "attempts": 0,
                     "last_error": None,
+                    "verification_source": "bootstrap" if ready else None,
                 }
                 if not ready:
                     queued.append(publication.id)
@@ -256,6 +279,7 @@ def observe_publications(
                     "processing_started_at": now,
                     "attempts": 0,
                     "last_error": None,
+                    "verification_source": None,
                 }
                 queued.append(publication.id)
                 continue
@@ -278,6 +302,7 @@ def observe_publications(
                     "processing_started_at": now,
                     "attempts": 0,
                     "last_error": None,
+                    "verification_source": None,
                 }
                 queued.append(publication.id)
                 changed.append(publication.id)
@@ -292,6 +317,52 @@ def observe_publications(
         "migrated": migrated,
         "current": len(current),
     }
+
+
+def queue_publication_verification(
+    publication: Publication,
+    *,
+    pages: Iterable[int] | None = None,
+    reason: str = "targeted-reverification",
+) -> bool:
+    """Queue exactly one current publication for a controlled Luna review.
+
+    This is intentionally publication-scoped. It is used to repair a release
+    whose readiness provenance is known to be wrong without broad maintenance
+    scans or touching unrelated verified flyers.
+    """
+    snap = _snapshot(publication)
+    available = {int(key) for key in snap["page_fingerprints"] if str(key).isdigit()}
+    requested: set[int] = set()
+    for value in pages or available:
+        try:
+            page = int(value)
+        except (TypeError, ValueError):
+            continue
+        if page in available:
+            requested.add(page)
+    if not requested:
+        return False
+
+    now = int(time.time())
+    with _exclusive_store() as store:
+        rows = store.setdefault("publications", {})
+        existing = rows.get(publication.id)
+        rows[publication.id] = {
+            **(existing if isinstance(existing, dict) else {}),
+            **snap,
+            "status": "processing",
+            "changed_pages": sorted(requested),
+            "detected_at": int(existing.get("detected_at") or now) if isinstance(existing, dict) else now,
+            "ready_at": None,
+            "processing_started_at": now,
+            "attempts": 0,
+            "last_error": None,
+            "verification_source": None,
+            "reverify_reason": str(reason)[:120],
+        }
+        store["initialized"] = True
+    return True
 
 
 def publication_is_ready(publication: Publication) -> bool:
@@ -366,6 +437,7 @@ def mark_ready(publication: Publication) -> bool:
             "changed_pages": [],
             "ready_at": now,
             "last_error": None,
+            "verification_source": "luna",
         })
         return True
 
@@ -400,6 +472,7 @@ def status_payload() -> dict[str, Any]:
                 "changed_pages": row.get("changed_pages", []),
                 "attempts": row.get("attempts", 0),
                 "last_error": row.get("last_error"),
+                "reverify_reason": row.get("reverify_reason"),
             }
             for row in pending_publication_records()
         ],
