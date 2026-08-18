@@ -7,6 +7,9 @@ from .meny_flyer import Offer, Publication, _normalize_space
 
 
 COVERAGE_SIGNAL = "member-price-context-nearby-v3"
+# Kept as a compatibility alias for older diagnostics/tests. The signal is no
+# longer propagated to every hotspot on a page; it now always means that this
+# exact offer has provider/localized membership evidence.
 PAGE_COHORT_SIGNAL = COVERAGE_SIGNAL
 
 
@@ -18,31 +21,20 @@ def _add_signal(offer: Offer, signal: str = COVERAGE_SIGNAL) -> Offer:
     )
 
 
-def _page_key(offer: Offer) -> tuple[str, int] | None:
-    if offer.page_number is None:
-        return None
-    return offer.publication_id, offer.page_number
-
-
 def _mark_member_signal_pages(offers: list[Offer]) -> list[Offer]:
-    """Escalate every hotspot on a page that contains a member-price signal.
+    """Mark only offers whose own enriched context contains membership evidence.
 
-    This is recall evidence only. It never copies a price or membership label
-    between offers. The semantic guard uses the signal solely to require an
-    exact target crop when the page audit did not confirm a member-price badge
-    for that hotspot.
+    The previous v3 implementation escalated every hotspot on a page whenever
+    any one offer mentioned a member programme. That gave excellent recall but
+    turned pages with Lidl Plus / Netto+ into dozens of mandatory paid crops.
+
+    v2 enrichment already binds structured provider data and localized page
+    context to an individual offer. At this layer we therefore mark only the
+    exact enriched offer and never copy the signal to siblings on the page.
+    The old function name remains for compatibility with callers.
     """
-    pages = {
-        key
-        for offer in offers
-        if (key := _page_key(offer)) is not None
-        and has_membership_signal(offer.raw_text)
-    }
-    if not pages:
-        return offers
     return [
-        _add_signal(offer, PAGE_COHORT_SIGNAL)
-        if _page_key(offer) in pages else offer
+        _add_signal(offer) if has_membership_signal(offer.raw_text) else offer
         for offer in offers
     ]
 
@@ -180,11 +172,6 @@ def _exact_meny_member_context(page_text: str, offer: Offer) -> str:
 
 def enrich_ipaper_offers(publication: Publication, offers: list[Offer]) -> list[Offer]:
     result: list[Offer] = []
-    member_pages = {
-        index
-        for index, text in enumerate(publication.page_texts, start=1)
-        if has_membership_signal(text)
-    }
     for offer in offers:
         context = ""
         exact_context = ""
@@ -200,14 +187,13 @@ def enrich_ipaper_offers(publication: Publication, offers: list[Offer]) -> list[
             exact_context = _exact_meny_member_context(page_text, offer)
 
         # Exact MENY price-role context is customer-safe and may be interpreted
-        # deterministically. Broader page context remains tagged review evidence
-        # only, preserving the neighbour-contamination guard for every retailer.
+        # deterministically. Broader localized context remains review evidence
+        # only. Crucially, membership evidence is never propagated to unrelated
+        # hotspots elsewhere on the same page.
         updated = v2._append_context(offer, [exact_context])
         updated = v2._append_context(updated, [context], page_context=True)
         if context or exact_context:
             updated = _add_signal(updated)
-        if offer.page_number in member_pages:
-            updated = _add_signal(updated, PAGE_COHORT_SIGNAL)
         result.append(updated)
     return result
 
@@ -218,20 +204,12 @@ def enrich_tjek_offers(
     detailed_rows: object = None,
 ) -> list[Offer]:
     enriched = v2.enrich_tjek_offers(offers, hotspot_rows, detailed_rows)
-    individually_marked = [
-        _add_signal(offer) if has_membership_signal(offer.raw_text) else offer
-        for offer in enriched
-    ]
-    return _mark_member_signal_pages(individually_marked)
+    return _mark_member_signal_pages(enriched)
 
 
 def enrich_schwarz_publication(publication: Publication, payload: object) -> Publication:
     enriched = v2.enrich_schwarz_publication(publication, payload)
-    individually_marked = [
-        _add_signal(offer) if has_membership_signal(offer.raw_text) else offer
-        for offer in enriched.structured_offers
-    ]
-    enriched.structured_offers = _mark_member_signal_pages(individually_marked)
+    enriched.structured_offers = _mark_member_signal_pages(enriched.structured_offers)
     return enriched
 
 
