@@ -21,7 +21,7 @@ from app import member_pricing_v4 as v4
     ],
 )
 def test_unit_price_can_never_win_structured_member_precedence(monkeypatch, retailer, text):
-    """A nearby member marker must not promote a per-item comparison price.
+    """A nearby member marker must not promote a comparison price.
 
     This is the live Neophos failure shape, expressed without product-specific
     logic. When the structured interpretation is unsafe, v4 must fall through
@@ -58,7 +58,7 @@ def test_unit_price_can_never_win_structured_member_precedence(monkeypatch, reta
 
 
 def test_real_member_price_still_wins_when_separate_unit_price_is_present(monkeypatch):
-    """The guard must reject only the unit value, not valid explicit Plus prices."""
+    """The guard must reject only the comparison value, not valid Plus prices."""
 
     def unexpected_luna(**_):
         raise AssertionError("safe explicit structured price should not need Luna fallback")
@@ -82,9 +82,13 @@ def test_real_member_price_still_wins_when_separate_unit_price_is_present(monkey
     assert result.source == "structured-explicit-member-price-v4"
 
 
-def test_unit_price_value_parser_covers_stk_forms():
+def test_unit_price_parser_distinguishes_max_per_piece_from_sale_price_per_piece():
     assert v4._unit_price_values(
         "Pr. stk. max. 1,98",
-        "1,98 kr/stk",
-        "pr. stykker 2,13",
-    ) == {1.98, 2.13}
+        "pr. stykker maks. 2,13",
+        "193,33 kr/kg",
+    ) == {1.98, 2.13, 193.33}
+
+    # In flyers, "PR. STK. 29,-" is commonly the actual selling price, not a
+    # per-tab/per-piece comparison price. It must stay eligible as ordinary.
+    assert v4._unit_price_values("PR. STK. 29,-") == set()
