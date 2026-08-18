@@ -328,9 +328,11 @@ def _crop_candidates_allowing_build58_reverification(publications):
                 isinstance(existing, dict)
                 and existing.get("analysis_level") == "crop"
                 and existing.get("status") == "completed"
-                and mandatory_pricing_crop_resolved(offer, existing_facts)
             ):
-                continue
+                if not isinstance(existing_facts, dict) and not sanity_reasons:
+                    continue
+                if mandatory_pricing_crop_resolved(offer, existing_facts):
+                    continue
 
             existing_anomalous = bool(_pricing_sanity_reasons(offer, existing_facts))
             if (
