@@ -154,9 +154,6 @@ def test_snapshot_stores_raw_offer_fields_not_member_price_presentation(monkeypa
     publication = _seafood_publication()
     offer = publication.structured_offers[0]
 
-    # Raw model serialization is raw provider state again. Customer/member
-    # presentation is explicit at the API boundary and must never leak into the
-    # persistent serving cache.
     raw = offer.model_dump()
     assert raw["price"] == 29.0
     assert "member_price" not in raw
@@ -168,6 +165,7 @@ def test_snapshot_stores_raw_offer_fields_not_member_price_presentation(monkeypa
     snapshot = luna_overlay._publication_snapshot(publication, verified=True)
     cached_offer = snapshot["publication"]["structured_offers"][0]
 
+    assert snapshot["content_revision"] == luna_overlay._SERVING_CACHE_CONTENT_REVISION
     assert cached_offer["price"] == 29.0
     assert cached_offer["normal_price"] == 166.67
     assert "member_price" not in cached_offer
@@ -209,3 +207,26 @@ def test_v1_cache_is_rebuilt_from_current_raw_provider_generation(monkeypatch, t
     cached_offer = rewritten["publications"][current.id]["publication"]["structured_offers"][0]
     assert cached_offer["price"] == 29.0
     assert "member_price" not in cached_offer
+
+
+def test_verified_same_source_is_rewritten_when_content_revision_changes(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    cache_path = tmp_path / "flyer-serving-cache.json"
+    monkeypatch.setattr(luna_overlay, "publication_is_ready", lambda publication: True)
+
+    current = _publication()
+    old_snapshot = luna_overlay._publication_snapshot(current, verified=True)
+    old_snapshot.pop("content_revision", None)
+    old_snapshot["publication"]["structured_offers"][0]["raw_text"] = "stale deterministic parser text"
+    cache_path.write_text(json.dumps({
+        "version": 2,
+        "publications": {current.id: old_snapshot},
+    }), encoding="utf-8")
+
+    served = luna_overlay.apply_cached_enrichment([current])
+
+    assert served[0].structured_offers[0].raw_text == "Kohberg brød 15 kr"
+    rewritten = json.loads(cache_path.read_text("utf-8"))
+    row = rewritten["publications"][current.id]
+    assert row["content_revision"] == luna_overlay._SERVING_CACHE_CONTENT_REVISION
+    assert row["publication"]["structured_offers"][0]["raw_text"] == "Kohberg brød 15 kr"
