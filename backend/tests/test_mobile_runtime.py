@@ -8,7 +8,7 @@ import pytest
 
 from app.auth import AuthInteractionRequired
 from app.households import HouseholdContext
-from app import mobile_runtime
+from app import mobile_main, samsung_request_policy
 
 
 def legacy_context() -> HouseholdContext:
@@ -31,13 +31,17 @@ def nonlegacy_context() -> HouseholdContext:
     )
 
 
+def test_mobile_main_uses_first_class_samsung_request_policy():
+    assert mobile_main.family_samsung_client is samsung_request_policy.family_samsung_client
+
+
 def test_legacy_family_never_uses_isolated_samsung_client(monkeypatch):
     async def should_not_read_household(_):
         raise AssertionError("legacy family must fall back to core Samsung connector")
 
-    monkeypatch.setattr(mobile_runtime, "read_household", should_not_read_household)
+    monkeypatch.setattr(samsung_request_policy, "read_household", should_not_read_household)
 
-    assert asyncio.run(mobile_runtime.safe_family_samsung_client(legacy_context())) is None
+    assert asyncio.run(samsung_request_policy.family_samsung_client(legacy_context())) is None
 
 
 def test_nonlegacy_family_uses_request_only_auth(monkeypatch, tmp_path):
@@ -55,17 +59,17 @@ def test_nonlegacy_family_uses_request_only_auth(monkeypatch, tmp_path):
             }
         }
 
-    monkeypatch.setattr(mobile_runtime, "read_household", fake_read_household)
+    monkeypatch.setattr(samsung_request_policy, "read_household", fake_read_household)
 
-    client = asyncio.run(mobile_runtime.safe_family_samsung_client(nonlegacy_context()))
+    client = asyncio.run(samsung_request_policy.family_samsung_client(nonlegacy_context()))
 
     assert client is not None
     assert client.list_id == "list-123"
-    assert isinstance(client.auth, mobile_runtime.RequestOnlySamsungAuthManager)
+    assert isinstance(client.auth, samsung_request_policy.RequestOnlySamsungAuthManager)
 
 
 def test_request_only_auth_never_launches_browser(monkeypatch, tmp_path):
-    auth = mobile_runtime.RequestOnlySamsungAuthManager(
+    auth = samsung_request_policy.RequestOnlySamsungAuthManager(
         state_file=tmp_path / "auth-state.json",
         browser_user_data_dir=tmp_path / "profile",
         allow_credential_fallback=False,
