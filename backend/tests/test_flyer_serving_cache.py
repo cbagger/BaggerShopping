@@ -2,6 +2,7 @@ import json
 
 from app import luna_overlay
 from app.meny_flyer import Offer, Publication
+from app.offer_serialization import customer_offer_payload
 
 
 def _configure(monkeypatch, tmp_path):
@@ -153,9 +154,14 @@ def test_snapshot_stores_raw_offer_fields_not_member_price_presentation(monkeypa
     publication = _seafood_publication()
     offer = publication.structured_offers[0]
 
-    # The ordinary API payload is presentation-aware and therefore contains the
-    # derived member-price fields. The persistent serving cache must not.
-    presented = offer.model_dump()
+    # Raw model serialization is raw provider state again. Customer/member
+    # presentation is explicit at the API boundary and must never leak into the
+    # persistent serving cache.
+    raw = offer.model_dump()
+    assert raw["price"] == 29.0
+    assert "member_price" not in raw
+
+    presented = customer_offer_payload(offer)
     assert presented["price"] == 29.0
     assert presented["member_price"] == 25.0
 

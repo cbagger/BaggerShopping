@@ -293,6 +293,8 @@ def test_tjek_structured_member_fields_are_attached_to_exact_offer():
 
 
 def test_offer_payload_requires_explicit_activation_language():
+    from app.offer_serialization import customer_offer_payload
+
     offer = Offer(
         id="member-1", retailer="MENY", publication_id="week-34",
         publication_title="MENY uge 34", product_name="Pågen gifflar",
@@ -302,7 +304,7 @@ def test_offer_payload_requires_explicit_activation_language():
             "Kuponen skal aktiveres i MENY-appen."
         ),
     )
-    payload = offer.model_dump()
+    payload = customer_offer_payload(offer)
     assert payload["price"] == 16
     assert payload["normal_price"] == 24
     assert payload["member_price"] == 9.95

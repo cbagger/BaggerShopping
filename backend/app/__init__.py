@@ -4,6 +4,10 @@ Provider polygons are allowed to be slightly imperfect so visible offers are not
 silently lost. Duplicate coupling is deliberately conservative: only almost
 identical source regions are merged, while distinct visual offers keep separate
 '+' markers.
+
+Customer-facing offer serialization is intentionally *not* installed here.
+Derived member-pricing metadata now lives behind the explicit
+``offer_serialization.customer_offer_payload`` API boundary.
 """
 
 from __future__ import annotations
@@ -17,7 +21,6 @@ from typing import Iterable, Sequence
 from . import flyer_intelligence as _fi
 from . import meny_flyer as _mf
 from . import product_identity as _pi
-from .member_pricing import detect_member_pricing
 from .member_pricing_sources import (
     enrich_ipaper_offers,
     enrich_schwarz_publication,
@@ -202,39 +205,6 @@ async def _luna_aware_fetch_all_publications(*args, **kwargs):
 
 
 _fa.fetch_all_publications = _luna_aware_fetch_all_publications
-
-
-# Keep membership pricing as presentation metadata instead of mutating the
-# provider-specific Offer objects. The source price may itself be a club price;
-# the public payload must then restore the ordinary shelf price as `price` and
-# expose the club price separately. Detection is text/structure-only and is
-# intentionally independent of retailer-specific image colours or image vision.
-_original_offer_model_dump = _mf.Offer.model_dump
-
-
-def _member_price_aware_offer_model_dump(self, *args, **kwargs):
-    payload = _original_offer_model_dump(self, *args, **kwargs)
-    text = " ".join(filter(None, (self.product_name, self.raw_text)))
-    pricing = detect_member_pricing(
-        retailer=self.retailer,
-        price=self.price,
-        normal_price=self.normal_price,
-        text=text,
-        unit_price=self.unit_price,
-    )
-    if pricing is None:
-        return payload
-
-    payload["price"] = pricing.ordinary_price
-    payload["member_price"] = pricing.member_price
-    payload["member_price_label"] = pricing.label
-    payload["member_price_app"] = pricing.app_name
-    payload["member_price_requires_activation"] = pricing.requires_activation
-    payload["member_price_source"] = pricing.source
-    return payload
-
-
-_mf.Offer.model_dump = _member_price_aware_offer_model_dump
 
 
 # Product identity is used hundreds of times while one Tilbud search is ranked.
