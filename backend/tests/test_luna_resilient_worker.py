@@ -1,7 +1,6 @@
+import asyncio
 import json
 from types import SimpleNamespace
-
-import pytest
 
 from app import luna_resilient_worker as worker
 from app.flyer_readiness import STORE_VERSION, publication_fingerprint
@@ -49,8 +48,7 @@ def _crop_candidate(publication, *, raw_text=None, price=None, reasons=None):
     )
 
 
-@pytest.mark.asyncio
-async def test_pending_publication_is_released_before_any_luna_enrichment(monkeypatch):
+def test_pending_publication_is_released_before_any_luna_enrichment(monkeypatch):
     publication = _publication()
     record = {
         "publication_id": publication.id,
@@ -64,7 +62,7 @@ async def test_pending_publication_is_released_before_any_luna_enrichment(monkey
     monkeypatch.setattr(worker, "mark_ready", lambda value: calls.append(value.id) or True)
     monkeypatch.setattr(worker, "_clear_legacy_publication_stall", lambda publication_id: 1)
 
-    result = await worker._publish_pending_once([publication])
+    result = asyncio.run(worker._publish_pending_once([publication]))
 
     assert result["status"] == "published"
     assert result["publication_id"] == publication.id
