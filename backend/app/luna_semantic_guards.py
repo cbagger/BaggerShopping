@@ -11,7 +11,10 @@ The invariants are deliberately explicit and independently testable:
 4) provider product prices, member prices and unit/reference prices are separate
    roles and suspicious role assignments always fail closed into visual review;
 5) a visible membership-price badge without a resolved member amount must be
-   re-read from the exact advert crop instead of being silently ignored.
+   re-read from the exact advert crop instead of being silently ignored;
+6) a provider/page membership signal near an exact hotspot is recall evidence,
+   never customer truth: if the page audit did not confirm a member-price badge,
+   the exact crop is re-read before the signal can be dismissed.
 """
 
 import hashlib
@@ -21,11 +24,8 @@ from . import luna_semantic_audit as semantic
 from .luna_enrichment import load_store, offer_fingerprint
 
 
-# Changing this version intentionally gives active pages a new page fingerprint.
-# It is a processing-contract version, not a provider-content version. A one-time
-# backfill after deployment therefore re-audits the current flyers with the new
-# generic member-price sanity schema without deleting any historic Luna data.
 SEMANTIC_AUDIT_CONTRACT_VERSION = "member-price-sanity-v2"
+_MEMBER_COVERAGE_SIGNAL = "member-price-context-nearby-v3"
 
 _installed = False
 _original_fact_schema = semantic._fact_schema
@@ -79,8 +79,9 @@ def _pricing_sanity_reasons(offer, facts) -> tuple[str, ...]:
 
     These checks never invent a replacement price. They only decide whether a
     sharper visual crop is required. This keeps genuinely unusual promotions
-    possible while preventing a kg/stk comparison price or an unresolved badge
-    from becoming customer-visible truth just because confidence is high.
+    possible while preventing a kg/stk comparison price, an unresolved badge or
+    an unconfirmed provider/page membership hint from becoming customer-visible
+    truth just because confidence is high.
     """
     if not isinstance(facts, dict) or not (facts.get("visible") or facts.get("same_offer")):
         return ()
@@ -91,6 +92,14 @@ def _pricing_sanity_reasons(offer, facts) -> tuple[str, ...]:
     member_visible = facts.get("membership_price_visible") is True
     member_program = str(facts.get("member_program") or "").strip()
     member_app = str(facts.get("member_app") or "").strip()
+    quality_signals = {
+        str(value)
+        for value in (getattr(offer, "quality_signals", None) or [])
+        if str(value)
+    }
+
+    if _MEMBER_COVERAGE_SIGNAL in quality_signals and not member_visible:
+        reasons.append("page-audit-provider-member-context-unresolved")
 
     if ordinary is None and _same_numeric_price(getattr(offer, "price", None), member):
         reasons.append("page-audit-primary-price-role-ambiguous")
@@ -257,9 +266,6 @@ def _crop_candidates_allowing_build58_reverification(publications):
             existing_facts = existing.get("facts") if isinstance(existing, dict) else None
             existing_anomalous = bool(_pricing_sanity_reasons(offer, existing_facts))
 
-            # Preserve a completed legacy crop when it contains no facts we can
-            # judge under the new contract. Reopen only crops whose persisted
-            # facts demonstrably violate the new generic pricing invariants.
             if (
                 isinstance(existing, dict)
                 and existing.get("analysis_level") == "crop"
