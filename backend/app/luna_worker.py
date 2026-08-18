@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import logging
 import os
+from contextlib import contextmanager
+from pathlib import Path
 
 import httpx
 
 from .flyer_publications import fetch_raw_publications as fetch_all_publications
 from .flyer_readiness import (
+    STORE_VERSION as READINESS_STORE_VERSION,
     mark_failed,
     mark_processing_attempt,
     mark_ready,
     pending_publication_records,
     publication_fingerprint,
+    readiness_store_version,
     status_payload as readiness_status_payload,
 )
 from .luna_enrichment import (
@@ -36,8 +41,6 @@ from .luna_semantic_engine import (
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("kurv-luna")
 
-# Legacy fallback for offers that cannot be covered by a usable page image.
-# Rich page audit remains primary; fallback stays pricing/member-critical only.
 _PAID_REASONS = {
     "member-signal-without-safe-price",
     "member-price-needs-visual-verification",
@@ -46,6 +49,31 @@ _PAID_REASONS = {
     "implausible-provider-reference-price",
 }
 _STOP_STATUSES = {"budget-exhausted", "disabled", "missing-api-key"}
+
+
+def _execution_lock_path() -> Path:
+    return Path(os.getenv("LUNA_EXECUTION_LOCK_PATH", "/data/luna-execution.lock"))
+
+
+@contextmanager
+def _execution_lease():
+    """Prevent two Luna processes from spending/writing concurrently.
+
+    The normal worker and diagnostic CLI commands can otherwise overlap because
+    `docker exec` starts a second Python process inside the same container.
+    """
+    path = _execution_lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _paid_candidates(candidates):
@@ -62,14 +90,38 @@ def _split_crop_candidates(candidates):
     return pricing, variants
 
 
-def _mandatory_pricing_crop_verified(result: dict, config: dict) -> bool:
-    """Mandatory crop completion is about pricing, not merely identity.
+def _candidate_page(candidate) -> int | None:
+    page = getattr(candidate, "page_number", None)
+    if isinstance(page, int) and page > 0:
+        return page
+    offer = getattr(candidate, "offer", None)
+    page = getattr(offer, "page_number", None)
+    return page if isinstance(page, int) and page > 0 else None
 
-    `analyze_crop_candidate` can legitimately call a crop useful when identity
-    or variant confidence is high. That is fine for optional enrichment, but a
-    publication gate created by price/member uncertainty needs an independently
-    high-confidence price result before the flyer may become ready.
-    """
+
+def _scope_to_changed_pages(candidates, changed_pages: set[int]):
+    if not changed_pages:
+        return []
+    return [
+        candidate for candidate in candidates
+        if _candidate_page(candidate) is None or _candidate_page(candidate) in changed_pages
+    ]
+
+
+def _record_changed_pages(record: dict, publication) -> set[int]:
+    result: set[int] = set()
+    for value in record.get("changed_pages", []):
+        try:
+            page = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 0 < page <= int(publication.page_count or 0):
+            result.add(page)
+    return result
+
+
+def _mandatory_pricing_crop_verified(result: dict, config: dict) -> bool:
+    """Mandatory crop completion is about pricing, not merely identity."""
     if str(result.get("status") or "") != "completed":
         return False
     facts = result.get("semantic_facts")
@@ -103,7 +155,6 @@ def _mandatory_pricing_crop_verified(result: dict, config: dict) -> bool:
 
 
 def _requeue_mandatory_crop(candidate, previous_semantic: dict | None, error: str) -> None:
-    """Restore the page-audit uncertainty so a mandatory crop can retry."""
     store = load_store()
     semantic = store.setdefault("semantic_facts", {})
     if isinstance(previous_semantic, dict):
@@ -121,13 +172,8 @@ def _requeue_mandatory_crop(candidate, previous_semantic: dict | None, error: st
     save_store(store)
 
 
-async def run_once() -> dict:
-    """Manual broad maintenance cycle retained for diagnostics/backfill.
-
-    The persistent worker no longer calls this on a timer. Normal production
-    uses ``run_queued_once`` and therefore does not refetch every retailer when
-    there is no new/changed flyer waiting for Luna.
-    """
+async def _run_once_unlocked() -> dict:
+    """Manual broad maintenance cycle retained for diagnostics/backfill."""
     config = load_config()
     if not config.get("enabled"):
         return {
@@ -260,8 +306,19 @@ async def run_once() -> dict:
     }
 
 
+async def run_once() -> dict:
+    with _execution_lease() as acquired:
+        if not acquired:
+            return {
+                "status": "busy",
+                **status_payload(),
+                "readiness": readiness_status_payload(),
+            }
+        return await _run_once_unlocked()
+
+
 async def _process_publication(record: dict) -> dict:
-    """Fully process one queued flyer version, then atomically publish it."""
+    """Process only the source pages that changed, then atomically publish."""
     config = load_config()
     publication_id = str(record.get("publication_id") or "")
     expected_fingerprint = str(record.get("fingerprint") or "")
@@ -293,6 +350,7 @@ async def _process_publication(record: dict) -> dict:
             "publication_id": publication_id,
         }
 
+    changed_pages = _record_changed_pages(record, publication)
     mark_processing_attempt(publication_id, expected_fingerprint)
     processed_pages = 0
     processed_pricing_crops = 0
@@ -300,7 +358,9 @@ async def _process_publication(record: dict) -> dict:
     processed_fallback = 0
 
     async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-        page_candidates = collect_page_audit_candidates([publication])
+        page_candidates = _scope_to_changed_pages(
+            collect_page_audit_candidates([publication]), changed_pages
+        )
         for candidate in page_candidates:
             result = await analyze_page_audit(candidate, client=client)
             status = str(result.get("status") or "")
@@ -317,7 +377,9 @@ async def _process_publication(record: dict) -> dict:
                 }
             processed_pages += 1
 
-        pricing_candidates, _ = _split_crop_candidates(collect_crop_candidates([publication]))
+        pricing_candidates, _ = _split_crop_candidates(
+            _scope_to_changed_pages(collect_crop_candidates([publication]), changed_pages)
+        )
         for candidate in pricing_candidates:
             before_store = load_store()
             previous_semantic = before_store.get("semantic_facts", {}).get(
@@ -339,7 +401,9 @@ async def _process_publication(record: dict) -> dict:
                 }
             processed_pricing_crops += 1
 
-        fallback_candidates = _paid_candidates(collect_candidates([publication]))
+        fallback_candidates = _scope_to_changed_pages(
+            _paid_candidates(collect_candidates([publication])), changed_pages
+        )
         for candidate in fallback_candidates:
             result = await analyze_candidate(candidate, client=client)
             status = str(result.get("status") or "")
@@ -356,7 +420,9 @@ async def _process_publication(record: dict) -> dict:
                 }
             processed_fallback += 1
 
-        _, variant_candidates = _split_crop_candidates(collect_crop_candidates([publication]))
+        _, variant_candidates = _split_crop_candidates(
+            _scope_to_changed_pages(collect_crop_candidates([publication]), changed_pages)
+        )
         for candidate in variant_candidates:
             if not _cost_policy.variant_crop_budget_allows(config):
                 break
@@ -369,9 +435,11 @@ async def _process_publication(record: dict) -> dict:
                 return {"status": status, "publication_id": publication_id}
             processed_variant_crops += 1
 
-    remaining_pages = collect_page_audit_candidates([publication])
+    remaining_pages = _scope_to_changed_pages(
+        collect_page_audit_candidates([publication]), changed_pages
+    )
     remaining_pricing, remaining_variants = _split_crop_candidates(
-        collect_crop_candidates([publication])
+        _scope_to_changed_pages(collect_crop_candidates([publication]), changed_pages)
     )
     if remaining_pages or remaining_pricing:
         error = f"mandatory-work-remains pages={len(remaining_pages)} pricing={len(remaining_pricing)}"
@@ -391,6 +459,7 @@ async def _process_publication(record: dict) -> dict:
         "publication_id": publication_id,
         "retailer": publication.retailer,
         "title": publication.title,
+        "changed_pages": sorted(changed_pages),
         "pages_processed": processed_pages,
         "pricing_crops_processed": processed_pricing_crops,
         "variant_crops_processed": processed_variant_crops,
@@ -399,8 +468,15 @@ async def _process_publication(record: dict) -> dict:
     }
 
 
-async def run_queued_once() -> dict:
+async def _run_queued_once_unlocked() -> dict:
     """Process at most one locally queued publication event."""
+    if readiness_store_version() < READINESS_STORE_VERSION:
+        return {
+            "status": "readiness-migration-pending",
+            "queue_depth": 0,
+            "readiness": readiness_status_payload(),
+        }
+
     pending = pending_publication_records()
     if not pending:
         return {
@@ -417,6 +493,17 @@ async def run_queued_once() -> dict:
     }
 
 
+async def run_queued_once() -> dict:
+    with _execution_lease() as acquired:
+        if not acquired:
+            return {
+                "status": "busy",
+                "queue_depth": len(pending_publication_records()),
+                "readiness": readiness_status_payload(),
+            }
+        return await _run_queued_once_unlocked()
+
+
 async def main() -> None:
     idle_seconds = max(5, int(os.getenv("LUNA_QUEUE_POLL_SECONDS", "15")))
     error_seconds = max(30, int(os.getenv("LUNA_QUEUE_ERROR_BACKOFF_SECONDS", "120")))
@@ -426,7 +513,7 @@ async def main() -> None:
             result = await run_queued_once()
             log.info("Luna publication event: %s", result)
             status = str(result.get("status") or "")
-            if status == "idle":
+            if status in {"idle", "busy", "readiness-migration-pending"}:
                 await asyncio.sleep(idle_seconds)
             elif status in {"budget-exhausted", "missing-api-key", "disabled"}:
                 await asyncio.sleep(max(300, error_seconds))
