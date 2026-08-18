@@ -14,14 +14,13 @@ from .meny_flyer import Publication
 
 
 STORE_VERSION = 1
+_MEMBER_COVERAGE_SIGNAL = "member-price-context-nearby-v3"
 
 
 def store_path() -> Path:
     explicit = os.getenv("FLYER_READINESS_STORE_PATH")
     if explicit:
         return Path(explicit)
-    # Tests and small deployments that override only the existing flyer-push
-    # store automatically get an isolated sibling readiness store too.
     push_store = os.getenv("FLYER_PUSH_STORE_PATH")
     if push_store:
         return Path(push_store).with_name("flyer-readiness.json")
@@ -85,10 +84,6 @@ def _exclusive_store():
 
 
 def load_store() -> dict[str, Any]:
-    # Reading readiness before the detector has initialized it must be a pure
-    # fail-open operation. Do not try to create /data or a lock file merely to
-    # discover that the store does not exist; this also keeps ordinary unit
-    # tests and fresh installations independent of QNAP filesystem layout.
     path = store_path()
     if not path.exists():
         return _empty_store()
@@ -102,9 +97,6 @@ def load_store() -> dict[str, Any]:
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     except OSError:
-        # If the readiness store cannot be read/locked, fail open as
-        # uninitialized rather than blanking the public flyer shelf. Once a
-        # valid initialized store is readable, unknown versions still fail shut.
         return _empty_store()
 
 
@@ -121,7 +113,7 @@ def _stable_url(value: str) -> str:
 
 
 def _offer_signature(offer: Any) -> dict[str, Any]:
-    return {
+    payload = {
         "id": getattr(offer, "id", None),
         "page": getattr(offer, "page_number", None),
         "name": getattr(offer, "product_name", None),
@@ -136,6 +128,14 @@ def _offer_signature(offer: Any) -> dict[str, Any]:
         ],
         "variants": [getattr(value, "name", None) for value in getattr(offer, "variants", [])],
     }
+    coverage_signals = sorted({
+        str(value)
+        for value in (getattr(offer, "quality_signals", None) or [])
+        if str(value) == _MEMBER_COVERAGE_SIGNAL
+    })
+    if coverage_signals:
+        payload["coverage_signals"] = coverage_signals
+    return payload
 
 
 def page_fingerprints(publication: Publication) -> dict[str, str]:
@@ -211,15 +211,6 @@ def observe_publications(
     *,
     bootstrap_ready_ids: set[str] | None = None,
 ) -> dict[str, Any]:
-    """Record new/changed publications and queue them for Luna.
-
-    On a brand-new readiness store, ``bootstrap_ready_ids=None`` means the
-    caller intentionally wants all current publications to be treated as the
-    pre-existing baseline. Passing a concrete set instead makes only those IDs
-    ready; any other current publication is queued as new. This lets the
-    existing flyer-push history migrate without accidentally publishing a flyer
-    that arrived during deployment.
-    """
     current = list(publications)
     now = int(time.time())
     queued: list[str] = []
@@ -292,8 +283,6 @@ def observe_publications(
 def publication_is_ready(publication: Publication) -> bool:
     store = load_store()
     if not store.get("initialized"):
-        # Fail open only before the first detector migration so deployment does
-        # not blank the current app. Once initialized, unknown flyers fail shut.
         return True
     row = store.get("publications", {}).get(publication.id)
     return bool(
@@ -372,9 +361,6 @@ def mark_failed(publication_id: str, fingerprint: str, error: str) -> None:
         row = store.setdefault("publications", {}).get(publication_id)
         if not isinstance(row, dict) or row.get("fingerprint") != fingerprint:
             return
-        # Fail shut but keep the event queued. The event worker applies a
-        # backoff and can retry; the mobile API never exposes this version while
-        # mandatory Luna work is unresolved.
         row["status"] = "processing"
         row["last_error"] = error[:500]
         row["last_failed_at"] = int(time.time())
