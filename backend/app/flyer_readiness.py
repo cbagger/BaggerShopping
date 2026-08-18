@@ -13,7 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 from .meny_flyer import Publication
 
 
-STORE_VERSION = 2
+STORE_VERSION = 3
 LEGACY_STORE_VERSION = 1
 
 
@@ -49,8 +49,8 @@ def _read_unlocked() -> dict[str, Any]:
         return _empty_store()
     if not isinstance(value, dict):
         return _empty_store()
-    # Do not silently upgrade a legacy store merely by reading it. The v2
-    # migration needs the current provider releases and is performed by
+    # Do not silently upgrade an older store merely by reading it. The source-
+    # stable v3 migration needs current provider releases and is performed by
     # observe_publications().
     value.setdefault("version", LEGACY_STORE_VERSION)
     value.setdefault("initialized", False)
@@ -201,21 +201,21 @@ def observe_publications(
     with _exclusive_store() as store:
         rows = store.setdefault("publications", {})
         first_observation = not bool(store.get("initialized"))
-        legacy_migration = int(store.get("version") or LEGACY_STORE_VERSION) < STORE_VERSION
+        cutover_migration = int(store.get("version") or LEGACY_STORE_VERSION) < STORE_VERSION
 
         for publication in current:
             snap = _snapshot(publication)
             existing = rows.get(publication.id)
 
-            # v1 fingerprints included parsed offer fields. A parser/code change
-            # could therefore leave an already-observed same release in
-            # `processing`, even when flyer-push had not yet acknowledged it as
-            # seen. The one-time v1 -> v2 cutover deliberately trusts every
-            # existing same-release readiness row as already known and discards
-            # that ambiguous legacy backlog. Publication IDs absent from the v1
-            # store still queue normally below, so genuinely new releases after
-            # cutover remain fail-shut and get Luna review.
-            if legacy_migration and isinstance(existing, dict) and _same_release(existing, snap):
+            # Older readiness versions included parsed offer fields or were
+            # written during the v2 transition. A parser/code change could leave
+            # an already-observed same release in `processing`. The one-time v3
+            # cutover deliberately trusts every existing same-release readiness
+            # row as already known and discards that ambiguous pre-v3 backlog.
+            # Publication IDs absent from the existing store still queue normally
+            # below, so genuinely new releases after cutover remain fail-shut and
+            # receive Luna review.
+            if cutover_migration and isinstance(existing, dict) and _same_release(existing, snap):
                 rows[publication.id] = {
                     **existing,
                     **snap,
