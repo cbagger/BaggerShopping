@@ -10,7 +10,7 @@ from typing import Iterable
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from .households import LEGACY_HOUSEHOLD_ID, current_household
+from .households import LEGACY_HOUSEHOLD_ID, current_household, read_household
 
 
 router = APIRouter(prefix="/api/mobile/v1", tags=["mobile-offer-metadata"])
@@ -54,12 +54,6 @@ def _normalized_item_id(item_id: str | None) -> str | None:
 
 
 def offer_metadata_key(item_name: str, item_id: str | None = None) -> str:
-    """Return a stable server key, preferring the immutable list-item ID.
-
-    Historic stores remain valid because records without ``item_id`` keep the
-    exact old normalized-name key. New/updated records are promoted to an ID
-    key as soon as Samsung exposes one.
-    """
     normalized_id = _normalized_item_id(item_id)
     if normalized_id:
         return f"item:{normalized_id}"
@@ -136,23 +130,29 @@ def _remove_aliases(
     keep_key: str | None = None,
 ) -> bool:
     changed = False
-    for key in {
+    candidate_keys = {
         offer_metadata_key(item_name),
         offer_metadata_key(item_name, item_id) if item_id else "",
-    }:
-        if key and key != keep_key and store.pop(key, None) is not None:
-            changed = True
+    }
+    normalized_name = offer_metadata_key(item_name)
+    for key, raw in list(store.items()):
+        if key in candidate_keys:
+            if key != keep_key:
+                store.pop(key, None)
+                changed = True
+            continue
+        if item_id is None and isinstance(raw, dict):
+            try:
+                record = OfferMetadataRecord.model_validate(raw)
+            except Exception:
+                continue
+            if offer_metadata_key(record.item_name) == normalized_name and key != keep_key:
+                store.pop(key, None)
+                changed = True
     return changed
 
 
 def reconcile_offer_metadata_items(items: Iterable[object]) -> bool:
-    """Promote name-bound records to IDs and follow Samsung name normalization.
-
-    Called after a successful list read. No fuzzy matching is used: a historic
-    name-only record is promoted only on one exact normalized active name. Once
-    an ID is present, that immutable ID is authoritative and the display name is
-    updated to Samsung's current normalized name.
-    """
     normalized_items: list[tuple[str, str]] = []
     for item in items:
         if isinstance(item, dict):
@@ -204,10 +204,55 @@ def reconcile_offer_metadata_items(items: Iterable[object]) -> bool:
     return changed
 
 
+async def _active_items_for_one_time_binding() -> list[object]:
+    """Read active items only while legacy/name-bound metadata still exists."""
+    context = current_household()
+    try:
+        if context.list_backend == "local":
+            household = await read_household(context)
+            return list(household.get("items", []))
+
+        from .samsung_request_policy import family_samsung_client
+
+        client = await family_samsung_client(context)
+        if client is None:
+            from .samsung import SamsungFoodClient
+
+            client = SamsungFoodClient()
+        payload = await client.get_list()
+        return list(payload.items)
+    except Exception:
+        return []
+
+
+def _has_name_bound_records(store: dict[str, dict[str, object]]) -> bool:
+    for raw in store.values():
+        if not isinstance(raw, dict):
+            continue
+        try:
+            if OfferMetadataRecord.model_validate(raw).item_id is None:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 @router.get("/offer-metadata", response_model=OfferMetadataResponse)
 async def get_offer_metadata() -> OfferMetadataResponse:
     async with offer_metadata_store_lock:
         store = load_offer_metadata_store()
+        needs_binding = _has_name_bound_records(store)
+
+    if needs_binding:
+        active_items = await _active_items_for_one_time_binding()
+        if active_items:
+            async with offer_metadata_store_lock:
+                reconcile_offer_metadata_items(active_items)
+                store = load_offer_metadata_store()
+    else:
+        async with offer_metadata_store_lock:
+            store = load_offer_metadata_store()
+
     records = [OfferMetadataRecord.model_validate(value) for value in store.values()]
     records.sort(key=lambda value: offer_metadata_key(value.item_name))
     return OfferMetadataResponse(metadata=records)
@@ -219,12 +264,7 @@ async def put_offer_metadata(record: OfferMetadataRecord) -> dict[str, object]:
     key = offer_metadata_key(clean.item_name, clean.item_id)
     async with offer_metadata_store_lock:
         store = load_offer_metadata_store()
-        _remove_aliases(
-            store,
-            item_name=clean.item_name,
-            item_id=clean.item_id,
-            keep_key=key,
-        )
+        _remove_aliases(store, item_name=clean.item_name, item_id=clean.item_id, keep_key=key)
         store[key] = clean.model_dump()
         save_offer_metadata_store(store)
     return {"ok": True, "item_name": clean.item_name, "item_id": clean.item_id}
@@ -232,7 +272,6 @@ async def put_offer_metadata(record: OfferMetadataRecord) -> dict[str, object]:
 
 @router.put("/offer-metadata/sync", response_model=OfferMetadataResponse)
 async def sync_offer_metadata(request: OfferMetadataSyncRequest) -> OfferMetadataResponse:
-    """Merge missing device metadata without overwriting QNAP-owned facts."""
     clean_records = [normalized_record(record) for record in request.metadata]
     async with offer_metadata_store_lock:
         store = load_offer_metadata_store()
@@ -242,9 +281,7 @@ async def sync_offer_metadata(request: OfferMetadataSyncRequest) -> OfferMetadat
             name_key = offer_metadata_key(record.item_name)
             if record.item_id and id_key not in store and name_key in store:
                 existing = OfferMetadataRecord.model_validate(store.pop(name_key))
-                promoted = existing.model_copy(
-                    update={"item_id": record.item_id, "item_name": record.item_name}
-                )
+                promoted = existing.model_copy(update={"item_id": record.item_id, "item_name": record.item_name})
                 store[id_key] = promoted.model_dump()
                 changed = True
             elif id_key not in store:
@@ -261,22 +298,14 @@ async def sync_offer_metadata(request: OfferMetadataSyncRequest) -> OfferMetadat
 async def remove_offer_metadata(request: OfferMetadataRemoveRequest) -> dict[str, object]:
     async with offer_metadata_store_lock:
         store = load_offer_metadata_store()
-        removed = _remove_aliases(
-            store,
-            item_name=request.item_name,
-            item_id=request.item_id,
-        )
+        removed = _remove_aliases(store, item_name=request.item_name, item_id=request.item_id)
         if removed:
             save_offer_metadata_store(store)
     return {"ok": True, "removed": removed}
 
 
 @router.patch("/items/{item_id}/name")
-async def rename_shopping_item(
-    item_id: str,
-    request: RenameShoppingItemRequest,
-) -> dict[str, object]:
-    """Rename one shopping item in place while retaining its offer binding."""
+async def rename_shopping_item(item_id: str, request: RenameShoppingItemRequest) -> dict[str, object]:
     context = current_household()
     new_name = " ".join(request.name.strip().split())
     if not new_name:
