@@ -33,6 +33,11 @@ _GENERIC_VARIANT_RE = re.compile(
     re.IGNORECASE,
 )
 _SERVING_CACHE_VERSION = 2
+# Source readiness and deterministic presentation are deliberately versioned
+# separately. A parser/member-pricing improvement must refresh the verified
+# serving snapshot without pretending that the retailer published a new flyer
+# and without creating Luna work.
+_SERVING_CACHE_CONTENT_REVISION = 3
 _LUNA_PICKER_VARIANT_CONFIDENCE = 0.80
 _LEGACY_LUNA_VARIANT_CONFIDENCE = 0.99
 
@@ -92,6 +97,7 @@ def _publication_snapshot(publication: Publication, *, verified: bool) -> dict:
     return {
         "fingerprint": publication_fingerprint(publication),
         "verified": verified,
+        "content_revision": _SERVING_CACHE_CONTENT_REVISION,
         "saved_at": int(time.time()),
         "publication": payload,
     }
@@ -143,6 +149,7 @@ def _serve_stable_publications(publications: list[Publication]) -> list[Publicat
                 not isinstance(row, dict)
                 or row.get("fingerprint") != fingerprint
                 or not row.get("verified")
+                or row.get("content_revision") != _SERVING_CACHE_CONTENT_REVISION
             ):
                 rows[publication.id] = _publication_snapshot(publication, verified=True)
                 changed = True
