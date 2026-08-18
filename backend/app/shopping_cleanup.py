@@ -23,17 +23,18 @@ async def delete_checked_items() -> dict[str, int]:
     checked = [item for item in current.items if item.checked is True and item.id]
     deleted = 0
     failed = 0
-    deleted_names: list[str] = []
+    deleted_items: list[tuple[str, str]] = []
     for item in checked:
         try:
             await client.delete_item(item.id)
             deleted += 1
-            deleted_names.append(item.name)
+            deleted_items.append((item.id, item.name))
         except SamsungFoodError:
             failed += 1
-    if deleted_names:
+    if deleted_items:
         metadata = load_offer_metadata_store()
-        for name in deleted_names:
+        for item_id, name in deleted_items:
+            metadata.pop(offer_metadata_key(name, item_id), None)
             metadata.pop(offer_metadata_key(name), None)
         save_offer_metadata_store(metadata)
     local_found, local_deleted = delete_checked_local_households()
