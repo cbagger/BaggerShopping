@@ -78,12 +78,13 @@ def _exact_meny_member_context(page_text: str, offer: Offer) -> str:
     * the exact campaign/variant must anchor the local window;
     * the provider's structured selling price must occur after that anchor and
       before the explicit member-price marker;
-    * no other non-unit selling price may sit between the provider price and the
-      marker; and
+    * no other non-unit selling price may sit between the anchor and the
+      provider price, or between the provider price and the member marker; and
     * the ordinary/member roles must pass the normal generic pricing classifier.
 
-    The intervening-price guard is what keeps e.g. ``GM juice 16,-. PÅGEN 15,-
-    MEDLEMSPRIS 8,95`` from assigning Pågen's member price to GM juice.
+    Unit/reference prices remain allowed because they are explicitly classified
+    as such. Competing selling prices make the local reading order ambiguous and
+    therefore fail closed instead of borrowing a neighbour's member price.
     """
     if offer.retailer.casefold().strip() != "meny" or offer.price is None:
         return ""
@@ -128,16 +129,30 @@ def _exact_meny_member_context(page_text: str, offer: Offer) -> str:
         if marker.start() - ordinary.end > 100:
             continue
 
-        intervening = [
+        competing_before_ordinary = [
+            candidate
+            for candidate in prices
+            if candidate.start >= anchor_in_window
+            and candidate.end <= ordinary.start
+            and not candidate.unit_price_context
+            and not candidate.membership_fee_context
+            and not candidate.before_role
+            and not pricing_v3._same_price(candidate.value, ordinary.value)
+        ]
+        if competing_before_ordinary:
+            continue
+
+        competing_after_ordinary = [
             candidate
             for candidate in prices
             if candidate.start >= ordinary.end
             and candidate.end <= marker.start()
             and not candidate.unit_price_context
             and not candidate.membership_fee_context
+            and not candidate.before_role
             and not pricing_v3._same_price(candidate.value, ordinary.value)
         ]
-        if intervening:
+        if competing_after_ordinary:
             continue
 
         context_start = max(anchor_in_window, ordinary.start - 120)
