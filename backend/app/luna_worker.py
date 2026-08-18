@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import json
 import logging
 import os
 from contextlib import contextmanager
@@ -29,6 +30,7 @@ from .luna_enrichment import (
     status_payload,
 )
 from . import luna_cost_policy as _cost_policy
+from . import luna_semantic_guards as _semantic_guards
 from .luna_semantic_engine import (
     analyze_crop_candidate,
     analyze_page_audit,
@@ -53,6 +55,64 @@ _STOP_STATUSES = {"budget-exhausted", "disabled", "missing-api-key"}
 
 def _execution_lock_path() -> Path:
     return Path(os.getenv("LUNA_EXECUTION_LOCK_PATH", "/data/luna-execution.lock"))
+
+
+def _stalled_publications_path() -> Path:
+    return Path(os.getenv("LUNA_STALLED_PUBLICATIONS_PATH", "/data/luna-stalled-publications.json"))
+
+
+def _stall_key(record: dict) -> str:
+    return "|".join(
+        (
+            str(record.get("publication_id") or ""),
+            str(record.get("fingerprint") or ""),
+            str(record.get("processing_started_at") or ""),
+        )
+    )
+
+
+def _load_stalled_publications() -> dict[str, dict]:
+    path = _stalled_publications_path()
+    try:
+        value = json.loads(path.read_text("utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(value, dict):
+        return {}
+    rows = value.get("stalled")
+    if not isinstance(rows, dict):
+        return {}
+    return {
+        str(key): dict(row)
+        for key, row in rows.items()
+        if isinstance(row, dict)
+    }
+
+
+def _record_is_stalled(record: dict) -> bool:
+    return _stall_key(record) in _load_stalled_publications()
+
+
+def _mark_stalled_record(record: dict, error: str, fingerprints=()) -> None:
+    path = _stalled_publications_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = _load_stalled_publications()
+    key = _stall_key(record)
+    rows[key] = {
+        "publication_id": str(record.get("publication_id") or ""),
+        "fingerprint": str(record.get("fingerprint") or ""),
+        "processing_started_at": record.get("processing_started_at"),
+        "error": str(error)[:500],
+        "candidate_fingerprints": sorted({str(value) for value in fingerprints if str(value)}),
+    }
+    if len(rows) > 500:
+        rows = dict(list(rows.items())[-500:])
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    tmp.write_text(
+        json.dumps({"version": 1, "stalled": rows}, ensure_ascii=False, separators=(",", ":")),
+        "utf-8",
+    )
+    tmp.replace(path)
 
 
 @contextmanager
@@ -120,13 +180,16 @@ def _record_changed_pages(record: dict, publication) -> set[int]:
     return result
 
 
-def _mandatory_pricing_crop_verified(result: dict, config: dict) -> bool:
+def _mandatory_pricing_crop_verified(result: dict, config: dict, offer=None) -> bool:
     """Mandatory crop completion is about pricing, not merely identity."""
     if str(result.get("status") or "") != "completed":
         return False
     facts = result.get("semantic_facts")
     if not isinstance(facts, dict) or not facts.get("visible"):
         return False
+    if offer is not None:
+        return _semantic_guards.mandatory_pricing_crop_resolved(offer, facts, config)
+
     threshold = float(config.get("min_apply_confidence", 0.96))
     if float(facts.get("pricing_confidence") or 0) < threshold:
         return False
@@ -356,6 +419,7 @@ async def _process_publication(record: dict) -> dict:
     processed_pricing_crops = 0
     processed_variant_crops = 0
     processed_fallback = 0
+    processed_pricing_fingerprints: set[str] = set()
 
     async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
         page_candidates = _scope_to_changed_pages(
@@ -390,16 +454,19 @@ async def _process_publication(record: dict) -> dict:
             if status in _STOP_STATUSES:
                 mark_failed(publication_id, expected_fingerprint, status)
                 return {"status": status, "publication_id": publication_id}
-            if not _mandatory_pricing_crop_verified(result, config):
+            if not _mandatory_pricing_crop_verified(result, config, candidate.offer):
                 error = str(result.get("error") or status or "pricing-crop-unresolved")
                 _requeue_mandatory_crop(candidate, previous_semantic, error)
                 mark_failed(publication_id, expected_fingerprint, error)
+                _mark_stalled_record(record, error, [candidate.fingerprint])
                 return {
                     "status": "pricing-crop-unresolved",
                     "publication_id": publication_id,
                     "error": error,
+                    "stalled": True,
                 }
             processed_pricing_crops += 1
+            processed_pricing_fingerprints.add(candidate.fingerprint)
 
         fallback_candidates = _scope_to_changed_pages(
             _paid_candidates(collect_candidates([publication])), changed_pages
@@ -441,6 +508,26 @@ async def _process_publication(record: dict) -> dict:
     remaining_pricing, remaining_variants = _split_crop_candidates(
         _scope_to_changed_pages(collect_crop_candidates([publication]), changed_pages)
     )
+    remaining_pricing_fingerprints = {
+        candidate.fingerprint for candidate in remaining_pricing
+    }
+    repeated_pricing = processed_pricing_fingerprints.intersection(
+        remaining_pricing_fingerprints
+    )
+    if repeated_pricing:
+        error = (
+            "mandatory-work-stalled "
+            f"pricing={len(repeated_pricing)} total={len(remaining_pricing)}"
+        )
+        mark_failed(publication_id, expected_fingerprint, error)
+        _mark_stalled_record(record, error, repeated_pricing)
+        return {
+            "status": "mandatory-work-stalled",
+            "publication_id": publication_id,
+            "pricing_candidates": len(remaining_pricing),
+            "repeated_pricing_candidates": len(repeated_pricing),
+            "stalled": True,
+        }
     if remaining_pages or remaining_pricing:
         error = f"mandatory-work-remains pages={len(remaining_pages)} pricing={len(remaining_pricing)}"
         mark_failed(publication_id, expected_fingerprint, error)
@@ -477,13 +564,23 @@ async def _run_queued_once_unlocked() -> dict:
             "readiness": readiness_status_payload(),
         }
 
-    pending = pending_publication_records()
-    if not pending:
+    pending_all = pending_publication_records()
+    if not pending_all:
         return {
             "status": "idle",
             "queue_depth": 0,
             "readiness": readiness_status_payload(),
         }
+
+    pending = [record for record in pending_all if not _record_is_stalled(record)]
+    if not pending:
+        return {
+            "status": "stalled",
+            "queue_depth": len(pending_all),
+            "stalled_publications": len(pending_all),
+            "readiness": readiness_status_payload(),
+        }
+
     result = await _process_publication(pending[0])
     return {
         **result,
@@ -515,6 +612,8 @@ async def main() -> None:
             status = str(result.get("status") or "")
             if status in {"idle", "busy", "readiness-migration-pending"}:
                 await asyncio.sleep(idle_seconds)
+            elif status == "stalled":
+                await asyncio.sleep(max(300, error_seconds))
             elif status in {"budget-exhausted", "missing-api-key", "disabled"}:
                 await asyncio.sleep(max(300, error_seconds))
             elif status == "ready":
