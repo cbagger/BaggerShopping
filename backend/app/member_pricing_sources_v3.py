@@ -6,7 +6,7 @@ from .meny_flyer import Offer, Publication
 
 
 COVERAGE_SIGNAL = "member-price-context-nearby-v3"
-PAGE_COHORT_SIGNAL = "member-price-page-cohort-v3"
+PAGE_COHORT_SIGNAL = COVERAGE_SIGNAL
 
 
 def _add_signal(offer: Offer, signal: str = COVERAGE_SIGNAL) -> Offer:
