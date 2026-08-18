@@ -8,7 +8,7 @@ os.environ.setdefault("SAMSUNG_LIST_ID", "test-list")
 from fastapi.testclient import TestClient
 
 import app.mobile_main as mobile
-from app.samsung import SamsungFoodClient
+import app.mobile_offer_metadata as metadata_module
 
 
 client = TestClient(mobile.app)
@@ -34,14 +34,16 @@ def test_name_bound_offer_metadata_promotes_once_to_samsung_item_id(monkeypatch,
 
     calls = 0
 
-    async def fake_get_list(self):
+    async def fake_active_items():
         nonlocal calls
         calls += 1
-        return SimpleNamespace(
-            items=[SimpleNamespace(id="item-123", name="Hamburger Buns 6-pak")]
-        )
+        return [SimpleNamespace(id="item-123", name="Hamburger Buns 6-pak")]
 
-    monkeypatch.setattr(SamsungFoodClient, "get_list", fake_get_list)
+    monkeypatch.setattr(
+        metadata_module,
+        "_active_items_for_one_time_binding",
+        fake_active_items,
+    )
 
     first = client.get("/api/mobile/v1/offer-metadata", headers=AUTH)
     assert first.status_code == 200
@@ -54,10 +56,14 @@ def test_name_bound_offer_metadata_promotes_once_to_samsung_item_id(monkeypatch,
     persisted = json.loads(store_path.read_text("utf-8"))
     assert list(persisted) == ["item:item-123"]
 
-    async def must_not_read_again(self):
-        raise AssertionError("ID-bound metadata must not trigger another Samsung list read")
+    async def must_not_read_again():
+        raise AssertionError("ID-bound metadata must not trigger another list read")
 
-    monkeypatch.setattr(SamsungFoodClient, "get_list", must_not_read_again)
+    monkeypatch.setattr(
+        metadata_module,
+        "_active_items_for_one_time_binding",
+        must_not_read_again,
+    )
     second = client.get("/api/mobile/v1/offer-metadata", headers=AUTH)
     assert second.status_code == 200
     assert second.json()["metadata"][0]["item_id"] == "item-123"
