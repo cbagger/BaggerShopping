@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Iterable
@@ -28,6 +29,10 @@ class OfferMetadataRecord(BaseModel):
     publication_id: str | None = None
     matched_item_name: str | None = None
     offer_snapshot: dict[str, object] | None = None
+    # An offer explicitly selected by a person is authoritative for that list
+    # item. Old iOS builds do not send this field, so records with an offer +
+    # publication reference are treated as pinned by _record_is_pinned().
+    pinned: bool = False
 
 
 class OfferMetadataResponse(BaseModel):
@@ -48,6 +53,12 @@ class RenameShoppingItemRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+_PACK_BINDING_SUFFIX_RE = re.compile(
+    r"\s+\d+(?:[,.]\d+)?\s*(?:[-–]\s*)?(?:pak|pakke|pakker|pk|stk|styk|stykker)\.?\s*$",
+    re.IGNORECASE,
+)
+
+
 def _normalized_item_id(item_id: str | None) -> str | None:
     value = "".join((item_id or "").strip().split())
     return value.casefold() or None
@@ -58,6 +69,58 @@ def offer_metadata_key(item_name: str, item_id: str | None = None) -> str:
     if normalized_id:
         return f"item:{normalized_id}"
     return " ".join(item_name.casefold().strip().split())
+
+
+def offer_binding_name_key(item_name: str) -> str:
+    """Stable binding alias for Samsung-normalized terminal pack wording.
+
+    Samsung Food may turn a deliberately selected shopping label such as
+    ``Hamburger Buns 6-pak`` back into ``Hamburger Buns``. That normalization
+    must not detach the offer the user selected in Kurv. Only a terminal pack /
+    piece suffix is ignored here; weights, volumes, flavours and all other
+    product identity remain distinct.
+    """
+    normalized = " ".join(item_name.casefold().strip().split())
+    normalized = _PACK_BINDING_SUFFIX_RE.sub("", normalized).strip(" -–,.;:")
+    return normalized
+
+
+def _record_is_pinned(record: OfferMetadataRecord) -> bool:
+    # Backward compatibility for Build 61 and earlier: every record written from
+    # Tilbud/Aviser carried the concrete offer/publication pair even before the
+    # explicit `pinned` field existed.
+    return bool(record.pinned or (record.offer_id and record.publication_id))
+
+
+def _pinned_binding_matches(
+    store: dict[str, dict[str, object]],
+    *,
+    item_name: str,
+    item_id: str | None = None,
+) -> list[tuple[str, OfferMetadataRecord]]:
+    wanted_id = _normalized_item_id(item_id)
+    wanted_name = offer_metadata_key(item_name)
+    wanted_binding = offer_binding_name_key(item_name)
+    matches: list[tuple[str, OfferMetadataRecord]] = []
+    for key, raw in store.items():
+        if not isinstance(raw, dict):
+            continue
+        try:
+            record = OfferMetadataRecord.model_validate(raw)
+        except Exception:
+            continue
+        if not _record_is_pinned(record):
+            continue
+        record_id = _normalized_item_id(record.item_id)
+        same_id = bool(wanted_id and record_id == wanted_id)
+        same_name = offer_metadata_key(record.item_name) == wanted_name
+        same_binding = bool(
+            wanted_binding
+            and offer_binding_name_key(record.item_name) == wanted_binding
+        )
+        if same_id or same_name or same_binding:
+            matches.append((key, record))
+    return matches
 
 
 def offer_metadata_store_path() -> Path:
@@ -118,6 +181,7 @@ def normalized_record(record: OfferMetadataRecord) -> OfferMetadataRecord:
             "item_id": item_id or None,
             "retailer": retailer,
             "matched_item_name": record.matched_item_name.strip() if record.matched_item_name else None,
+            "pinned": _record_is_pinned(record),
         }
     )
 
@@ -170,8 +234,12 @@ def reconcile_offer_metadata_items(items: Iterable[object]) -> bool:
 
     by_id = {_normalized_item_id(item_id): (item_id, name) for item_id, name in normalized_items}
     by_name: dict[str, list[tuple[str, str]]] = {}
+    by_binding: dict[str, list[tuple[str, str]]] = {}
     for item_id, name in normalized_items:
         by_name.setdefault(offer_metadata_key(name), []).append((item_id, name))
+        binding = offer_binding_name_key(name)
+        if binding:
+            by_binding.setdefault(binding, []).append((item_id, name))
 
     store = load_offer_metadata_store()
     changed = False
@@ -181,17 +249,29 @@ def reconcile_offer_metadata_items(items: Iterable[object]) -> bool:
         record = OfferMetadataRecord.model_validate(raw_value)
         current = record
         normalized_id = _normalized_item_id(record.item_id)
+        pinned = _record_is_pinned(record)
 
         if normalized_id and normalized_id in by_id:
             actual_id, actual_name = by_id[normalized_id]
-            if record.item_name != actual_name or record.item_id != actual_id:
-                current = record.model_copy(update={"item_id": actual_id, "item_name": actual_name})
+            if record.item_name != actual_name or record.item_id != actual_id or record.pinned != pinned:
+                current = record.model_copy(
+                    update={"item_id": actual_id, "item_name": actual_name, "pinned": pinned}
+                )
                 changed = True
         elif not normalized_id:
             candidates = by_name.get(offer_metadata_key(record.item_name), [])
+            # Explicitly selected offers get one additional, deliberately narrow
+            # reconciliation path for Samsung's terminal pack-name normalization.
+            if not candidates and pinned:
+                candidates = by_binding.get(offer_binding_name_key(record.item_name), [])
             if len(candidates) == 1:
                 actual_id, actual_name = candidates[0]
-                current = record.model_copy(update={"item_id": actual_id, "item_name": actual_name})
+                current = record.model_copy(
+                    update={"item_id": actual_id, "item_name": actual_name, "pinned": pinned}
+                )
+                changed = True
+            elif pinned and not record.pinned:
+                current = record.model_copy(update={"pinned": True})
                 changed = True
 
         key = offer_metadata_key(current.item_name, current.item_id)
@@ -261,13 +341,45 @@ async def get_offer_metadata() -> OfferMetadataResponse:
 @router.put("/offer-metadata")
 async def put_offer_metadata(record: OfferMetadataRecord) -> dict[str, object]:
     clean = normalized_record(record)
-    key = offer_metadata_key(clean.item_name, clean.item_id)
     async with offer_metadata_store_lock:
         store = load_offer_metadata_store()
+        pinned_matches = _pinned_binding_matches(
+            store,
+            item_name=clean.item_name,
+            item_id=clean.item_id,
+        )
+
+        # Automatic/legacy writes must never replace an explicit user choice.
+        if not clean.pinned and pinned_matches:
+            _, existing = pinned_matches[0]
+            return {
+                "ok": True,
+                "item_name": existing.item_name,
+                "item_id": existing.item_id,
+                "pinned_preserved": True,
+            }
+
+        # A new explicit user choice is allowed to replace the previous pin. If
+        # the previous record has already been bound to Samsung's concrete item
+        # ID, retain that binding even when this iPhone still knows only a name.
+        if clean.pinned and len(pinned_matches) == 1:
+            previous_key, previous = pinned_matches[0]
+            if clean.item_id is None and previous.item_id:
+                clean = clean.model_copy(
+                    update={"item_id": previous.item_id, "item_name": previous.item_name}
+                )
+            store.pop(previous_key, None)
+
+        key = offer_metadata_key(clean.item_name, clean.item_id)
         _remove_aliases(store, item_name=clean.item_name, item_id=clean.item_id, keep_key=key)
         store[key] = clean.model_dump()
         save_offer_metadata_store(store)
-    return {"ok": True, "item_name": clean.item_name, "item_id": clean.item_id}
+    return {
+        "ok": True,
+        "item_name": clean.item_name,
+        "item_id": clean.item_id,
+        "pinned": clean.pinned,
+    }
 
 
 @router.put("/offer-metadata/sync", response_model=OfferMetadataResponse)
@@ -277,11 +389,27 @@ async def sync_offer_metadata(request: OfferMetadataSyncRequest) -> OfferMetadat
         store = load_offer_metadata_store()
         changed = False
         for record in clean_records:
+            # QNAP remains authoritative during one-time/local cache migration.
+            # In particular, a family-shared pinned selection must never be
+            # replaced or duplicated by stale metadata from another iPhone.
+            if _pinned_binding_matches(
+                store,
+                item_name=record.item_name,
+                item_id=record.item_id,
+            ):
+                continue
+
             id_key = offer_metadata_key(record.item_name, record.item_id)
             name_key = offer_metadata_key(record.item_name)
             if record.item_id and id_key not in store and name_key in store:
                 existing = OfferMetadataRecord.model_validate(store.pop(name_key))
-                promoted = existing.model_copy(update={"item_id": record.item_id, "item_name": record.item_name})
+                promoted = existing.model_copy(
+                    update={
+                        "item_id": record.item_id,
+                        "item_name": record.item_name,
+                        "pinned": _record_is_pinned(existing),
+                    }
+                )
                 store[id_key] = promoted.model_dump()
                 changed = True
             elif id_key not in store:

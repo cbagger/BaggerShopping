@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from . import member_pricing_sources_v2 as v2
-from .member_pricing import has_membership_signal
-from .meny_flyer import Offer, Publication
+from . import member_pricing_v3 as pricing_v3
+from .member_pricing import detect_member_pricing, has_membership_signal
+from .meny_flyer import Offer, Publication, _normalize_space
 
 
 COVERAGE_SIGNAL = "member-price-context-nearby-v3"
@@ -46,6 +47,137 @@ def _mark_member_signal_pages(offers: list[Offer]) -> list[Offer]:
     ]
 
 
+def _target_anchor(text: str, offer: Offer) -> tuple[int, int] | None:
+    """Find one strong iPaper text anchor for the exact offer.
+
+    Prefer the campaign heading because it is the same label used by the
+    positioned iPaper marker. Fall back to the longest structured variant only
+    when the heading is absent from pageTexts.
+    """
+    folded = text.casefold()
+    names = [offer.product_name, *(variant.name for variant in offer.variants)]
+    for raw in sorted(names, key=lambda value: (value != offer.product_name, -len(value))):
+        needle = _normalize_space(raw)
+        if len(needle) < 4:
+            continue
+        index = folded.find(needle.casefold())
+        if index >= 0:
+            return index, len(needle)
+    return None
+
+
+def _exact_meny_member_context(page_text: str, offer: Offer) -> str:
+    """Return customer-safe MENY member-price text for one exact iPaper offer.
+
+    iPaper exposes pageTexts in visual reading order. Historically Kurv treated
+    every pageText fragment as review-only context, which meant even explicit
+    MENY ``MEDLEMSPRIS`` price pairs disappeared unless Luna had already audited
+    the hotspot. We can resolve the common MENY shape deterministically without
+    weakening neighbour safety:
+
+    * the exact campaign/variant must anchor the local window;
+    * the provider's structured selling price must occur after that anchor and
+      before the explicit member-price marker;
+    * no other non-unit selling price may sit between the anchor and the
+      provider price, or between the provider price and the member marker; and
+    * the ordinary/member roles must pass the normal generic pricing classifier.
+
+    Unit/reference prices remain allowed because they are explicitly classified
+    as such. Competing selling prices make the local reading order ambiguous and
+    therefore fail closed instead of borrowing a neighbour's member price.
+    """
+    if offer.retailer.casefold().strip() != "meny" or offer.price is None:
+        return ""
+
+    text = _normalize_space(page_text)
+    if not text:
+        return ""
+    anchor = _target_anchor(text, offer)
+    if anchor is None:
+        return ""
+
+    anchor_start, anchor_length = anchor
+    left = max(0, anchor_start - 30)
+    right = min(len(text), anchor_start + anchor_length + 460)
+    window = text[left:right]
+    anchor_in_window = anchor_start - left
+
+    prices = pricing_v3._price_candidates(window)
+    markers = [
+        marker
+        for marker in pricing_v3.EXPLICIT_MEMBER_MARKER_RE.finditer(window)
+        if marker.start() >= anchor_in_window
+    ]
+    if not markers:
+        return ""
+
+    for marker in markers:
+        ordinary_candidates = [
+            candidate
+            for candidate in prices
+            if candidate.start >= anchor_in_window
+            and candidate.end <= marker.start()
+            and pricing_v3._same_price(candidate.value, offer.price)
+            and not candidate.unit_price_context
+            and not candidate.membership_fee_context
+            and not candidate.before_role
+        ]
+        if not ordinary_candidates:
+            continue
+
+        ordinary = ordinary_candidates[-1]
+        if marker.start() - ordinary.end > 100:
+            continue
+
+        competing_before_ordinary = [
+            candidate
+            for candidate in prices
+            if candidate.start >= anchor_in_window
+            and candidate.end <= ordinary.start
+            and not candidate.unit_price_context
+            and not candidate.membership_fee_context
+            and not candidate.before_role
+            and not pricing_v3._same_price(candidate.value, ordinary.value)
+        ]
+        if competing_before_ordinary:
+            continue
+
+        competing_after_ordinary = [
+            candidate
+            for candidate in prices
+            if candidate.start >= ordinary.end
+            and candidate.end <= marker.start()
+            and not candidate.unit_price_context
+            and not candidate.membership_fee_context
+            and not candidate.before_role
+            and not pricing_v3._same_price(candidate.value, ordinary.value)
+        ]
+        if competing_after_ordinary:
+            continue
+
+        context_start = max(anchor_in_window, ordinary.start - 120)
+        context_end = min(len(window), marker.end() + 150)
+        context = _normalize_space(window[context_start:context_end])
+        pricing = detect_member_pricing(
+            retailer=offer.retailer,
+            price=offer.price,
+            normal_price=offer.normal_price,
+            text=context,
+            unit_price=offer.unit_price,
+        )
+        if pricing is None:
+            continue
+        if pricing.ordinary_price is None or not pricing_v3._same_price(
+            pricing.ordinary_price, offer.price
+        ):
+            continue
+        if pricing.member_price >= offer.price - 0.005:
+            continue
+        return context
+
+    return ""
+
+
 def enrich_ipaper_offers(publication: Publication, offers: list[Offer]) -> list[Offer]:
     result: list[Offer] = []
     member_pages = {
@@ -55,16 +187,24 @@ def enrich_ipaper_offers(publication: Publication, offers: list[Offer]) -> list[
     }
     for offer in offers:
         context = ""
+        exact_context = ""
         if offer.page_number is not None and 0 < offer.page_number <= len(publication.page_texts):
+            page_text = publication.page_texts[offer.page_number - 1]
             candidate = v2._localized_context(
-                publication.page_texts[offer.page_number - 1],
+                page_text,
                 v2._significant_needles(offer),
                 radius=300,
             )
             if has_membership_signal(candidate):
                 context = candidate
-        updated = v2._append_context(offer, [context], page_context=True)
-        if context:
+            exact_context = _exact_meny_member_context(page_text, offer)
+
+        # Exact MENY price-role context is customer-safe and may be interpreted
+        # deterministically. Broader page context remains tagged review evidence
+        # only, preserving the neighbour-contamination guard for every retailer.
+        updated = v2._append_context(offer, [exact_context])
+        updated = v2._append_context(updated, [context], page_context=True)
+        if context or exact_context:
             updated = _add_signal(updated)
         if offer.page_number in member_pages:
             updated = _add_signal(updated, PAGE_COHORT_SIGNAL)
