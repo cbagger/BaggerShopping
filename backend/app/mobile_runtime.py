@@ -6,7 +6,6 @@ from typing import Any
 from . import mobile_main as mobile
 from .auth import AuthInteractionRequired, SamsungAuthManager
 from .households import LEGACY_HOUSEHOLD_ID, HouseholdContext, read_household
-from .luna_pricing_fastpath import install as install_luna_pricing_fastpath
 from .mobile_reader_fastpath import install as install_reader_fastpath
 from .samsung import SamsungFoodClient
 
@@ -56,9 +55,10 @@ async def safe_family_samsung_client(context: HouseholdContext) -> Any | None:
     return SamsungFoodClient(list_id=list_id, auth=auth)
 
 
-# Route functions in mobile_main resolve these globals at request time, so the
-# assignments protect normal app traffic without changing persistent data.
+# Route functions in mobile_main resolve this global at request time, so the
+# assignment protects normal app traffic without changing persistent data. The
+# remaining assignment is isolated to Samsung request policy; Luna pricing now
+# uses its public read service directly from the classifier.
 mobile.family_samsung_client = safe_family_samsung_client
-install_luna_pricing_fastpath()
 install_reader_fastpath()
 app = mobile.app
