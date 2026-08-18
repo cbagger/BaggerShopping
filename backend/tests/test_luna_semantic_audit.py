@@ -4,7 +4,9 @@ import json
 import httpx
 
 from app import luna_enrichment as luna
+from app import luna_cost_policy as cost_policy
 from app import luna_semantic_audit as semantic
+from app import luna_semantic_engine as engine
 from app.meny_flyer import Offer, Publication
 
 
@@ -77,6 +79,7 @@ def test_page_audit_becel_visual_only_member_price_requires_verification_crop():
     offer = _offer()
     facts = {
         "visible": True,
+        "membership_price_visible": True,
         "product_name": "Becel flydende",
         "brand": "Becel",
         "ordinary_price": 15,
@@ -94,8 +97,8 @@ def test_page_audit_becel_visual_only_member_price_requires_verification_crop():
         "variant_confidence": 0.80,
         "needs_crop_verification": False,
     }
-    assert semantic._server_needs_crop(offer, facts, 0.96) is True
-    assert "page-audit-new-member-price-verification" in semantic._crop_reasons(
+    assert cost_policy._balanced_server_needs_crop(offer, facts, 0.96) is True
+    assert "page-audit-new-member-price-verification" in cost_policy._balanced_crop_reasons(
         offer, facts, True
     )
 
@@ -129,12 +132,13 @@ def test_page_audit_stages_visual_only_member_price_until_crop(monkeypatch, tmp_
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     offer = _offer()
     publication = _publication(offer)
-    candidate = semantic.collect_page_audit_candidates([publication])[0]
+    candidate = engine.collect_page_audit_candidates([publication])[0]
 
     page_result = {
         "offers": [{
             "offer_id": offer.id,
             "visible": True,
+            "membership_price_visible": True,
             "product_name": "Becel flydende",
             "brand": "Becel",
             "ordinary_price": 15,
@@ -166,22 +170,20 @@ def test_page_audit_stages_visual_only_member_price_until_crop(monkeypatch, tmp_
 
     async def run():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            return await semantic.analyze_page_audit(candidate, client=client)
+            return await engine.analyze_page_audit(candidate, client=client)
 
     result = asyncio.run(run())
     assert result["status"] == "completed"
     assert result["crop_needed"] == 1
 
     store = luna.load_store()
-    row = store["semantic_facts"][semantic.offer_key(offer)]
+    row = store["semantic_facts"][engine.offer_key(offer)]
     assert row["source"] == "page-audit"
     assert row["needs_crop"] is True
     assert "page-audit-new-member-price-verification" in row["crop_reasons"]
     assert row["facts"]["ordinary_price"] == 15
     assert row["facts"]["member_price"] == 12
 
-    # The page observation is valuable and retained, but it must not become an
-    # authoritative pricing override until the independent crop verifies it.
     signature = luna.offer_pricing_signature(offer)
     assert signature not in store["pricing_index"]
     assert store["usage"][luna.month_key()]["by_kind"]["page-audit"]["requests"] == 1
