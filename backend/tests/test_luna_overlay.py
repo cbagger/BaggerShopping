@@ -2,6 +2,7 @@ import json
 
 from app import luna_enrichment as luna
 from app.luna_overlay import apply_cached_enrichment
+from app.luna_semantic_audit import offer_key
 from app.meny_flyer import Offer, Publication
 
 
@@ -61,6 +62,71 @@ def test_cached_luna_variants_can_fill_only_a_weak_variant_result(monkeypatch, t
     assert enriched.brand == "Merrild"
     assert [variant.name for variant in enriched.variants] == ["Merrild Crema", "Merrild Espresso"]
     assert "luna-verified-variants" in enriched.quality_signals
+
+
+def test_semantic_multi_product_variants_surface_in_picker_at_medium_confidence(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path, enabled=True)
+    publication = _publication()
+    offer = publication.structured_offers[0]
+    luna.save_store({
+        "records": {},
+        "semantic_facts": {
+            offer_key(offer): {
+                "source": "page-audit",
+                "needs_crop": False,
+                "facts": {
+                    "visible": True,
+                    "same_offer": True,
+                    "multiple_products": True,
+                    "variants": ["Merrild Crema", "Merrild Espresso"],
+                    "variant_confidence": 0.85,
+                    "identity_confidence": 0.85,
+                    "pricing_confidence": 0.0,
+                },
+            }
+        },
+        "pricing_index": {}, "usage": {}, "events": [],
+    })
+
+    enriched = apply_cached_enrichment([publication])[0].structured_offers[0]
+
+    assert [variant.name for variant in enriched.variants] == [
+        "Merrild Crema", "Merrild Espresso"
+    ]
+    assert enriched.variant_confidence == 0.85
+    assert "luna-picker-variants" in enriched.quality_signals
+    assert "luna-multiple-products" in enriched.quality_signals
+    assert "luna-verified-variants" not in enriched.quality_signals
+
+
+def test_medium_confidence_luna_variants_require_explicit_multi_product_evidence(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path, enabled=True)
+    publication = _publication()
+    offer = publication.structured_offers[0]
+    luna.save_store({
+        "records": {},
+        "semantic_facts": {
+            offer_key(offer): {
+                "source": "page-audit",
+                "needs_crop": False,
+                "facts": {
+                    "visible": True,
+                    "same_offer": True,
+                    "multiple_products": False,
+                    "variants": ["Merrild Crema", "Merrild Espresso"],
+                    "variant_confidence": 0.95,
+                    "identity_confidence": 0.95,
+                    "pricing_confidence": 0.0,
+                },
+            }
+        },
+        "pricing_index": {}, "usage": {}, "events": [],
+    })
+
+    enriched = apply_cached_enrichment([publication])[0].structured_offers[0]
+
+    assert enriched.variants == []
+    assert "luna-picker-variants" not in enriched.quality_signals
 
 
 def test_luna_off_returns_deterministic_offer_unchanged(monkeypatch, tmp_path):
