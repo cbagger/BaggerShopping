@@ -48,8 +48,9 @@ def publication(identifier: str = "new", *, pages: int = 1) -> Publication:
 def isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("FLYER_READINESS_STORE_PATH", str(tmp_path / "readiness.json"))
     monkeypatch.setenv("LUNA_EXECUTION_LOCK_PATH", str(tmp_path / "luna-execution.lock"))
+    monkeypatch.setenv("LUNA_STALLED_PUBLICATIONS_PATH", str(tmp_path / "luna-stalled.json"))
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(luna_worker, "load_config", lambda: {"enabled": True})
+    monkeypatch.setattr(luna_worker, "load_config", lambda: {"enabled": True, "min_apply_confidence": 0.96})
 
 
 def test_idle_queue_does_not_fetch_retailers(tmp_path, monkeypatch):
@@ -190,6 +191,111 @@ def test_execution_lease_prevents_duplicate_paid_queue_runner(tmp_path, monkeypa
     assert readiness.pending_publication_records()
 
 
+def test_unresolved_mandatory_crop_is_persistently_stalled_after_one_paid_attempt(tmp_path, monkeypatch):
+    isolate(tmp_path, monkeypatch)
+    flyer = publication()
+    readiness.observe_publications([flyer], bootstrap_ready_ids=set())
+
+    @dataclass
+    class CropCandidate:
+        offer: Offer
+        fingerprint: str = "crop-fingerprint"
+
+    candidate = CropCandidate(flyer.structured_offers[0])
+    calls = {"fetch": 0, "crop": 0}
+
+    async def fetch():
+        calls["fetch"] += 1
+        return [flyer]
+
+    async def unresolved(value, client=None):
+        calls["crop"] += 1
+        return {
+            "status": "completed",
+            "semantic_facts": {
+                "visible": True,
+                "ordinary_price": 15.0,
+                "member_price": None,
+                "member_program": "Plus",
+                "member_app": None,
+                "membership_price_visible": True,
+                "unit_price": None,
+                "pricing_confidence": 0.99,
+            },
+        }
+
+    monkeypatch.setattr(luna_worker, "fetch_all_publications", fetch)
+    monkeypatch.setattr(luna_worker, "collect_page_audit_candidates", lambda values: [])
+    monkeypatch.setattr(luna_worker, "collect_crop_candidates", lambda values: [candidate])
+    monkeypatch.setattr(luna_worker, "collect_candidates", lambda values: [])
+    monkeypatch.setattr(luna_worker, "_split_crop_candidates", lambda values: (list(values), []))
+    monkeypatch.setattr(luna_worker, "_requeue_mandatory_crop", lambda *args, **kwargs: None)
+    monkeypatch.setattr(luna_worker, "analyze_crop_candidate", unresolved)
+    monkeypatch.setattr(luna_worker._cost_policy, "status_payload", lambda: {})
+
+    first = asyncio.run(luna_worker.run_queued_once())
+    assert first["status"] == "pricing-crop-unresolved"
+    assert first["stalled"] is True
+    assert calls == {"fetch": 1, "crop": 1}
+
+    second = asyncio.run(luna_worker.run_queued_once())
+    assert second["status"] == "stalled"
+    assert calls == {"fetch": 1, "crop": 1}
+
+    assert luna_worker._stalled_publications_path().exists()
+
+
+def test_same_mandatory_crop_cannot_be_paid_twice_when_collector_repeats_it(tmp_path, monkeypatch):
+    isolate(tmp_path, monkeypatch)
+    flyer = publication()
+    readiness.observe_publications([flyer], bootstrap_ready_ids=set())
+
+    @dataclass
+    class CropCandidate:
+        offer: Offer
+        fingerprint: str = "repeat-fingerprint"
+
+    candidate = CropCandidate(flyer.structured_offers[0])
+    calls = {"fetch": 0, "crop": 0}
+
+    async def fetch():
+        calls["fetch"] += 1
+        return [flyer]
+
+    async def completed(value, client=None):
+        calls["crop"] += 1
+        return {
+            "status": "completed",
+            "semantic_facts": {
+                "visible": True,
+                "ordinary_price": 15.0,
+                "member_price": None,
+                "member_program": None,
+                "member_app": None,
+                "membership_price_visible": False,
+                "unit_price": None,
+                "pricing_confidence": 0.99,
+            },
+        }
+
+    monkeypatch.setattr(luna_worker, "fetch_all_publications", fetch)
+    monkeypatch.setattr(luna_worker, "collect_page_audit_candidates", lambda values: [])
+    monkeypatch.setattr(luna_worker, "collect_crop_candidates", lambda values: [candidate])
+    monkeypatch.setattr(luna_worker, "collect_candidates", lambda values: [])
+    monkeypatch.setattr(luna_worker, "_split_crop_candidates", lambda values: (list(values), []))
+    monkeypatch.setattr(luna_worker, "analyze_crop_candidate", completed)
+    monkeypatch.setattr(luna_worker._cost_policy, "status_payload", lambda: {})
+
+    first = asyncio.run(luna_worker.run_queued_once())
+    assert first["status"] == "mandatory-work-stalled"
+    assert first["repeated_pricing_candidates"] == 1
+    assert calls == {"fetch": 1, "crop": 1}
+
+    second = asyncio.run(luna_worker.run_queued_once())
+    assert second["status"] == "stalled"
+    assert calls == {"fetch": 1, "crop": 1}
+
+
 def test_mandatory_pricing_crop_requires_pricing_confidence_not_identity_only():
     config = {"min_apply_confidence": 0.96}
     result = {
@@ -220,4 +326,26 @@ def test_mandatory_pricing_crop_rejects_invalid_member_relation():
     }
     assert luna_worker._mandatory_pricing_crop_verified(
         result, {"min_apply_confidence": 0.96}
+    ) is False
+
+
+def test_offer_aware_mandatory_crop_rejects_member_price_without_visible_badge():
+    offer = publication().structured_offers[0]
+    result = {
+        "status": "completed",
+        "semantic_facts": {
+            "visible": True,
+            "ordinary_price": 15.0,
+            "member_price": 12.0,
+            "member_program": "Plus",
+            "member_app": None,
+            "membership_price_visible": False,
+            "unit_price": None,
+            "pricing_confidence": 0.99,
+        },
+    }
+    assert luna_worker._mandatory_pricing_crop_verified(
+        result,
+        {"min_apply_confidence": 0.96},
+        offer,
     ) is False
