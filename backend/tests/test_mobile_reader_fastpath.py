@@ -1,8 +1,10 @@
 import asyncio
 
+import pytest
+from fastapi import HTTPException
+
 from app import mobile_offers
 from app.meny_flyer import Offer, OfferVariant, Publication
-from app.mobile_reader_fastpath import install, reader_offer_payload
 
 
 def sample_offer() -> Offer:
@@ -37,14 +39,10 @@ def sample_publication() -> Publication:
     )
 
 
-def test_reader_payload_keeps_hotspot_and_variants_without_product_identity(monkeypatch):
-    monkeypatch.setattr(
-        mobile_offers,
-        "load_feedback_store",
-        lambda _: {},
-    )
+def test_explicit_reader_payload_keeps_hotspot_and_variants_without_product_identity(monkeypatch):
+    monkeypatch.setattr(mobile_offers, "load_feedback_store", lambda _: {})
 
-    payload = reader_offer_payload(sample_offer())
+    payload = mobile_offers._offer_payload(sample_offer(), include_identity=False)
 
     assert payload["hotspot_x"] == 0.1
     assert payload["hotspot_y"] == 0.2
@@ -68,9 +66,27 @@ def test_publication_reader_endpoint_does_not_run_product_identity(monkeypatch):
     monkeypatch.setattr(mobile_offers, "load_feedback_store", lambda _: {})
     monkeypatch.setattr(mobile_offers, "analyze", forbidden_analyze)
 
-    install()
     response = asyncio.run(mobile_offers.publication_offers(publication.id))
 
     assert len(response["offers"]) == 1
     assert response["offers"][0]["hotspot_x"] == 0.1
     assert "product_identity" not in response["offers"][0]
+
+
+def test_stale_publication_id_never_falls_back_to_current_meny(monkeypatch):
+    publication = sample_publication()
+
+    async def publications():
+        return [publication]
+
+    async def forbidden_current_publication():
+        raise AssertionError("stale flyer id must never substitute another publication")
+
+    monkeypatch.setattr(mobile_offers, "_publications", publications)
+    monkeypatch.setattr(mobile_offers, "_publication", forbidden_current_publication)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(mobile_offers.publication_offers("stale-publication-id"))
+
+    assert exc.value.status_code == 404
+    assert "findes ikke længere" in str(exc.value.detail)
