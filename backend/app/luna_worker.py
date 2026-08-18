@@ -6,7 +6,7 @@ import os
 
 import httpx
 
-from . import _original_fetch_all_publications as fetch_all_publications
+from .flyer_publications import fetch_raw_publications as fetch_all_publications
 from .flyer_readiness import (
     mark_failed,
     mark_processing_attempt,
@@ -23,13 +23,8 @@ from .luna_enrichment import (
     save_store,
     status_payload,
 )
-# Install semantic invariants first, then the quality/cost policy. Both patch the
-# shared semantic module before the worker binds functions locally.
-from . import luna_semantic_guards as _semantic_guards
-_semantic_guards.install()
 from . import luna_cost_policy as _cost_policy
-_cost_policy.install()
-from .luna_semantic_audit import (
+from .luna_semantic_engine import (
     analyze_crop_candidate,
     analyze_page_audit,
     collect_crop_candidates,
@@ -205,7 +200,7 @@ async def run_once() -> dict:
                 processed_crops += 1
                 processed_crop_fingerprints.add(candidate.fingerprint)
 
-        remaining = max(0, total_limit - processed_pages - processed_crops - processed_fallback)
+        remaining = max(0, total_limit - processed_pages - processed_crops)
         fallback_candidates = _paid_candidates(collect_candidates(publications))
         if stop_status is None and remaining:
             for candidate in fallback_candidates[:remaining]:
@@ -292,8 +287,6 @@ async def _process_publication(record: dict) -> dict:
 
     actual_fingerprint = publication_fingerprint(publication)
     if actual_fingerprint != expected_fingerprint:
-        # Discovery will enqueue the newer provider version. Never publish a
-        # version different from the one whose processing job we accepted.
         mark_failed(publication_id, expected_fingerprint, "publication-version-changed")
         return {
             "status": "publication-version-changed",
@@ -307,8 +300,6 @@ async def _process_publication(record: dict) -> dict:
     processed_fallback = 0
 
     async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
-        # Rich audit every still-unprocessed page in THIS publication. There is
-        # no hourly/broad scan and no cross-retailer work while this event runs.
         page_candidates = collect_page_audit_candidates([publication])
         for candidate in page_candidates:
             result = await analyze_page_audit(candidate, client=client)
@@ -326,9 +317,6 @@ async def _process_publication(record: dict) -> dict:
                 }
             processed_pages += 1
 
-        # Price/member safety is mandatory before publication. Keep the page
-        # uncertainty around until the targeted crop returns genuinely safe
-        # pricing facts; identity confidence alone can never satisfy this gate.
         pricing_candidates, _ = _split_crop_candidates(collect_crop_candidates([publication]))
         for candidate in pricing_candidates:
             before_store = load_store()
@@ -351,8 +339,6 @@ async def _process_publication(record: dict) -> dict:
                 }
             processed_pricing_crops += 1
 
-        # Offers without a usable page image keep the old narrow verification
-        # fallback. It has already been restricted to price/member-critical rows.
         fallback_candidates = _paid_candidates(collect_candidates([publication]))
         for candidate in fallback_candidates:
             result = await analyze_candidate(candidate, client=client)
@@ -370,10 +356,6 @@ async def _process_publication(record: dict) -> dict:
                 }
             processed_fallback += 1
 
-        # Variant enrichment is quality-first but remains safe-to-degrade. Try
-        # every genuine gap while its separate monthly slice is available. If
-        # that optional slice is exhausted, multiple_products still blocks
-        # unsafe direct-add and the flyer can be published safely.
         _, variant_candidates = _split_crop_candidates(collect_crop_candidates([publication]))
         for candidate in variant_candidates:
             if not _cost_policy.variant_crop_budget_allows(config):
@@ -387,8 +369,6 @@ async def _process_publication(record: dict) -> dict:
                 return {"status": status, "publication_id": publication_id}
             processed_variant_crops += 1
 
-    # Mandatory work must be completely drained. Variant-only rows may remain
-    # if their optional slice is exhausted; their UI state is conservative.
     remaining_pages = collect_page_audit_candidates([publication])
     remaining_pricing, remaining_variants = _split_crop_candidates(
         collect_crop_candidates([publication])
@@ -438,8 +418,6 @@ async def run_queued_once() -> dict:
 
 
 async def main() -> None:
-    # Queue polling is local /data only; it does NOT poll retailers or OpenAI.
-    # The flyer-push detector creates jobs when a provider version changes.
     idle_seconds = max(5, int(os.getenv("LUNA_QUEUE_POLL_SECONDS", "15")))
     error_seconds = max(30, int(os.getenv("LUNA_QUEUE_ERROR_BACKOFF_SECONDS", "120")))
 
@@ -453,7 +431,6 @@ async def main() -> None:
             elif status in {"budget-exhausted", "missing-api-key", "disabled"}:
                 await asyncio.sleep(max(300, error_seconds))
             elif status == "ready":
-                # Drain another queued flyer immediately.
                 await asyncio.sleep(1)
             else:
                 await asyncio.sleep(error_seconds)
