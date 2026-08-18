@@ -1,7 +1,8 @@
 import json
 
 from app import luna_enrichment
-from app import luna_pricing_fastpath
+from app import luna_pricing_reader
+from app import member_pricing_v3
 from app.luna_pricing_reader import LunaPricingReader
 
 
@@ -120,14 +121,25 @@ def test_public_pricing_reader_rejects_unverified_record(monkeypatch, tmp_path):
     assert LunaPricingReader(store_path).member_pricing_override(**args) is None
 
 
-def test_compatibility_fastpath_delegates_to_public_reader(monkeypatch):
-    sentinel = object()
-
+def test_member_pricing_v3_uses_public_reader_without_runtime_install(monkeypatch):
     monkeypatch.setattr(
-        "app.luna_pricing_fastpath.member_pricing_override_fast",
-        lambda **_: sentinel,
+        luna_pricing_reader,
+        "member_pricing_override",
+        lambda **_: {
+            "authoritative": True,
+            "ordinary_price": 32.0,
+            "member_price": 25.0,
+            "member_program": "MENY medlemspris",
+            "member_app": "MENY-appen",
+            "requires_activation": False,
+            "pricing_confidence": 0.99,
+            "fingerprint": "verified",
+        },
     )
 
-    luna_pricing_fastpath.install()
+    result = member_pricing_v3.detect_member_pricing(**_pricing_args())
 
-    assert luna_enrichment.member_pricing_override(**_pricing_args()) is sentinel
+    assert result is not None
+    assert result.ordinary_price == 32.0
+    assert result.member_price == 25.0
+    assert result.source == "luna-verified"
