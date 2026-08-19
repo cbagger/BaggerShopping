@@ -33,7 +33,6 @@ jobs:
       - name: Validate Control Center JavaScript
         run: |
           node --check app/control_center_static/app.js
-          node --check app/control_center_static/operations_guard.js
           node --check app/control_center_static/operations.js
       - name: Build backend image
         run: docker build --build-arg KURV_BUILD_COMMIT=${{ github.sha }} -t kurv-backend:ci .
