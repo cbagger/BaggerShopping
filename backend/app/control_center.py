@@ -21,7 +21,7 @@ from .control_center_catalog import IOS_RELEASE, catalog, dataflow
 from .control_telemetry import read_heartbeat
 
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 STATIC_DIR = Path(__file__).with_name("control_center_static")
 SNAPSHOT_TTL_SECONDS = 2.0
 
@@ -150,7 +150,9 @@ def _index_html() -> str:
     html = html.replace(
         "</head>",
         '  <link rel="stylesheet" href="/assets/operations.css">\n'
+        '  <link rel="stylesheet" href="/assets/dashboard.css">\n'
         '  <script src="/assets/operations.js" defer></script>\n'
+        '  <script src="/assets/dashboard.js" defer></script>\n'
         "</head>",
     )
     return html
@@ -171,6 +173,7 @@ async def health() -> dict[str, Any]:
         "read_only": True,
         "secrets_in_process": False,
         "operations_v2": True,
+        "paged_dashboard": True,
     }
 
 
