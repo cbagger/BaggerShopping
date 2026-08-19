@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import control_center_snapshot
 from .control_center_catalog import IOS_RELEASE, catalog, dataflow
+from .control_telemetry import read_heartbeat
 
 
 APP_VERSION = "1.0.0"
@@ -32,6 +33,30 @@ app.mount("/assets", StaticFiles(directory=STATIC_DIR), name="assets")
 _snapshot_lock = asyncio.Lock()
 _snapshot_cache: dict[str, Any] | None = None
 _snapshot_cached_at = 0.0
+
+# Control Center intentionally runs without the production .env. Most Luna state
+# is already available from the shared read-only state files; the one fact that
+# cannot be inferred safely without the secret itself is whether the worker has
+# an OpenAI API key. The Luna worker therefore publishes only a boolean plus the
+# public model/config state in its sanitized heartbeat.
+_base_luna_status_payload = control_center_snapshot.luna_enrichment.status_payload
+
+
+def _sanitized_luna_status_payload() -> dict[str, Any]:
+    payload = dict(_base_luna_status_payload())
+    heartbeat = read_heartbeat("luna-worker", stale_after=75)
+    metrics = heartbeat.get("metrics") if isinstance(heartbeat.get("metrics"), dict) else {}
+    for key in ("enabled", "apply_results", "model", "api_key_configured"):
+        if key in metrics:
+            payload[key] = metrics[key]
+    if isinstance(metrics.get("usage"), dict):
+        payload["usage"] = dict(metrics["usage"])
+    if isinstance(metrics.get("records"), dict):
+        payload["records"] = dict(metrics["records"])
+    return payload
+
+
+control_center_snapshot.luna_enrichment.status_payload = _sanitized_luna_status_payload
 
 
 def _private_address(value: str) -> bool:
@@ -100,6 +125,7 @@ async def health() -> dict[str, Any]:
         "version": APP_VERSION,
         "local_only": True,
         "read_only": True,
+        "secrets_in_process": False,
     }
 
 
