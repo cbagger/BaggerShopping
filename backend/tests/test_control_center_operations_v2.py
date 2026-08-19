@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app import control_center
 from app import control_center_alerts
+from app import control_center_efficiency
 from app import control_center_ops as ops
 from app import control_center_snapshot_v2
 from app import luna_controlled_worker
@@ -22,6 +23,8 @@ def _isolate_ops(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(ops, "STATE_PATH", root / "operations-state.json")
     monkeypatch.setattr(ops, "ALERTS_PATH", root / "alert-lifecycle.json")
     monkeypatch.setattr(ops, "BACKUP_STATUS_PATH", root / "backup-status.json")
+    control_center_efficiency.reset_caches_for_tests()
+    control_center_alerts.reset_cache_for_tests()
 
 
 def test_operations_assets_are_injected_into_light_shell():
@@ -36,6 +39,7 @@ def test_operations_assets_are_injected_into_light_shell():
 
 
 def test_storage_status_never_labels_whole_qnap_used_bytes_as_kurv(monkeypatch):
+    control_center_efficiency.reset_caches_for_tests()
     monkeypatch.setattr(ops, "_dir_size", lambda path: 123_456 if str(path) == "/data" else 4_096)
     fake = SimpleNamespace(f_frsize=4096, f_blocks=1_000_000, f_bavail=250_000)
     monkeypatch.setattr(ops.os, "statvfs", lambda path: fake)
@@ -48,6 +52,17 @@ def test_storage_status_never_labels_whole_qnap_used_bytes_as_kurv(monkeypatch):
     assert result["qnap_volume_used_bytes"] == 3_072_000_000
     assert result["qnap_volume_used_bytes"] != result["kurv_persistent_bytes"]
     assert "hele det underliggende volume" in result["scope_note"]
+
+
+def test_storage_measurement_is_cached_for_live_dashboard(monkeypatch):
+    control_center_efficiency.reset_caches_for_tests()
+    calls = []
+    monkeypatch.setattr(control_center_efficiency, "_base_storage_status", lambda: calls.append(1) or {"kurv_persistent_bytes": 10})
+    monkeypatch.setattr(control_center_efficiency.time, "monotonic", lambda: 100.0)
+    first = control_center_efficiency.storage_status()
+    second = control_center_efficiency.storage_status()
+    assert first == second == {"kurv_persistent_bytes": 10}
+    assert len(calls) == 1
 
 
 def test_activity_drops_runtime_polling_but_keeps_openai_cost_and_coverage():
@@ -87,8 +102,6 @@ def test_openai_event_is_only_written_when_usage_really_increases(monkeypatch):
 
 def test_alert_lifecycle_counts_episodes_not_dashboard_refreshes(monkeypatch, tmp_path):
     _isolate_ops(monkeypatch, tmp_path)
-    monkeypatch.setattr(control_center_alerts.ops, "ALERTS_PATH", ops.ALERTS_PATH)
-    monkeypatch.setattr(control_center_alerts.ops, "EVENTS_PATH", ops.EVENTS_PATH)
     monkeypatch.setattr(control_center_alerts.time, "time", lambda: 1000)
     alert = [{"severity": "warning", "title": "14 degraded", "detail": "Quality"}]
 
