@@ -150,7 +150,6 @@ def _index_html() -> str:
     html = html.replace(
         "</head>",
         '  <link rel="stylesheet" href="/assets/operations.css">\n'
-        '  <script src="/assets/operations_guard.js" defer></script>\n'
         '  <script src="/assets/operations.js" defer></script>\n'
         "</head>",
     )
