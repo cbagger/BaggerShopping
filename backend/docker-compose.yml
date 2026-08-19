@@ -125,7 +125,10 @@ services:
       start_period: 20s
 
   control-center:
-    build: .
+    build:
+      context: .
+      args:
+        KURV_BUILD_COMMIT: ${KURV_BUILD_COMMIT:-unknown}
     container_name: bagger-shopping-control-center
     restart: unless-stopped
     environment:
