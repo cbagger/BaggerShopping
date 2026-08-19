@@ -30,6 +30,10 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Run backend tests
         run: pytest -q
+      - name: Validate Control Center JavaScript
+        run: node --check app/control_center_static/app.js
+      - name: Build backend image
+        run: docker build -t kurv-backend:ci .
       - name: Build Samsung login broker image
         run: docker build -f Dockerfile.login-broker -t kurv-samsung-login:ci .
 
