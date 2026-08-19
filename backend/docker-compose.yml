@@ -53,10 +53,12 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      FLYER_PUSH_INTERVAL_SECONDS: "900"
     command:
       - python
       - -m
-      - app.flyer_push
+      - app.flyer_push_quality
     volumes:
       - ./data:/data
       - ./secrets:/run/secrets:ro
