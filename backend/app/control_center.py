@@ -8,15 +8,20 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import control_center_snapshot
+from . import control_center_alerts
+from . import control_center_efficiency
+from . import control_center_freshness
+from . import control_center_ops
+from . import control_center_snapshot as control_center_snapshot_base
+from . import control_center_snapshot_v2
 from .control_center_catalog import IOS_RELEASE, catalog, dataflow
 from .control_telemetry import read_heartbeat
 
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.1.0"
 STATIC_DIR = Path(__file__).with_name("control_center_static")
 SNAPSHOT_TTL_SECONDS = 2.0
 
@@ -39,7 +44,7 @@ _snapshot_cached_at = 0.0
 # cannot be inferred safely without the secret itself is whether the worker has
 # an OpenAI API key. The Luna worker therefore publishes only a boolean plus the
 # public model/config state in its sanitized heartbeat.
-_base_luna_status_payload = control_center_snapshot.luna_enrichment.status_payload
+_base_luna_status_payload = control_center_snapshot_base.luna_enrichment.status_payload
 
 
 def _sanitized_luna_status_payload() -> dict[str, Any]:
@@ -56,7 +61,11 @@ def _sanitized_luna_status_payload() -> dict[str, Any]:
     return payload
 
 
-control_center_snapshot.luna_enrichment.status_payload = _sanitized_luna_status_payload
+control_center_snapshot_base.luna_enrichment.status_payload = _sanitized_luna_status_payload
+control_center_ops.reconcile_alerts = control_center_alerts.reconcile_alerts
+control_center_ops.storage_status = control_center_efficiency.storage_status
+control_center_ops.record_snapshot = control_center_efficiency.record_snapshot
+control_center_ops.freshness_status = control_center_freshness.freshness_status
 
 # Mobile API deliberately disables FastAPI docs/openapi. Its internal `/docs`
 # route therefore returns 404 even when the process is perfectly healthy. The
@@ -64,7 +73,7 @@ control_center_snapshot.luna_enrichment.status_payload = _sanitized_luna_status_
 # must interpret this exact internal 404 as proof that the Mobile API process is
 # alive. Production readiness is still independently checked by Mobile API's
 # authenticated Docker healthcheck.
-_base_runtime_probes = control_center_snapshot.runtime_probes
+_base_runtime_probes = control_center_snapshot_base.runtime_probes
 
 
 async def _safe_runtime_probes(*, force: bool = False) -> dict[str, dict[str, Any]]:
@@ -86,7 +95,7 @@ async def _safe_runtime_probes(*, force: bool = False) -> dict[str, dict[str, An
     return probes
 
 
-control_center_snapshot.runtime_probes = _safe_runtime_probes
+control_center_snapshot_base.runtime_probes = _safe_runtime_probes
 
 
 def _private_address(value: str) -> bool:
@@ -107,12 +116,6 @@ def _client_is_local(host: str | None) -> bool:
 
 
 def _request_host_is_local(host: str | None) -> bool:
-    """Reject public DNS names even when a local reverse proxy forwards them.
-
-    A user may use the NAS LAN IP, localhost or an mDNS `.local` hostname. An
-    accidental Nginx/domain mapping should still receive 403 because its Host
-    header is not a local address/name.
-    """
     if not host:
         return False
     normalized = host.strip().casefold().rstrip(".")
@@ -142,9 +145,20 @@ async def local_only(request: Request, call_next):
     return response
 
 
+def _index_html() -> str:
+    html = (STATIC_DIR / "index.html").read_text("utf-8")
+    html = html.replace(
+        "</head>",
+        '  <link rel="stylesheet" href="/assets/operations.css">\n'
+        '  <script src="/assets/operations.js" defer></script>\n'
+        "</head>",
+    )
+    return html
+
+
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
+async def index() -> HTMLResponse:
+    return HTMLResponse(_index_html())
 
 
 @app.get("/api/health")
@@ -156,6 +170,7 @@ async def health() -> dict[str, Any]:
         "local_only": True,
         "read_only": True,
         "secrets_in_process": False,
+        "operations_v2": True,
     }
 
 
@@ -168,7 +183,7 @@ async def snapshot(*, force: bool = False) -> dict[str, Any]:
         now = time.monotonic()
         if not force and _snapshot_cache is not None and now - _snapshot_cached_at < SNAPSHOT_TTL_SECONDS:
             return _snapshot_cache
-        value = await control_center_snapshot.build_snapshot(control_center_version=APP_VERSION)
+        value = await control_center_snapshot_v2.build_snapshot(control_center_version=APP_VERSION)
         _snapshot_cache = value
         _snapshot_cached_at = time.monotonic()
         return value

@@ -63,5 +63,5 @@ def test_mobile_non_404_probe_failure_remains_failure(monkeypatch):
     assert mobile["error"] == "HTTP 503"
 
 
-def test_control_center_hotfix_version_is_1_0_1():
-    assert control_center.APP_VERSION == "1.0.1"
+def test_control_center_operations_version_is_1_1_0():
+    assert control_center.APP_VERSION == "1.1.0"

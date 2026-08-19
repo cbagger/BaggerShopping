@@ -31,9 +31,11 @@ jobs:
       - name: Run backend tests
         run: pytest -q
       - name: Validate Control Center JavaScript
-        run: node --check app/control_center_static/app.js
+        run: |
+          node --check app/control_center_static/app.js
+          node --check app/control_center_static/operations.js
       - name: Build backend image
-        run: docker build -t kurv-backend:ci .
+        run: docker build --build-arg KURV_BUILD_COMMIT=${{ github.sha }} -t kurv-backend:ci .
       - name: Smoke Control Center container
         run: |
           docker run -d --name kurv-control-center-ci -p 18092:8092 \
@@ -61,8 +63,17 @@ jobs:
           assert payload['overall']['components'] >= 30
           assert 'components' in payload and 'dataflow' in payload
           assert 'luna' in payload and 'flyers' in payload and 'data' in payload
-          assert payload['release']['control_center'] == '1.0.1'
-          print('CONTROL_CENTER_SMOKE_OK')
+          assert payload['release']['control_center'] == '1.1.0'
+          assert 'operations' in payload
+          assert 'end_to_end' in payload['operations']
+          assert 'degraded_impact' in payload['operations']
+          assert 'trends' in payload['operations']
+          assert 'storage' in payload['data']
+          assert payload['data']['storage']['kurv_persistent_bytes'] >= 0
+          assert payload['operations']['deployment']['build_commit'] != 'unknown'
+          page = Path('/tmp/kurv-control-health.json').read_text()
+          assert 'operations_v2' in page
+          print('CONTROL_CENTER_OPERATIONS_V2_SMOKE_OK')
           PY
           docker rm -f kurv-control-center-ci
       - name: Build Samsung login broker image

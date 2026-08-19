@@ -6,6 +6,7 @@ from typing import Any
 
 from . import luna_member_coverage
 from . import luna_resilient_strong_worker as worker
+from .control_center_ops import append_event
 from .control_telemetry import write_heartbeat
 from .luna_enrichment import status_payload as luna_status
 from .luna_resilient_worker import _load_quarantine
@@ -69,6 +70,39 @@ def _write_current_heartbeat() -> None:
         write_heartbeat("luna-worker", status="degraded", detail=str(exc))
 
 
+def _usage_delta(before: dict[str, Any], after: dict[str, Any]) -> tuple[int, float, int, int]:
+    before_usage = before.get("usage", {}) if isinstance(before.get("usage"), dict) else {}
+    after_usage = after.get("usage", {}) if isinstance(after.get("usage"), dict) else {}
+    requests = max(0, int(after_usage.get("requests") or 0) - int(before_usage.get("requests") or 0))
+    cost = max(0.0, float(after_usage.get("estimated_cost_dkk") or 0.0) - float(before_usage.get("estimated_cost_dkk") or 0.0))
+    input_tokens = max(0, int(after_usage.get("input_tokens") or 0) - int(before_usage.get("input_tokens") or 0))
+    output_tokens = max(0, int(after_usage.get("output_tokens") or 0) - int(before_usage.get("output_tokens") or 0))
+    return requests, cost, input_tokens, output_tokens
+
+
+def _record_openai_event(before: dict[str, Any], after: dict[str, Any], result: dict[str, Any]) -> None:
+    requests, cost, input_tokens, output_tokens = _usage_delta(before, after)
+    if requests <= 0:
+        return
+    focus = result.get("coverage_focus") if isinstance(result.get("coverage_focus"), dict) else {}
+    retailer = str(focus.get("retailer") or result.get("retailer") or "") or None
+    title = str(focus.get("title") or result.get("title") or "")
+    target = " · ".join(part for part in (retailer, title) if part) or "Luna enrichment"
+    append_event(
+        category="luna",
+        event_type="openai_usage",
+        title=f"OpenAI · {requests} request{'s' if requests != 1 else ''}",
+        detail=f"{target} · +{input_tokens + output_tokens:,} tokens · +{cost:.4f} kr.",
+        severity="cost",
+        component="luna-worker",
+        retailer=retailer,
+        publication_id=str(focus.get("publication_id") or result.get("publication_id") or "") or None,
+        requests=requests,
+        cost_dkk=cost,
+        metadata={"input_tokens": input_tokens, "output_tokens": output_tokens, "worker_status": result.get("status")},
+    )
+
+
 async def _heartbeat_loop() -> None:
     while True:
         _write_current_heartbeat()
@@ -87,9 +121,12 @@ async def main() -> None:
     try:
         while True:
             try:
+                before = luna_status()
                 result = await worker.run_once()
+                after = luna_status()
                 _LAST_RESULT = dict(result)
                 worker.base.log.info("Luna controlled event: %s", result)
+                _record_openai_event(before, after, _LAST_RESULT)
                 _write_current_heartbeat()
 
                 status = str(result.get("status") or "")
@@ -113,6 +150,7 @@ async def main() -> None:
             except Exception as exc:
                 _LAST_RESULT = {"status": "error", "detail": str(exc)[:500]}
                 write_heartbeat("luna-worker", status="error", detail=str(exc))
+                append_event(category="system", event_type="worker_error", title="Luna worker fejl", detail=str(exc), severity="error", component="luna-worker")
                 worker.base.log.exception("Luna controlled worker failed")
                 await asyncio.sleep(pause_seconds)
     finally:
