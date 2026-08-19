@@ -56,7 +56,7 @@ services:
     command:
       - python
       - -m
-      - app.flyer_push
+      - app.flyer_push_quality
     volumes:
       - ./data:/data
       - ./secrets:/run/secrets:ro
