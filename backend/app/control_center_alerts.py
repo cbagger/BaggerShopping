@@ -1,28 +1,44 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
 
 from . import control_center_ops as ops
+
+
+_store_cache: dict[str, Any] | None = None
+_store_cache_path: Path | None = None
 
 
 def _key(row: dict[str, Any]) -> str:
     return "|".join((str(row.get("severity") or ""), str(row.get("title") or ""), str(row.get("detail") or "")))[:1200]
 
 
+def _load_store() -> dict[str, Any]:
+    global _store_cache, _store_cache_path
+    path = Path(ops.ALERTS_PATH)
+    if _store_cache is None or _store_cache_path != path:
+        loaded = ops._read_json(path, {"active": {}, "resolved": [], "episode_counts": {}})
+        _store_cache = loaded if isinstance(loaded, dict) else {"active": {}, "resolved": [], "episode_counts": {}}
+        _store_cache_path = path
+    return _store_cache
+
+
 def reconcile_alerts(active: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Track continuous alert episodes, not snapshot/heartbeat frequency."""
+    """Track alert episodes without turning the SSE refresh into disk writes."""
+    global _store_cache
     now = int(time.time())
-    store = ops._read_json(ops.ALERTS_PATH, {"active": {}, "resolved": [], "episode_counts": {}})
-    if not isinstance(store, dict):
-        store = {"active": {}, "resolved": [], "episode_counts": {}}
+    store = _load_store()
     previous = store.get("active", {}) if isinstance(store.get("active"), dict) else {}
-    resolved = store.get("resolved", []) if isinstance(store.get("resolved"), list) else []
-    episode_counts = store.get("episode_counts", {}) if isinstance(store.get("episode_counts"), dict) else {}
+    resolved = list(store.get("resolved", [])) if isinstance(store.get("resolved"), list) else []
+    episode_counts = dict(store.get("episode_counts", {})) if isinstance(store.get("episode_counts"), dict) else {}
 
     next_active: dict[str, dict[str, Any]] = {}
     enriched: list[dict[str, Any]] = []
     current_keys = {_key(row) for row in active}
+    previous_keys = set(previous)
+    transition = current_keys != previous_keys
 
     for row in active:
         key = _key(row)
@@ -65,8 +81,14 @@ def reconcile_alerts(active: list[dict[str, Any]]) -> list[dict[str, Any]]:
         })
         ops.append_event(category="system", event_type="alert_resolved", title=f"Løst · {title}", severity="success", at=now)
 
-    ops._write_json(
-        ops.ALERTS_PATH,
-        {"active": next_active, "resolved": resolved[-80:], "episode_counts": episode_counts},
-    )
+    next_store = {"active": next_active, "resolved": resolved[-80:], "episode_counts": episode_counts}
+    _store_cache = next_store
+    if transition or not store:
+        ops._write_json(ops.ALERTS_PATH, next_store)
     return enriched
+
+
+def reset_cache_for_tests() -> None:
+    global _store_cache, _store_cache_path
+    _store_cache = None
+    _store_cache_path = None
