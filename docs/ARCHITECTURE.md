@@ -12,9 +12,9 @@ Kurv is split into a QNAP runtime, shared persistent state, external integration
 | `flyer-push-worker` | New flyer detection and quality-gated APNs delivery | internal |
 | `shopping-cleanup-worker` | Midnight cleanup of checked shopping items and related offer metadata | internal |
 | `samsung-login-broker` | Isolated self-service Samsung login flow | 8091 |
-| `control-center` | Local-only, read-only observability and architecture UI | 8092 |
+| `control-center` | Local-only, read-only observability, architecture and operations UI | 8092 |
 
-The Control Center never mounts the Docker socket and exposes no write/control endpoints. Worker wrappers only emit best-effort heartbeat telemetry under `/data/control-center/heartbeats`; telemetry failure cannot stop a production worker.
+The Control Center never mounts the Docker socket and exposes no write/control endpoints. Worker wrappers only emit best-effort heartbeat/event telemetry under `/data/control-center`; telemetry failure cannot stop a production worker.
 
 ## Flyer and Luna pipeline
 
@@ -82,16 +82,41 @@ The QNAP cannot truthfully observe whether a specific iOS engine is executing at
 
 Major client-side engines include Smart Offer Matching, Offer Price Guard, Offer Search Ranker, Offer Image Recognition, Store Geofence Engine, Member Price Geofence Reminder, Store Repository/Search and performance/cache layers.
 
+## Control Center Operations v2
+
+Operations v2 separates **live status**, **meaningful events**, **quality**, and **capacity** instead of treating every poll as activity.
+
+- Runtime heartbeats remain live but are not copied into the Activity feed every few seconds.
+- A Luna/OpenAI event is written only when the persistent OpenAI request counter actually increases. The event contains request delta, token delta and estimated DKK delta, never credentials.
+- End-to-end status is read-only evidence across provider, APIs, Luna coverage, family state and Samsung. It deliberately does not create/delete a test shopping item.
+- Freshness is workload-aware: an idle Luna worker with zero pending coverage and an APNs worker with nothing new to send remain healthy.
+- Alert lifecycle records first seen, duration, resolution and recurrence episodes; dashboard refreshes do not increment the recurrence count.
+- Trend history is sampled every five minutes and retained locally for approximately seven days.
+- Directory-size measurement is cached and never runs at the three-second SSE cadence.
+- Deploy drift compares the non-secret build commit embedded in the Control Center image against `/data/deployed-commit.txt`.
+- Backup status is a registry of the last verified deployment backup; it is metadata only and never performs a restore from the UI.
+
+### Storage scope
+
+Storage is intentionally split into two different concepts:
+
+1. **Kurv persistent data** = actual recursive size of Kurv's mounted `/data` directory.
+2. **QNAP volume capacity** = total/free/host-used capacity reported by the filesystem backing `/data`.
+
+The second value describes the whole underlying QNAP volume and must never be labelled as Kurv's own usage. Control Center presents QNAP free/total/used only as host infrastructure context.
+
 ## Control Center security
 
 Control Center is designed for LAN access only:
 
 - no domain / reverse-proxy configuration is part of the service;
 - port 8092 is exposed directly by QNAP Docker Compose;
-- requests from non-private/non-loopback source addresses are rejected;
+- requests require both a private/loopback source address and a local IP/`localhost`/`.local` Host header;
 - the UI and JavaScript are served locally with no CDN or third-party assets;
 - CSP, no-store, frame denial and no-referrer headers are applied;
+- the Control Center container receives no production `.env`, OpenAI key, Samsung credential, APNs secret, mobile API token or Docker socket;
 - snapshots expose operational summaries, not tokens, token hashes, recovery secrets, credentials or raw family identifiers;
-- there are no start/stop/retry/delete/configuration endpoints in v1.
+- observability history is stored only under `/data/control-center` and never mutates shopping/family business state;
+- there are no start/stop/retry/delete/configuration endpoints in Operations v2.
 
 The authoritative component catalog and dataflow used by the UI live in `backend/app/control_center_catalog.py`.
