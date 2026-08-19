@@ -88,7 +88,10 @@ def test_budget_policy_sets_approved_100_dkk_once(monkeypatch):
 
     result = worker.ensure_budget_policy()
     assert result["monthly_budget_dkk"] == 100.0
+    assert result["page_audit_max_failures"] == 3
+    assert worker.DEFAULT_FAILURE_ATTEMPTS == 3
     assert saved[0]["recommended_monthly_budget_dkk"] == 100.0
+    assert saved[0]["page_audit_max_failures"] == 3
     assert saved[0]["kurv_budget_policy_version"] == worker.BUDGET_POLICY_VERSION
 
 
@@ -97,6 +100,7 @@ def test_budget_policy_respects_later_operator_change(monkeypatch):
     config = {
         "monthly_budget_dkk": 75.0,
         "recommended_monthly_budget_dkk": 100.0,
+        "page_audit_max_failures": 4,
         "kurv_budget_policy_version": worker.BUDGET_POLICY_VERSION,
     }
     monkeypatch.setattr(worker, "load_config", lambda: dict(config))
