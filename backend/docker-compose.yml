@@ -128,8 +128,6 @@ services:
     build: .
     container_name: bagger-shopping-control-center
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
       KURV_CONTROL_CENTER_LOCAL_ONLY: "true"
     command:
