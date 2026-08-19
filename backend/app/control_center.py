@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import control_center_snapshot as control_center_snapshot_base
@@ -137,9 +137,20 @@ async def local_only(request: Request, call_next):
     return response
 
 
+def _index_html() -> str:
+    html = (STATIC_DIR / "index.html").read_text("utf-8")
+    html = html.replace(
+        "</head>",
+        '  <link rel="stylesheet" href="/assets/operations.css">\n'
+        '  <script src="/assets/operations.js" defer></script>\n'
+        "</head>",
+    )
+    return html
+
+
 @app.get("/")
-async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
+async def index() -> HTMLResponse:
+    return HTMLResponse(_index_html())
 
 
 @app.get("/api/health")
