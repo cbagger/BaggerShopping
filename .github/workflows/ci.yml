@@ -61,7 +61,7 @@ jobs:
           assert payload['overall']['components'] >= 30
           assert 'components' in payload and 'dataflow' in payload
           assert 'luna' in payload and 'flyers' in payload and 'data' in payload
-          assert payload['release']['control_center'] == '1.0.0'
+          assert payload['release']['control_center'] == '1.0.1'
           print('CONTROL_CENTER_SMOKE_OK')
           PY
           docker rm -f kurv-control-center-ci
