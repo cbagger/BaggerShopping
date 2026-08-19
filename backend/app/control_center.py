@@ -16,7 +16,7 @@ from .control_center_catalog import IOS_RELEASE, catalog, dataflow
 from .control_telemetry import read_heartbeat
 
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 STATIC_DIR = Path(__file__).with_name("control_center_static")
 SNAPSHOT_TTL_SECONDS = 2.0
 
@@ -57,6 +57,36 @@ def _sanitized_luna_status_payload() -> dict[str, Any]:
 
 
 control_center_snapshot.luna_enrichment.status_payload = _sanitized_luna_status_payload
+
+# Mobile API deliberately disables FastAPI docs/openapi. Its internal `/docs`
+# route therefore returns 404 even when the process is perfectly healthy. The
+# Control Center has no MOBILE_API_TOKEN by design, so its cheap liveness probe
+# must interpret this exact internal 404 as proof that the Mobile API process is
+# alive. Production readiness is still independently checked by Mobile API's
+# authenticated Docker healthcheck.
+_base_runtime_probes = control_center_snapshot.runtime_probes
+
+
+async def _safe_runtime_probes(*, force: bool = False) -> dict[str, dict[str, Any]]:
+    probes = await _base_runtime_probes(force=force)
+    mobile = probes.get("mobile-api")
+    if isinstance(mobile, dict) and mobile.get("status_code") == 404:
+        fixed = dict(mobile)
+        fixed.update(
+            {
+                "ok": True,
+                "health": "healthy",
+                "state": "online",
+                "error": None,
+                "liveness_evidence": "expected-disabled-docs-404",
+            }
+        )
+        probes = dict(probes)
+        probes["mobile-api"] = fixed
+    return probes
+
+
+control_center_snapshot.runtime_probes = _safe_runtime_probes
 
 
 def _private_address(value: str) -> bool:
