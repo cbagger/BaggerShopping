@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app import control_center
 from app import control_center_alerts
 from app import control_center_efficiency
+from app import control_center_freshness
 from app import control_center_ops as ops
 from app import control_center_snapshot_v2
 from app import luna_controlled_worker
@@ -32,9 +33,8 @@ def test_operations_assets_are_injected_into_light_shell():
     response = client.get("/")
     assert response.status_code == 200
     assert '/assets/operations.css' in response.text
-    assert '/assets/operations_guard.js' in response.text
     assert '/assets/operations.js' in response.text
-    assert response.text.index('/assets/operations_guard.js') < response.text.index('/assets/operations.js')
+    assert 'operations_guard' not in response.text
     assert 'name="color-scheme" content="light"' in response.text
 
 
@@ -63,6 +63,27 @@ def test_storage_measurement_is_cached_for_live_dashboard(monkeypatch):
     second = control_center_efficiency.storage_status()
     assert first == second == {"kurv_persistent_bytes": 10}
     assert len(calls) == 1
+
+
+def test_idle_luna_and_apns_do_not_become_false_freshness_alerts(monkeypatch):
+    monkeypatch.setattr(control_center_freshness.time, "time", lambda: 1_000_000)
+    rows = control_center_freshness.freshness_status(
+        runtime={
+            "luna-worker": {"health": "healthy", "payload": {"coverage": {"pending": 0}}},
+            "flyer-push-worker": {"health": "healthy", "payload": {"last_provider_check_at": 999_500}},
+        },
+        publications=[{"detected_at": 1_000_000 - 6 * 86400}],
+        flyer_push_store={"last_ready_delivery_at": 1_000_000 - 10 * 86400},
+        samsung={"ok": True, "checked_at": 999_800},
+        luna_events=[{"at": 1_000_000 - 2 * 86400}],
+    )
+    by_name = {row["name"]: row for row in rows}
+    assert by_name["Provider check"]["health"] == "healthy"
+    assert by_name["Nyeste avisdata"]["health"] == "healthy"
+    assert by_name["Luna aktivitet"]["health"] == "healthy"
+    assert "Idle er sundt" in by_name["Luna aktivitet"]["detail"]
+    assert by_name["APNs levering"]["health"] == "healthy"
+    assert by_name["Samsung validering"]["health"] == "healthy"
 
 
 def test_activity_drops_runtime_polling_but_keeps_openai_cost_and_coverage():
