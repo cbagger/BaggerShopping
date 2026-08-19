@@ -34,11 +34,24 @@ def _heartbeat_payload() -> tuple[str, str, dict[str, Any]]:
         detail = "Ingen obligatorisk avis-coverage i aktiv behandling"
 
     heartbeat_status = "running"
-    if status in {"budget-exhausted", "enrichment-budget-exhausted", "missing-api-key", "enrichment-missing-api-key", "disabled", "enrichment-disabled"}:
+    if status in {
+        "budget-exhausted",
+        "enrichment-budget-exhausted",
+        "missing-api-key",
+        "enrichment-missing-api-key",
+        "disabled",
+        "enrichment-disabled",
+    }:
         heartbeat_status = "degraded"
 
+    # Only operational facts are exported. The heartbeat deliberately never
+    # contains API keys, Samsung credentials, APNs secrets or mobile tokens.
     metrics = {
         "worker_status": status or "starting",
+        "enabled": bool(luna.get("enabled")),
+        "apply_results": bool(luna.get("apply_results")),
+        "model": luna.get("model"),
+        "api_key_configured": bool(luna.get("api_key_configured")),
         "coverage": coverage.get("counts", {}),
         "focus": focus if isinstance(focus, dict) else None,
         "usage": luna.get("usage", {}),
