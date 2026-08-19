@@ -31,7 +31,10 @@ os.environ.setdefault("LUNA_RESILIENT_MAX_PRICING_CROPS_PER_CYCLE", "10")
 os.environ.setdefault("LUNA_RESILIENT_MAX_FALLBACK_PER_CYCLE", "20")
 os.environ.setdefault("LUNA_RESILIENT_MAX_VARIANT_CROPS_PER_CYCLE", "5")
 
-DEFAULT_FAILURE_ATTEMPTS = 2
+# A third attempt only applies when an analysis actually failed. Successful
+# pages/crops still cost exactly one request, while transient provider/OpenAI
+# failures get one more chance before fail-closed offer isolation.
+DEFAULT_FAILURE_ATTEMPTS = 3
 BUDGET_POLICY_VERSION = 1
 TARGET_MONTHLY_BUDGET_DKK = 100.0
 
@@ -91,7 +94,7 @@ _original_quarantine = base._quarantine
 
 
 def _bounded_quarantine(kind: str, publication, candidate, reason: str) -> None:
-    """Retry unresolved AI work once, then isolate only that exact candidate."""
+    """Retry unresolved AI work twice, then isolate only that exact candidate."""
     if str(reason) == "deterministic-provider-unit-equivalence":
         _original_quarantine(kind, publication, candidate, reason)
         return
@@ -128,6 +131,7 @@ def ensure_budget_policy() -> dict:
         {
             "monthly_budget_dkk": TARGET_MONTHLY_BUDGET_DKK,
             "recommended_monthly_budget_dkk": TARGET_MONTHLY_BUDGET_DKK,
+            "page_audit_max_failures": DEFAULT_FAILURE_ATTEMPTS,
             "kurv_budget_policy_version": BUDGET_POLICY_VERSION,
         }
     )
