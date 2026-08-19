@@ -34,22 +34,43 @@ _snapshot_cache: dict[str, Any] | None = None
 _snapshot_cached_at = 0.0
 
 
-def _client_is_local(host: str | None) -> bool:
-    if not host:
-        return False
-    normalized = host.split("%", 1)[0].strip().casefold()
-    if normalized in {"localhost", "testclient"}:
-        return True
+def _private_address(value: str) -> bool:
     try:
-        address = ipaddress.ip_address(normalized)
+        address = ipaddress.ip_address(value.split("%", 1)[0])
     except ValueError:
         return False
     return bool(address.is_private or address.is_loopback or address.is_link_local)
 
 
+def _client_is_local(host: str | None) -> bool:
+    if not host:
+        return False
+    normalized = host.strip().casefold()
+    if normalized in {"localhost", "testclient"}:
+        return True
+    return _private_address(normalized)
+
+
+def _request_host_is_local(host: str | None) -> bool:
+    """Reject public DNS names even when a local reverse proxy forwards them.
+
+    A user may use the NAS LAN IP, localhost or an mDNS `.local` hostname. An
+    accidental Nginx/domain mapping should still receive 403 because its Host
+    header is not a local address/name.
+    """
+    if not host:
+        return False
+    normalized = host.strip().casefold().rstrip(".")
+    if normalized in {"localhost", "testserver"} or normalized.endswith(".local"):
+        return True
+    return _private_address(normalized)
+
+
 @app.middleware("http")
 async def local_only(request: Request, call_next):
-    if not _client_is_local(request.client.host if request.client else None):
+    client_host = request.client.host if request.client else None
+    request_host = request.url.hostname
+    if not _client_is_local(client_host) or not _request_host_is_local(request_host):
         return JSONResponse(
             status_code=403,
             content={"ok": False, "detail": "Kurv Control Center er kun tilgængeligt lokalt."},
