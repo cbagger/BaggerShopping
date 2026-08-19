@@ -30,6 +30,41 @@ jobs:
         run: pip install -r requirements-dev.txt
       - name: Run backend tests
         run: pytest -q
+      - name: Validate Control Center JavaScript
+        run: node --check app/control_center_static/app.js
+      - name: Build backend image
+        run: docker build -t kurv-backend:ci .
+      - name: Smoke Control Center container
+        run: |
+          docker run -d --name kurv-control-center-ci -p 18092:8092 \
+            kurv-backend:ci \
+            uvicorn app.control_center:app --host 0.0.0.0 --port 8092
+          READY=0
+          for attempt in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18092/api/health >/tmp/kurv-control-health.json; then
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$READY" -ne 1 ]; then
+            docker logs kurv-control-center-ci || true
+            docker rm -f kurv-control-center-ci || true
+            echo "Control Center did not become healthy"
+            false
+          fi
+          curl -fsS http://127.0.0.1:18092/api/snapshot >/tmp/kurv-control-snapshot.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('/tmp/kurv-control-snapshot.json').read_text())
+          assert payload['overall']['components'] >= 30
+          assert 'components' in payload and 'dataflow' in payload
+          assert 'luna' in payload and 'flyers' in payload and 'data' in payload
+          assert payload['release']['control_center'] == '1.0.0'
+          print('CONTROL_CENTER_SMOKE_OK')
+          PY
+          docker rm -f kurv-control-center-ci
       - name: Build Samsung login broker image
         run: docker build -f Dockerfile.login-broker -t kurv-samsung-login:ci .
 

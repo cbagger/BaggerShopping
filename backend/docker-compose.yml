@@ -58,7 +58,7 @@ services:
     command:
       - python
       - -m
-      - app.flyer_push_quality
+      - app.flyer_push_controlled
     volumes:
       - ./data:/data
       - ./secrets:/run/secrets:ro
@@ -73,7 +73,7 @@ services:
     command:
       - python
       - -m
-      - app.shopping_cleanup
+      - app.shopping_cleanup_controlled
     volumes:
       - ./data:/data
     shm_size: "256mb"
@@ -87,7 +87,7 @@ services:
     command:
       - python
       - -m
-      - app.luna_resilient_strong_worker
+      - app.luna_controlled_worker
     volumes:
       - ./data:/data
     shm_size: "256mb"
@@ -123,6 +123,44 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+
+  control-center:
+    build: .
+    container_name: bagger-shopping-control-center
+    restart: unless-stopped
+    environment:
+      KURV_CONTROL_CENTER_LOCAL_ONLY: "true"
+    command:
+      - uvicorn
+      - app.control_center:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8092"
+    depends_on:
+      - bagger-shopping
+      - mobile-api
+      - flyer-push-worker
+      - shopping-cleanup-worker
+      - luna-enrichment-worker
+      - samsung-login-broker
+    ports:
+      - "8092:8092"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          assert urllib.request.urlopen('http://127.0.0.1:8092/api/health',timeout=5).status == 200
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    shm_size: "256mb"
 
   login-ui:
     image: lscr.io/linuxserver/chromium:latest
