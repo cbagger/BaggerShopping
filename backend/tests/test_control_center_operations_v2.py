@@ -82,7 +82,7 @@ def test_openai_event_is_only_written_when_usage_really_increases(monkeypatch):
     assert captured[0]["requests"] == 2
     assert captured[0]["cost_dkk"] == pytest.approx(0.0234)
     assert captured[0]["category"] == "luna"
-    assert captured[0]["type"] == "openai_usage"
+    assert captured[0]["event_type"] == "openai_usage"
 
 
 def test_alert_lifecycle_counts_episodes_not_dashboard_refreshes(monkeypatch, tmp_path):
