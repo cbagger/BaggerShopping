@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app import control_center
@@ -196,8 +196,7 @@ def test_component_state_reports_budget_samsung_and_degraded_coverage():
     assert by_id["geofence-engine"]["state"] == "deployed"
 
 
-@pytest.mark.asyncio
-async def test_samsung_probe_is_cached_and_not_tied_to_realtime_refresh(monkeypatch):
+def test_samsung_probe_is_cached_and_not_tied_to_realtime_refresh(monkeypatch):
     calls = []
 
     async def fake_probe(name, url):
@@ -207,9 +206,13 @@ async def test_samsung_probe_is_cached_and_not_tied_to_realtime_refresh(monkeypa
     monkeypatch.setattr(snapshot, "_probe_json", fake_probe)
     monkeypatch.setattr(snapshot, "_samsung_probe_cache", None)
     monkeypatch.setattr(snapshot, "_samsung_probe_at", 0.0)
-    first = await snapshot.samsung_probe()
-    second = await snapshot.samsung_probe()
-    assert first == second
+
+    async def scenario():
+        first = await snapshot.samsung_probe()
+        second = await snapshot.samsung_probe()
+        assert first == second
+
+    asyncio.run(scenario())
     assert len(calls) == 1
 
 
