@@ -34,6 +34,7 @@ jobs:
         run: |
           node --check app/control_center_static/app.js
           node --check app/control_center_static/operations.js
+          node --check app/control_center_static/dashboard.js
       - name: Build backend image
         run: docker build --build-arg KURV_BUILD_COMMIT=${{ github.sha }} -t kurv-backend:ci .
       - name: Smoke Control Center container
@@ -55,6 +56,7 @@ jobs:
             echo "Control Center did not become healthy"
             false
           fi
+          curl -fsS http://127.0.0.1:18092/ >/tmp/kurv-control-index.html
           curl -fsS http://127.0.0.1:18092/api/snapshot >/tmp/kurv-control-snapshot.json
           python - <<'PY'
           import json
@@ -63,7 +65,7 @@ jobs:
           assert payload['overall']['components'] >= 30
           assert 'components' in payload and 'dataflow' in payload
           assert 'luna' in payload and 'flyers' in payload and 'data' in payload
-          assert payload['release']['control_center'] == '1.1.0'
+          assert payload['release']['control_center'] == '1.2.0'
           assert 'operations' in payload
           assert 'end_to_end' in payload['operations']
           assert 'degraded_impact' in payload['operations']
@@ -71,9 +73,13 @@ jobs:
           assert 'storage' in payload['data']
           assert payload['data']['storage']['kurv_persistent_bytes'] >= 0
           assert payload['operations']['deployment']['build_commit'] != 'unknown'
-          page = Path('/tmp/kurv-control-health.json').read_text()
-          assert 'operations_v2' in page
-          print('CONTROL_CENTER_OPERATIONS_V2_SMOKE_OK')
+          health = Path('/tmp/kurv-control-health.json').read_text()
+          page = Path('/tmp/kurv-control-index.html').read_text()
+          assert 'operations_v2' in health
+          assert 'paged_dashboard' in health
+          assert '/assets/dashboard.css' in page
+          assert '/assets/dashboard.js' in page
+          print('CONTROL_CENTER_PAGED_DASHBOARD_SMOKE_OK')
           PY
           docker rm -f kurv-control-center-ci
       - name: Build Samsung login broker image
