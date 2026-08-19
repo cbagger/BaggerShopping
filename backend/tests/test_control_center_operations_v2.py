@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import control_center
@@ -28,7 +29,9 @@ def test_operations_assets_are_injected_into_light_shell():
     response = client.get("/")
     assert response.status_code == 200
     assert '/assets/operations.css' in response.text
+    assert '/assets/operations_guard.js' in response.text
     assert '/assets/operations.js' in response.text
+    assert response.text.index('/assets/operations_guard.js') < response.text.index('/assets/operations.js')
     assert 'name="color-scheme" content="light"' in response.text
 
 
@@ -77,7 +80,7 @@ def test_openai_event_is_only_written_when_usage_really_increases(monkeypatch):
     luna_controlled_worker._record_openai_event(before, after, result)
     assert len(captured) == 1
     assert captured[0]["requests"] == 2
-    assert captured[0]["cost_dkk"] == 0.0234
+    assert captured[0]["cost_dkk"] == pytest.approx(0.0234)
     assert captured[0]["category"] == "luna"
     assert captured[0]["type"] == "openai_usage"
 
@@ -127,6 +130,7 @@ def test_client_fleet_never_exposes_device_tokens():
 
 def test_history_sampling_is_bounded_and_does_not_write_business_state(monkeypatch, tmp_path):
     _isolate_ops(monkeypatch, tmp_path)
+    monkeypatch.setattr(ops.time, "time", lambda: 10_000)
     snapshot = {
         "generated_at": 10_000,
         "runtime": {"core-api": {"state": "online", "health": "healthy", "latency_ms": 10}},
