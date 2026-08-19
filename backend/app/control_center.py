@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import control_center_alerts
+from . import control_center_efficiency
 from . import control_center_ops
 from . import control_center_snapshot as control_center_snapshot_base
 from . import control_center_snapshot_v2
@@ -61,6 +62,8 @@ def _sanitized_luna_status_payload() -> dict[str, Any]:
 
 control_center_snapshot_base.luna_enrichment.status_payload = _sanitized_luna_status_payload
 control_center_ops.reconcile_alerts = control_center_alerts.reconcile_alerts
+control_center_ops.storage_status = control_center_efficiency.storage_status
+control_center_ops.record_snapshot = control_center_efficiency.record_snapshot
 
 # Mobile API deliberately disables FastAPI docs/openapi. Its internal `/docs`
 # route therefore returns 404 even when the process is perfectly healthy. The
