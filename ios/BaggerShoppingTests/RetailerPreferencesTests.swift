@@ -69,4 +69,64 @@ final class RetailerPreferencesTests: XCTestCase {
             ["REMA 1000"]
         )
     }
+
+    @MainActor
+    func testDisabledRetailerIsExcludedFromPushWithoutErasingPushPreference() {
+        let preferences = RetailerPreferences(defaults: defaults)
+        let selectedPush: Set<String> = ["REMA 1000", "MENY", "Netto"]
+        let serverRetailers = ["MENY", "REMA 1000", "Netto"]
+
+        preferences.setEnabled(false, for: "REMA 1000")
+
+        XCTAssertEqual(
+            FlyerPushManager.activePushRetailers(
+                selected: selectedPush,
+                serverRetailers: serverRetailers,
+                preferences: preferences
+            ),
+            ["MENY", "Netto"]
+        )
+        XCTAssertEqual(selectedPush, ["REMA 1000", "MENY", "Netto"])
+    }
+
+    @MainActor
+    func testReenabledRetailerRestoresPreviousPushChoice() {
+        let preferences = RetailerPreferences(defaults: defaults)
+        let selectedPush: Set<String> = ["REMA 1000", "MENY"]
+        let serverRetailers = ["MENY", "REMA 1000", "Netto"]
+
+        preferences.setEnabled(false, for: "REMA 1000")
+        XCTAssertEqual(
+            FlyerPushManager.activePushRetailers(
+                selected: selectedPush,
+                serverRetailers: serverRetailers,
+                preferences: preferences
+            ),
+            ["MENY"]
+        )
+
+        preferences.setEnabled(true, for: "REMA 1000")
+        XCTAssertEqual(
+            FlyerPushManager.activePushRetailers(
+                selected: selectedPush,
+                serverRetailers: serverRetailers,
+                preferences: preferences
+            ),
+            ["MENY", "REMA 1000"]
+        )
+    }
+
+    @MainActor
+    func testPushSettingsOnlyExposeLocallyActiveRetailers() {
+        let preferences = RetailerPreferences(defaults: defaults)
+        preferences.setEnabled(false, for: "Kvickly")
+
+        XCTAssertEqual(
+            FlyerPushManager.availablePushRetailers(
+                serverRetailers: ["MENY", "Kvickly", "Netto"],
+                preferences: preferences
+            ),
+            ["MENY", "Netto"]
+        )
+    }
 }
