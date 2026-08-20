@@ -2,6 +2,7 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from app import luna_enrichment as luna
 from app.member_pricing import detect_member_pricing
@@ -249,6 +250,64 @@ def test_emergency_request_cap_still_stops_runaway_usage(monkeypatch, tmp_path):
         }},
     })
     assert luna.budget_allows_request(config) is False
+
+
+def test_legacy_default_prices_migrate_without_overriding_custom_rates(monkeypatch, tmp_path):
+    config_path, _ = _isolated_luna(monkeypatch, tmp_path, enabled=True)
+    config_path.write_text(json.dumps({
+        "config_version": 2,
+        "enabled": True,
+        "input_usd_per_million": 1.0,
+        "output_usd_per_million": 6.0,
+    }), encoding="utf-8")
+    monkeypatch.setattr(luna, "_config_cache", None)
+    monkeypatch.setattr(luna, "_config_signature", None)
+
+    migrated = luna.load_config()
+    assert migrated["config_version"] == 3
+    assert migrated["input_usd_per_million"] == 0.20
+    assert migrated["cached_input_usd_per_million"] == 0.02
+    assert migrated["cache_write_usd_per_million"] == 0.25
+    assert migrated["output_usd_per_million"] == 1.20
+
+    config_path.write_text(json.dumps({
+        "config_version": 2,
+        "input_usd_per_million": 0.42,
+        "output_usd_per_million": 2.4,
+    }), encoding="utf-8")
+    monkeypatch.setattr(luna, "_config_cache", None)
+    monkeypatch.setattr(luna, "_config_signature", None)
+    custom = luna.load_config()
+    assert custom["input_usd_per_million"] == 0.42
+    assert custom["output_usd_per_million"] == 2.4
+
+
+def test_cached_and_cache_write_tokens_are_accounted_at_their_own_rates():
+    usage = {
+        "input_tokens": 1000,
+        "input_tokens_details": {
+            "cached_tokens": 600,
+            "cache_write_tokens": 100,
+        },
+        "output_tokens": 200,
+    }
+    tokens = luna._usage_token_breakdown(usage)
+    assert tokens == {
+        "input_tokens": 1000,
+        "uncached_input_tokens": 300,
+        "cached_input_tokens": 600,
+        "cache_write_tokens": 100,
+        "output_tokens": 200,
+    }
+    assert luna._usage_cost_dkk(usage, luna.DEFAULT_CONFIG) == pytest.approx(0.002359)
+
+    store = {}
+    luna._record_usage(store, usage, luna.DEFAULT_CONFIG)
+    row = store["usage"][luna.month_key()]
+    assert row["cached_input_tokens"] == 600
+    assert row["cache_write_tokens"] == 100
+    assert row["uncached_input_tokens"] == 300
+    assert row["estimated_cost_dkk"] == pytest.approx(0.002359)
 
 
 def test_mocked_response_is_cached_once_with_usage_and_pricing_index(monkeypatch, tmp_path):

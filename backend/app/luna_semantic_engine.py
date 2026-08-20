@@ -119,13 +119,23 @@ def _page_request_body(
 ) -> dict[str, Any]:
     return {
         "model": str(config.get("model") or "gpt-5.6-luna"),
-        "input": [{
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": guards._strict_page_prompt(candidate)},
+        "input": [
+            {"role": "developer", "content": [{
+                "type": "input_text",
+                "text": guards._strict_page_instructions(),
+                "prompt_cache_breakpoint": {"mode": "explicit"},
+            }]},
+            {"role": "user", "content": [
+                {"type": "input_text", "text": json.dumps(
+                    base._page_context(candidate),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )},
                 {"type": "input_image", "image_url": candidate.image_url, "detail": "high"},
-            ],
-        }],
+            ]},
+        ],
+        "prompt_cache_key": "kurv-page-audit-member-price-sanity-v2",
+        "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
         "reasoning": {"effort": "low"},
         "text": {
             "verbosity": "low",
@@ -297,14 +307,28 @@ def _crop_request_body(
     config: dict[str, Any],
 ) -> dict[str, Any]:
     image_url, detail = base._crop_image(candidate)
-    content: list[dict[str, Any]] = [
-        {"type": "input_text", "text": guards._strict_crop_prompt(candidate)}
-    ]
+    content: list[dict[str, Any]] = [{
+        "type": "input_text",
+        "text": json.dumps(
+            base._crop_context(candidate),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+    }]
     if image_url:
         content.append({"type": "input_image", "image_url": image_url, "detail": detail})
     return {
         "model": str(config.get("model") or "gpt-5.6-luna"),
-        "input": [{"role": "user", "content": content}],
+        "input": [
+            {"role": "developer", "content": [{
+                "type": "input_text",
+                "text": guards._strict_crop_instructions(),
+                "prompt_cache_breakpoint": {"mode": "explicit"},
+            }]},
+            {"role": "user", "content": content},
+        ],
+        "prompt_cache_key": "kurv-crop-member-price-sanity-v2",
+        "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
         "reasoning": {"effort": "low"},
         "text": {
             "verbosity": "low",

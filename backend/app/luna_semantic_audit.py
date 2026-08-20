@@ -234,7 +234,7 @@ def _page_schema(candidate: PageAuditCandidate) -> dict[str, Any]:
     }
 
 
-def _page_prompt(candidate: PageAuditCandidate) -> str:
+def _page_context(candidate: PageAuditCandidate) -> dict[str, Any]:
     targets = []
     for offer in candidate.offers:
         targets.append(
@@ -251,12 +251,15 @@ def _page_prompt(candidate: PageAuditCandidate) -> str:
             }
         )
 
-    context = {
+    return {
         "retailer": candidate.publication.retailer,
         "publication": candidate.publication.title,
         "page": candidate.page_number,
         "targets": targets,
     }
+
+
+def _page_instructions() -> str:
     return (
         "You are Kurv's semantic flyer page auditor. Inspect the full flyer page once and audit "
         "ONLY the target offer hotspots listed below. Return one result for each target you can "
@@ -274,8 +277,13 @@ def _page_prompt(candidate: PageAuditCandidate) -> str:
         "membership/app is false. Set needs_crop_verification when text is too small, the hotspot "
         "overlaps neighbours, provider facts conflict with the image, or any important price/"
         "variant fact is not safe from the full-page view. If unsure, use null/empty values and "
-        "lower confidence rather than guessing.\n\n"
-        + json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+        "lower confidence rather than guessing."
+    )
+
+
+def _page_prompt(candidate: PageAuditCandidate) -> str:
+    return _page_instructions() + "\n\n" + json.dumps(
+        _page_context(candidate), ensure_ascii=False, separators=(",", ":")
     )
 
 
@@ -283,13 +291,16 @@ def _page_request_body(candidate: PageAuditCandidate, config: dict[str, Any]) ->
     return {
         "model": str(config.get("model") or "gpt-5.6-luna"),
         "input": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": _page_prompt(candidate)},
-                    {"type": "input_image", "image_url": candidate.image_url, "detail": "high"},
-                ],
-            }
+            {"role": "developer", "content": [{
+                "type": "input_text",
+                "text": _page_instructions(),
+            }]},
+            {"role": "user", "content": [
+                {"type": "input_text", "text": json.dumps(
+                    _page_context(candidate), ensure_ascii=False, separators=(",", ":")
+                )},
+                {"type": "input_image", "image_url": candidate.image_url, "detail": "high"},
+            ]},
         ],
         "reasoning": {"effort": "low"},
         "text": {
@@ -424,36 +435,19 @@ def _server_needs_crop(offer: Offer, facts: dict[str, Any], threshold: float) ->
 
 
 def _usage_cost_dkk(usage: dict[str, Any], config: dict[str, Any]) -> float:
-    input_tokens = int(usage.get("input_tokens") or 0)
-    output_tokens = int(usage.get("output_tokens") or 0)
-    usd = (
-        input_tokens / 1_000_000 * float(config.get("input_usd_per_million", 1.0))
-        + output_tokens / 1_000_000 * float(config.get("output_usd_per_million", 6.0))
-    )
-    return round(usd * float(config.get("usd_to_dkk", 7.0)), 6)
+    from .luna_enrichment import _usage_cost_dkk as shared_usage_cost_dkk
+
+    return shared_usage_cost_dkk(usage, config)
 
 
 def _record_usage(store: dict[str, Any], usage: dict[str, Any], config: dict[str, Any], *, kind: str) -> None:
-    from .luna_enrichment import month_key
+    from .luna_enrichment import _add_usage_to_row, month_key
 
     row = store.setdefault("usage", {}).setdefault(month_key(), {})
-    input_tokens = int(usage.get("input_tokens") or 0)
-    output_tokens = int(usage.get("output_tokens") or 0)
-    cost = _usage_cost_dkk(usage, config)
-    row["requests"] = int(row.get("requests") or 0) + 1
-    row["input_tokens"] = int(row.get("input_tokens") or 0) + input_tokens
-    row["output_tokens"] = int(row.get("output_tokens") or 0) + output_tokens
-    row["estimated_cost_dkk"] = round(float(row.get("estimated_cost_dkk") or 0) + cost, 6)
-    row["updated_at"] = int(time.time())
+    _add_usage_to_row(row, usage, config)
 
     kind_row = row.setdefault("by_kind", {}).setdefault(kind, {})
-    kind_row["requests"] = int(kind_row.get("requests") or 0) + 1
-    kind_row["input_tokens"] = int(kind_row.get("input_tokens") or 0) + input_tokens
-    kind_row["output_tokens"] = int(kind_row.get("output_tokens") or 0) + output_tokens
-    kind_row["estimated_cost_dkk"] = round(
-        float(kind_row.get("estimated_cost_dkk") or 0) + cost,
-        6,
-    )
+    _add_usage_to_row(kind_row, usage, config, timestamp=False)
 
 
 def _crop_reasons(offer: Offer, facts: dict[str, Any], needs_crop: bool) -> list[str]:
@@ -737,11 +731,11 @@ def _crop_image(candidate: CropCandidate) -> tuple[str | None, str]:
     return page or offer.image_url, "high"
 
 
-def _crop_prompt(candidate: CropCandidate) -> str:
+def _crop_context(candidate: CropCandidate) -> dict[str, Any]:
     offer = candidate.offer
     page_row = load_store().get("semantic_facts", {}).get(offer_key(offer), {})
     page_facts = page_row.get("facts") if isinstance(page_row, dict) else None
-    context = {
+    return {
         "retailer": offer.retailer,
         "publication": offer.publication_title,
         "target_offer_id": offer.id,
@@ -755,6 +749,9 @@ def _crop_prompt(candidate: CropCandidate) -> str:
         "page_audit_facts": page_facts,
         "verification_reasons": list(candidate.reasons),
     }
+
+
+def _crop_instructions() -> str:
     return (
         "You are Kurv's targeted flyer verification layer. Inspect ONLY the advert inside the "
         "target hotspot. The full page may contain neighbouring offers; never copy their prices, "
@@ -765,19 +762,33 @@ def _crop_prompt(candidate: CropCandidate) -> str:
         "volume/pack count but must never become a variant. variants must be concrete named "
         "choices only. multiple_products is true if the campaign contains multiple concrete "
         "products/variants even if every name cannot be read. If an important fact remains "
-        "uncertain, return null/empty with lower confidence instead of guessing.\n\n"
-        + json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+        "uncertain, return null/empty with lower confidence instead of guessing."
+    )
+
+
+def _crop_prompt(candidate: CropCandidate) -> str:
+    return _crop_instructions() + "\n\n" + json.dumps(
+        _crop_context(candidate), ensure_ascii=False, separators=(",", ":")
     )
 
 
 def _crop_request_body(candidate: CropCandidate, config: dict[str, Any]) -> dict[str, Any]:
     image_url, detail = _crop_image(candidate)
-    content: list[dict[str, Any]] = [{"type": "input_text", "text": _crop_prompt(candidate)}]
+    content: list[dict[str, Any]] = [{
+        "type": "input_text",
+        "text": json.dumps(_crop_context(candidate), ensure_ascii=False, separators=(",", ":")),
+    }]
     if image_url:
         content.append({"type": "input_image", "image_url": image_url, "detail": detail})
     return {
         "model": str(config.get("model") or "gpt-5.6-luna"),
-        "input": [{"role": "user", "content": content}],
+        "input": [
+            {"role": "developer", "content": [{
+                "type": "input_text",
+                "text": _crop_instructions(),
+            }]},
+            {"role": "user", "content": content},
+        ],
         "reasoning": {"effort": "low"},
         "text": {
             "verbosity": "low",

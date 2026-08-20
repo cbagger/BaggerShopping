@@ -270,12 +270,14 @@ async def _run_once_unlocked() -> dict:
     processed_crops = 0
     processed_variant_crops = 0
     processed_fallback = 0
+    attempted_requests = 0
     processed_crop_fingerprints: set[str] = set()
     stop_status: str | None = None
 
     async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
         initial_pricing, _ = _split_crop_candidates(collect_crop_candidates(publications))
-        for candidate in initial_pricing[: min(crop_limit, total_limit)]:
+        for candidate in initial_pricing[: min(crop_limit, total_limit - attempted_requests)]:
+            attempted_requests += 1
             result = await analyze_crop_candidate(candidate, client=client)
             if result.get("status") in _STOP_STATUSES:
                 stop_status = str(result.get("status"))
@@ -283,16 +285,17 @@ async def _run_once_unlocked() -> dict:
             processed_crops += 1
             processed_crop_fingerprints.add(candidate.fingerprint)
 
-        remaining = max(0, total_limit - processed_crops)
+        remaining = max(0, total_limit - attempted_requests)
         if stop_status is None and remaining:
             for candidate in page_candidates[: min(page_limit, remaining)]:
+                attempted_requests += 1
                 result = await analyze_page_audit(candidate, client=client)
                 if result.get("status") in _STOP_STATUSES:
                     stop_status = str(result.get("status"))
                     break
                 processed_pages += 1
 
-        remaining = max(0, total_limit - processed_pages - processed_crops)
+        remaining = max(0, total_limit - attempted_requests)
         crop_slots = max(0, crop_limit - processed_crops)
         if stop_status is None and remaining and crop_slots:
             fresh_pricing, _ = _split_crop_candidates(collect_crop_candidates(publications))
@@ -302,6 +305,7 @@ async def _run_once_unlocked() -> dict:
                 if candidate.fingerprint not in processed_crop_fingerprints
             ]
             for candidate in fresh_pricing[: min(crop_slots, remaining)]:
+                attempted_requests += 1
                 result = await analyze_crop_candidate(candidate, client=client)
                 if result.get("status") in _STOP_STATUSES:
                     stop_status = str(result.get("status"))
@@ -309,20 +313,18 @@ async def _run_once_unlocked() -> dict:
                 processed_crops += 1
                 processed_crop_fingerprints.add(candidate.fingerprint)
 
-        remaining = max(0, total_limit - processed_pages - processed_crops)
+        remaining = max(0, total_limit - attempted_requests)
         fallback_candidates = _paid_candidates(collect_candidates(publications))
         if stop_status is None and remaining:
             for candidate in fallback_candidates[:remaining]:
+                attempted_requests += 1
                 result = await analyze_candidate(candidate, client=client)
                 if result.get("status") in _STOP_STATUSES:
                     stop_status = str(result.get("status"))
                     break
                 processed_fallback += 1
 
-        remaining = max(
-            0,
-            total_limit - processed_pages - processed_crops - processed_fallback,
-        )
+        remaining = max(0, total_limit - attempted_requests)
         crop_slots = max(0, crop_limit - processed_crops)
         if (
             stop_status is None
@@ -340,6 +342,7 @@ async def _run_once_unlocked() -> dict:
             for candidate in variant_candidates[: min(variant_limit, crop_slots, remaining)]:
                 if not _cost_policy.variant_crop_budget_allows(config):
                     break
+                attempted_requests += 1
                 result = await analyze_crop_candidate(candidate, client=client)
                 if result.get("status") in _STOP_STATUSES:
                     stop_status = str(result.get("status"))
@@ -362,6 +365,7 @@ async def _run_once_unlocked() -> dict:
         "fallback_candidates": len(_paid_candidates(collect_candidates(publications))),
         "fallback_processed": processed_fallback,
         "processed": processed,
+        "requests_attempted": attempted_requests,
         **status_payload(),
         **semantic_status_payload(),
         "readiness": readiness_status_payload(),
