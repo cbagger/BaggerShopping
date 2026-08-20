@@ -41,10 +41,7 @@ struct ShoppingListView: View {
     @State private var showCheckedItems = false
     @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
 
-    private let retailerFilterOptions = [
-        "MENY", "365discount", "REMA 1000", "Bilka",
-        "føtex", "Lidl", "Netto", "SPAR"
-    ]
+    private let retailerFilterOptions = RetailerCatalog.all
 
     private var activeItems: [ShoppingItem] {
         model.shoppingList?.items.filter { !$0.checked } ?? []
