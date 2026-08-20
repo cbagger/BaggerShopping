@@ -18,7 +18,7 @@ from .meny_flyer import Offer, Publication
 
 CONFIG_PATH = Path(os.getenv("LUNA_CONFIG_PATH", "/data/luna-config.json"))
 STORE_PATH = Path(os.getenv("LUNA_STORE_PATH", "/data/luna-enrichment-store.json"))
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
 LEGACY_DEFAULT_REQUEST_LIMIT = 2000
 EMERGENCY_REQUEST_LIMIT = 10000
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -43,10 +43,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "proactive_variant_crops": False,
     "page_audit_max_failures": 2,
     "crop_max_output_tokens": 1200,
-    # Conservative, configurable accounting. If OpenAI's live price is lower,
-    # Kurv simply reaches the configured budget later than this estimate says.
-    "input_usd_per_million": 1.0,
-    "output_usd_per_million": 6.0,
+    # GPT-5.6 Luna pricing. Keep every rate configurable so an operator can
+    # update accounting without a deploy. Cached and cache-write tokens must be
+    # separated from ordinary input or the local DKK estimate becomes noisy.
+    "input_usd_per_million": 0.20,
+    "cached_input_usd_per_million": 0.02,
+    "cache_write_usd_per_million": 0.25,
+    "output_usd_per_million": 1.20,
     "usd_to_dkk": 7.0,
 }
 
@@ -113,9 +116,17 @@ def load_config() -> dict[str, Any]:
         # Luna pricing makes that cap hit before the explicit DKK budget. Only
         # that exact unversioned legacy default is migrated; custom limits stay
         # authoritative.
-        if "config_version" not in persisted:
+        persisted_version = int(persisted.get("config_version") or 0)
+        if persisted_version < 2:
             if int(persisted.get("max_requests_per_month") or 0) == LEGACY_DEFAULT_REQUEST_LIMIT:
                 persisted["max_requests_per_month"] = EMERGENCY_REQUEST_LIMIT
+        if persisted_version < 3:
+            # Migrate only Kurv's exact legacy defaults. Explicit operator
+            # overrides remain authoritative.
+            if float(persisted.get("input_usd_per_million") or 0) == 1.0:
+                persisted["input_usd_per_million"] = DEFAULT_CONFIG["input_usd_per_million"]
+            if float(persisted.get("output_usd_per_million") or 0) == 6.0:
+                persisted["output_usd_per_million"] = DEFAULT_CONFIG["output_usd_per_million"]
             persisted["config_version"] = CONFIG_VERSION
         merged = {**DEFAULT_CONFIG, **persisted}
         _config_cache = merged
@@ -358,13 +369,13 @@ def _schema() -> dict[str, Any]:
     }
 
 
-def _prompt(candidate: Candidate) -> str:
+def _prompt_context(candidate: Candidate) -> dict[str, Any]:
     offer = candidate.offer
     box = None
     if None not in (offer.hotspot_x, offer.hotspot_y, offer.hotspot_width, offer.hotspot_height):
         box = {"x": offer.hotspot_x, "y": offer.hotspot_y,
                "width": offer.hotspot_width, "height": offer.hotspot_height}
-    context = {
+    return {
         "retailer": offer.retailer, "publication": offer.publication_title,
         "target_product": offer.product_name, "provider_price": offer.price,
         "provider_reference_price": offer.normal_price,
@@ -374,6 +385,7 @@ def _prompt(candidate: Candidate) -> str:
         "review_reasons": list(candidate.decision.reasons),
         "requested_fields": list(candidate.decision.requested_fields),
     }
+def _prompt_instructions() -> str:
     return (
         "You are Kurv's flyer verification layer. Inspect ONLY the advert for the target product. "
         "Do not borrow prices, membership badges or legal text from neighbouring adverts. "
@@ -382,19 +394,40 @@ def _prompt(candidate: Candidate) -> str:
         "member_price is only a price explicitly tied to membership/app/club for THIS product. "
         "requires_activation is true only when the advert explicitly says a coupon/offer must be activated/clipped; "
         "app membership alone is false. If a value cannot be read confidently, return null. "
-        "Preserve the advertised membership programme name. The normalized hotspot identifies the target area on a full-page image.\n\n"
-        + json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+        "Preserve the advertised membership programme name. The normalized hotspot identifies the target area on a full-page image."
+    )
+
+
+def _prompt(candidate: Candidate) -> str:
+    return _prompt_instructions() + "\n\n" + json.dumps(
+        _prompt_context(candidate), ensure_ascii=False, separators=(",", ":")
     )
 
 
 def _request_body(candidate: Candidate, config: dict[str, Any]) -> dict[str, Any]:
     image_url, detail = image_input(candidate)
-    content: list[dict[str, Any]] = [{"type": "input_text", "text": _prompt(candidate)}]
+    content: list[dict[str, Any]] = [
+        {
+            "type": "input_text",
+            "text": json.dumps(
+                _prompt_context(candidate), ensure_ascii=False, separators=(",", ":")
+            ),
+        }
+    ]
     if image_url:
         content.append({"type": "input_image", "image_url": image_url, "detail": detail})
     return {
         "model": str(config.get("model") or "gpt-5.6-luna"),
-        "input": [{"role": "user", "content": content}],
+        "input": [
+            {
+                "role": "developer",
+                "content": [{
+                    "type": "input_text",
+                    "text": _prompt_instructions(),
+                }],
+            },
+            {"role": "user", "content": content},
+        ],
         "reasoning": {"effort": "low"},
         "text": {"verbosity": "low", "format": {
             "type": "json_schema", "name": "kurv_offer_facts",
@@ -432,12 +465,38 @@ def _validated_facts(value: object) -> dict[str, Any] | None:
     return value
 
 
-def _usage_cost_dkk(usage: dict[str, Any], config: dict[str, Any]) -> float:
+def _usage_token_breakdown(usage: dict[str, Any]) -> dict[str, int]:
     input_tokens = int(usage.get("input_tokens") or 0)
-    output_tokens = int(usage.get("output_tokens") or 0)
+    details = usage.get("input_tokens_details")
+    details = details if isinstance(details, dict) else {}
+    cached_tokens = min(
+        input_tokens,
+        max(0, int(details.get("cached_tokens") or usage.get("cached_input_tokens") or 0)),
+    )
+    cache_write_tokens = min(
+        max(0, input_tokens - cached_tokens),
+        max(0, int(details.get("cache_write_tokens") or usage.get("cache_write_tokens") or 0)),
+    )
+    return {
+        "input_tokens": input_tokens,
+        "uncached_input_tokens": max(0, input_tokens - cached_tokens - cache_write_tokens),
+        "cached_input_tokens": cached_tokens,
+        "cache_write_tokens": cache_write_tokens,
+        "output_tokens": int(usage.get("output_tokens") or 0),
+    }
+
+
+def _usage_cost_dkk(usage: dict[str, Any], config: dict[str, Any]) -> float:
+    tokens = _usage_token_breakdown(usage)
     usd = (
-        input_tokens / 1_000_000 * float(config.get("input_usd_per_million", 1.0))
-        + output_tokens / 1_000_000 * float(config.get("output_usd_per_million", 6.0))
+        tokens["uncached_input_tokens"] / 1_000_000
+        * float(config.get("input_usd_per_million", 0.20))
+        + tokens["cached_input_tokens"] / 1_000_000
+        * float(config.get("cached_input_usd_per_million", 0.02))
+        + tokens["cache_write_tokens"] / 1_000_000
+        * float(config.get("cache_write_usd_per_million", 0.25))
+        + tokens["output_tokens"] / 1_000_000
+        * float(config.get("output_usd_per_million", 1.20))
     )
     return round(usd * float(config.get("usd_to_dkk", 7.0)), 6)
 
@@ -452,6 +511,9 @@ def usage_status(config: dict[str, Any] | None = None, store: dict[str, Any] | N
     return {
         "month": month_key(), "requests": requests,
         "input_tokens": int(usage.get("input_tokens") or 0),
+        "uncached_input_tokens": int(usage.get("uncached_input_tokens") or 0),
+        "cached_input_tokens": int(usage.get("cached_input_tokens") or 0),
+        "cache_write_tokens": int(usage.get("cache_write_tokens") or 0),
         "output_tokens": int(usage.get("output_tokens") or 0),
         "estimated_cost_dkk": round(spent, 4), "budget_dkk": budget,
         "remaining_dkk": round(max(0.0, budget - spent), 4),
@@ -465,17 +527,27 @@ def budget_allows_request(config: dict[str, Any] | None = None, store: dict[str,
     return status["estimated_cost_dkk"] < status["budget_dkk"] and status["requests"] < status["request_limit"]
 
 
-def _record_usage(store: dict[str, Any], usage: dict[str, Any], config: dict[str, Any]) -> None:
-    row = store.setdefault("usage", {}).setdefault(month_key(), {})
-    input_tokens = int(usage.get("input_tokens") or 0)
-    output_tokens = int(usage.get("output_tokens") or 0)
+def _add_usage_to_row(
+    row: dict[str, Any],
+    usage: dict[str, Any],
+    config: dict[str, Any],
+    *,
+    timestamp: bool = True,
+) -> None:
+    tokens = _usage_token_breakdown(usage)
     row["requests"] = int(row.get("requests") or 0) + 1
-    row["input_tokens"] = int(row.get("input_tokens") or 0) + input_tokens
-    row["output_tokens"] = int(row.get("output_tokens") or 0) + output_tokens
+    for key, value in tokens.items():
+        row[key] = int(row.get(key) or 0) + value
     row["estimated_cost_dkk"] = round(
         float(row.get("estimated_cost_dkk") or 0) + _usage_cost_dkk(usage, config), 6
     )
-    row["updated_at"] = int(time.time())
+    if timestamp:
+        row["updated_at"] = int(time.time())
+
+
+def _record_usage(store: dict[str, Any], usage: dict[str, Any], config: dict[str, Any]) -> None:
+    row = store.setdefault("usage", {}).setdefault(month_key(), {})
+    _add_usage_to_row(row, usage, config)
 
 
 async def analyze_candidate(candidate: Candidate, *, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
