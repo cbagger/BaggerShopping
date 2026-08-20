@@ -288,13 +288,15 @@ async def _background_enrichment_once(publications) -> dict:
     processed_pricing = 0
     processed_fallback = 0
     processed_variants = 0
+    attempted_requests = 0
     quarantined_now = 0
     deterministic_skips = 0
     stop_status = None
 
     async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
         page_candidates = _available(collect_page_audit_candidates(publications), "page")
-        for candidate in page_candidates[: min(page_limit, total_limit)]:
+        for candidate in page_candidates[: min(page_limit, total_limit - attempted_requests)]:
+            attempted_requests += 1
             result = await analyze_page_audit(candidate, client=client)
             status = str(result.get("status") or "")
             if status in _STOP_STATUSES:
@@ -311,7 +313,7 @@ async def _background_enrichment_once(publications) -> dict:
                 continue
             processed_pages += 1
 
-        remaining = max(0, total_limit - processed_pages)
+        remaining = max(0, total_limit - attempted_requests)
         if stop_status is None and remaining and pricing_limit:
             pricing_candidates, _ = _split_crop_candidates(collect_crop_candidates(publications))
             pricing_candidates = _available(pricing_candidates, "pricing")
@@ -334,6 +336,7 @@ async def _background_enrichment_once(publications) -> dict:
                 previous_semantic = before_store.get("semantic_facts", {}).get(
                     offer_key(candidate.offer)
                 )
+                attempted_requests += 1
                 result = await analyze_crop_candidate(candidate, client=client)
                 status = str(result.get("status") or "")
                 if status in _STOP_STATUSES:
@@ -347,13 +350,14 @@ async def _background_enrichment_once(publications) -> dict:
                     continue
                 processed_pricing += 1
 
-        remaining = max(0, total_limit - processed_pages - processed_pricing)
+        remaining = max(0, total_limit - attempted_requests)
         if stop_status is None and remaining and fallback_limit:
             fallback_candidates = _available(
                 _paid_candidates(collect_candidates(publications)),
                 "fallback",
             )
             for candidate in fallback_candidates[: min(fallback_limit, remaining)]:
+                attempted_requests += 1
                 result = await analyze_candidate(candidate, client=client)
                 status = str(result.get("status") or "")
                 if status in _STOP_STATUSES:
@@ -370,10 +374,7 @@ async def _background_enrichment_once(publications) -> dict:
                     continue
                 processed_fallback += 1
 
-        remaining = max(
-            0,
-            total_limit - processed_pages - processed_pricing - processed_fallback,
-        )
+        remaining = max(0, total_limit - attempted_requests)
         if (
             stop_status is None
             and remaining
@@ -385,6 +386,7 @@ async def _background_enrichment_once(publications) -> dict:
             for candidate in variant_candidates[: min(variant_limit, remaining)]:
                 if not _cost_policy.variant_crop_budget_allows(config):
                     break
+                attempted_requests += 1
                 result = await analyze_crop_candidate(candidate, client=client)
                 status = str(result.get("status") or "")
                 if status in _STOP_STATUSES:
@@ -404,8 +406,9 @@ async def _background_enrichment_once(publications) -> dict:
     quarantine_count = len(_load_quarantine())
     processed = processed_pages + processed_pricing + processed_fallback + processed_variants
     return {
-        "status": stop_status or ("enrichment-progress" if (processed or quarantined_now or deterministic_skips) else "enrichment-idle"),
+        "status": stop_status or ("enrichment-progress" if (attempted_requests or deterministic_skips) else "enrichment-idle"),
         "processed": processed,
+        "requests_attempted": attempted_requests,
         "pages_processed": processed_pages,
         "pricing_crops_processed": processed_pricing,
         "fallback_processed": processed_fallback,
