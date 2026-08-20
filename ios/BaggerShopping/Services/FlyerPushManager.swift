@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import UIKit
 import UserNotifications
@@ -42,10 +43,23 @@ final class FlyerPushManager: ObservableObject {
     private let tokenKey = "kurv-flyer-push-token-v1"
     private let retailersKey = "kurv-flyer-push-retailers-v1"
     private let enabledKey = "kurv-flyer-push-enabled-v1"
+    private var serverRetailers: [String] = []
+    private var retailerPreferenceObserver: AnyCancellable?
 
     init() {
         selectedRetailers = Set(UserDefaults.standard.stringArray(forKey: retailersKey) ?? [])
         enabled = UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? false
+
+        retailerPreferenceObserver = RetailerPreferences.shared.$disabledRetailers
+            .dropFirst()
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.refreshAvailableRetailers()
+                    await self.sync()
+                }
+            }
+
         NotificationCenter.default.addObserver(
             forName: .didRegisterForRemoteNotifications, object: nil, queue: .main
         ) { [weak self] note in
@@ -62,9 +76,13 @@ final class FlyerPushManager: ObservableObject {
     func bootstrap() async {
         await refreshAuthorization()
         if let response = try? await api.fetchFlyerNotificationRetailers() {
-            availableRetailers = response.retailers
+            serverRetailers = response.retailers
+            refreshAvailableRetailers()
         }
-        if enabled { UIApplication.shared.registerForRemoteNotifications() }
+        if enabled {
+            await sync()
+            UIApplication.shared.registerForRemoteNotifications()
+        }
     }
 
     func requestAndEnable() async {
@@ -79,7 +97,12 @@ final class FlyerPushManager: ObservableObject {
     }
 
     func updateRetailer(_ retailer: String, selected: Bool) async {
-        if selected { selectedRetailers.insert(retailer) } else { selectedRetailers.remove(retailer) }
+        if selected {
+            guard RetailerPreferences.shared.isEnabled(retailer) else { return }
+            selectedRetailers.insert(retailer)
+        } else {
+            selectedRetailers.remove(retailer)
+        }
         await sync()
     }
 
@@ -94,6 +117,26 @@ final class FlyerPushManager: ObservableObject {
         }
     }
 
+    static func activePushRetailers(
+        selected: Set<String>,
+        serverRetailers: [String],
+        preferences: RetailerPreferences
+    ) -> [String] {
+        let activeSelected = Set(
+            preferences.effectiveRetailers(requested: Array(selected))
+        )
+        let source = serverRetailers.isEmpty ? RetailerCatalog.all : serverRetailers
+        return source.filter { activeSelected.contains($0) }
+    }
+
+    static func availablePushRetailers(
+        serverRetailers: [String],
+        preferences: RetailerPreferences
+    ) -> [String] {
+        let source = serverRetailers.isEmpty ? RetailerCatalog.all : serverRetailers
+        return source.filter { preferences.isEnabled($0) }
+    }
+
     private func received(token: String) async {
         UserDefaults.standard.set(token, forKey: tokenKey)
         isRegistered = true
@@ -106,12 +149,23 @@ final class FlyerPushManager: ObservableObject {
             try await api.setFlyerNotificationDevice(
                 deviceID: deviceID,
                 deviceToken: token,
-                retailers: Array(selectedRetailers),
+                retailers: Self.activePushRetailers(
+                    selected: selectedRetailers,
+                    serverRetailers: serverRetailers,
+                    preferences: RetailerPreferences.shared
+                ),
                 enabled: enabled
             )
             errorMessage = nil
             isRegistered = true
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func refreshAvailableRetailers() {
+        availableRetailers = Self.availablePushRetailers(
+            serverRetailers: serverRetailers,
+            preferences: RetailerPreferences.shared
+        )
     }
 
     private func refreshAuthorization() async {
