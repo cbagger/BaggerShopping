@@ -121,6 +121,8 @@ private struct SettingsContent: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
+                RetailerPreferencesSettingsSection()
+
                 Section("Notifikation om ny avis") {
                     Toggle("Send push ved nye aviser", isOn: Binding(
                         get: { flyerPush.enabled },
