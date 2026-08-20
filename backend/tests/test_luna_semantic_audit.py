@@ -7,6 +7,7 @@ from app import luna_enrichment as luna
 from app import luna_cost_policy as cost_policy
 from app import luna_semantic_audit as semantic
 from app import luna_semantic_engine as engine
+from app import luna_semantic_guards as guards
 from app.meny_flyer import Offer, Publication
 
 
@@ -73,6 +74,25 @@ def test_page_fingerprint_ignores_rotating_image_query():
         "page_image_urls": [*first.page_image_urls[:-1], "https://images.test/page-9.jpg?token=new"]
     })
     assert semantic.page_fingerprint(first, 9, [offer]) == semantic.page_fingerprint(second, 9, [offer])
+
+
+def test_page_request_keeps_quality_contract_but_caches_only_stable_prefix():
+    offer = _offer()
+    publication = _publication(offer)
+    candidate = engine.collect_page_audit_candidates([publication])[0]
+
+    body = engine._page_request_body(candidate, luna.DEFAULT_CONFIG)
+
+    assert body["prompt_cache_key"] == "kurv-page-audit-member-price-sanity-v2"
+    assert body["prompt_cache_options"] == {"mode": "explicit", "ttl": "30m"}
+    assert body["input"][0]["role"] == "developer"
+    assert body["input"][0]["content"][0]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+    assert body["input"][0]["content"][0]["text"] == guards._strict_page_instructions()
+    context = json.loads(body["input"][1]["content"][0]["text"])
+    assert context["targets"][0]["offer_id"] == offer.id
+    assert body["input"][1]["content"][1]["detail"] == "high"
+    assert body["model"] == "gpt-5.6-luna"
+    assert body["reasoning"] == {"effort": "low"}
 
 
 def test_page_audit_becel_visual_only_member_price_requires_verification_crop():
