@@ -70,36 +70,76 @@ def _write_current_heartbeat() -> None:
         write_heartbeat("luna-worker", status="degraded", detail=str(exc))
 
 
-def _usage_delta(before: dict[str, Any], after: dict[str, Any]) -> tuple[int, float, int, int]:
+def _usage_delta(
+    before: dict[str, Any], after: dict[str, Any]
+) -> tuple[int, float, int, int, int, int, int]:
     before_usage = before.get("usage", {}) if isinstance(before.get("usage"), dict) else {}
     after_usage = after.get("usage", {}) if isinstance(after.get("usage"), dict) else {}
     requests = max(0, int(after_usage.get("requests") or 0) - int(before_usage.get("requests") or 0))
     cost = max(0.0, float(after_usage.get("estimated_cost_dkk") or 0.0) - float(before_usage.get("estimated_cost_dkk") or 0.0))
     input_tokens = max(0, int(after_usage.get("input_tokens") or 0) - int(before_usage.get("input_tokens") or 0))
     output_tokens = max(0, int(after_usage.get("output_tokens") or 0) - int(before_usage.get("output_tokens") or 0))
-    return requests, cost, input_tokens, output_tokens
+    cached_tokens = max(0, int(after_usage.get("cached_input_tokens") or 0) - int(before_usage.get("cached_input_tokens") or 0))
+    cache_write_tokens = max(0, int(after_usage.get("cache_write_tokens") or 0) - int(before_usage.get("cache_write_tokens") or 0))
+    uncached_tokens = max(0, int(after_usage.get("uncached_input_tokens") or 0) - int(before_usage.get("uncached_input_tokens") or 0))
+    return requests, cost, input_tokens, output_tokens, cached_tokens, cache_write_tokens, uncached_tokens
 
 
 def _record_openai_event(before: dict[str, Any], after: dict[str, Any], result: dict[str, Any]) -> None:
-    requests, cost, input_tokens, output_tokens = _usage_delta(before, after)
+    (
+        requests,
+        cost,
+        input_tokens,
+        output_tokens,
+        cached_tokens,
+        cache_write_tokens,
+        uncached_tokens,
+    ) = _usage_delta(before, after)
     if requests <= 0:
         return
     focus = result.get("coverage_focus") if isinstance(result.get("coverage_focus"), dict) else {}
     retailer = str(focus.get("retailer") or result.get("retailer") or "") or None
     title = str(focus.get("title") or result.get("title") or "")
     target = " · ".join(part for part in (retailer, title) if part) or "Luna enrichment"
+    work = []
+    for key, label in (
+        ("pages_processed", "sideaudit"),
+        ("pricing_crops_processed", "priscrop"),
+        ("fallback_processed", "fallback"),
+        ("variant_crops_processed", "variantcrop"),
+    ):
+        count = int(result.get(key) or 0)
+        if count:
+            work.append(f"{count} {label}")
+    work_detail = " + ".join(work)
+    detail_parts = [target]
+    if work_detail:
+        detail_parts.append(work_detail)
+    detail_parts.extend((f"+{input_tokens + output_tokens:,} tokens", f"+{cost:.4f} kr."))
     append_event(
         category="luna",
         event_type="openai_usage",
         title=f"OpenAI · {requests} request{'s' if requests != 1 else ''}",
-        detail=f"{target} · +{input_tokens + output_tokens:,} tokens · +{cost:.4f} kr.",
+        detail=" · ".join(detail_parts),
         severity="cost",
         component="luna-worker",
         retailer=retailer,
         publication_id=str(focus.get("publication_id") or result.get("publication_id") or "") or None,
         requests=requests,
         cost_dkk=cost,
-        metadata={"input_tokens": input_tokens, "output_tokens": output_tokens, "worker_status": result.get("status")},
+        metadata={
+            "input_tokens": input_tokens,
+            "uncached_input_tokens": uncached_tokens,
+            "cached_input_tokens": cached_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "output_tokens": output_tokens,
+            "worker_status": result.get("status"),
+            "requests_attempted": int(result.get("requests_attempted") or 0),
+            "pages_processed": int(result.get("pages_processed") or 0),
+            "pricing_crops_processed": int(result.get("pricing_crops_processed") or 0),
+            "fallback_processed": int(result.get("fallback_processed") or 0),
+            "variant_crops_processed": int(result.get("variant_crops_processed") or 0),
+        },
     )
 
 
