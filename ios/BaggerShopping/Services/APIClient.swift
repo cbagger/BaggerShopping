@@ -207,7 +207,11 @@ struct APIClient {
 
     func fetchOfferPublications() async throws -> PublicationsResponse {
         let data = try await perform(request(path: "/api/mobile/v1/offers/publications"))
-        return try JSONDecoder().decode(PublicationsResponse.self, from: data)
+        let response = try JSONDecoder().decode(PublicationsResponse.self, from: data)
+        let visible = response.publications.filter {
+            RetailerPreferences.shared.isEnabled($0.retailer)
+        }
+        return PublicationsResponse(ok: response.ok, publications: visible)
     }
 
     func fetchFlyerNotificationRetailers() async throws -> FlyerNotificationRetailersResponse {
@@ -239,10 +243,25 @@ struct APIClient {
     func searchOffers(query: String, retailers: [String] = []) async throws -> OfferSearchResponse {
         let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !term.isEmpty else { throw APIError.emptySearch }
-        var queryItems = [URLQueryItem(name: "q", value: term)]
-        if !retailers.isEmpty {
-            queryItems.append(URLQueryItem(name: "retailer", value: retailers.joined(separator: ",")))
+
+        let effectiveRetailers = RetailerPreferences.shared.effectiveRetailers(requested: retailers)
+        guard !effectiveRetailers.isEmpty else {
+            return OfferSearchResponse(
+                ok: true,
+                query: term,
+                retailer: "Ingen butikker",
+                publication: nil,
+                offerCount: 0,
+                offers: []
+            )
         }
+
+        var queryItems = [URLQueryItem(name: "q", value: term)]
+        let retailerQuery = effectiveRetailers.joined(separator: ",")
+        if retailerQuery.count <= 40 {
+            queryItems.append(URLQueryItem(name: "retailer", value: retailerQuery))
+        }
+
         let data = try await perform(
             request(
                 path: "/api/mobile/v1/offers/search",
@@ -250,7 +269,18 @@ struct APIClient {
             )
         )
         let response = try JSONDecoder().decode(OfferSearchResponse.self, from: data)
-        return response
+        let effectiveSet = Set(effectiveRetailers)
+        let visibleOffers = response.offers.filter {
+            effectiveSet.contains($0.retailer)
+        }
+        return OfferSearchResponse(
+            ok: response.ok,
+            query: response.query,
+            retailer: response.retailer,
+            publication: response.publication,
+            offerCount: visibleOffers.count,
+            offers: visibleOffers
+        )
     }
 
     func compareProducts(

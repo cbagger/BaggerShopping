@@ -21,7 +21,10 @@ enum FlyerPublicationCache {
             let cached = try? JSONDecoder().decode(CachedFlyerPublications.self, from: data),
             Date().timeIntervalSince(cached.savedAt) <= maxAge
         else { return nil }
-        return cached
+        let visible = cached.publications.filter {
+            RetailerPreferences.shared.isEnabled($0.retailer)
+        }
+        return CachedFlyerPublications(savedAt: cached.savedAt, publications: visible)
     }
 }
 
@@ -70,7 +73,9 @@ enum OfferSearchCache {
 
     static func save(_ offers: [GroceryOffer], query: String, retailers: Set<String>) {
         guard !offers.isEmpty else { return }
-        let cached = CachedOfferSearch(savedAt: Date(), offers: offers)
+        let visible = offers.filter { RetailerPreferences.shared.isEnabled($0.retailer) }
+        guard !visible.isEmpty else { return }
+        let cached = CachedOfferSearch(savedAt: Date(), offers: visible)
         guard let data = try? JSONEncoder().encode(cached) else { return }
         UserDefaults.standard.set(data, forKey: key(query: query, retailers: retailers))
     }
@@ -81,14 +86,16 @@ enum OfferSearchCache {
             let cached = try? JSONDecoder().decode(CachedOfferSearch.self, from: data),
             Date().timeIntervalSince(cached.savedAt) <= maxAge
         else { return nil }
-        return cached
+        let visible = cached.offers.filter { RetailerPreferences.shared.isEnabled($0.retailer) }
+        return CachedOfferSearch(savedAt: cached.savedAt, offers: visible)
     }
 
     private static func key(query: String, retailers: Set<String>) -> String {
         let normalized = query
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))
-        let retailerPart = retailers.sorted().joined(separator: "|")
+        let effective = RetailerPreferences.shared.effectiveRetailers(requested: Array(retailers))
+        let retailerPart = effective.isEmpty ? "__none__" : effective.joined(separator: "|")
         let raw = normalized + "||" + retailerPart
         let encoded = Data(raw.utf8).base64EncodedString()
             .replacingOccurrences(of: "/", with: "_")
