@@ -18,6 +18,7 @@ from .flyer_readiness import (
 from .luna_enrichment import load_config, load_store, offer_fingerprint
 from .luna_semantic_audit import offer_key
 from .meny_flyer import Offer, OfferVariant, Publication
+from .retailer_sources import is_active_retailer
 
 
 _SIZE_ONLY_VARIANT_RE = re.compile(
@@ -127,6 +128,10 @@ def _publication_not_expired(publication: Publication) -> bool:
 
 
 def _serve_stable_publications(publications: list[Publication]) -> list[Publication]:
+    publications = [
+        publication for publication in publications
+        if is_active_retailer(publication.retailer)
+    ]
     readiness = load_readiness_store()
     if not readiness.get("initialized"):
         return publications
@@ -172,12 +177,20 @@ def _serve_stable_publications(publications: list[Publication]) -> list[Publicat
         rows[publication.id] = _publication_snapshot(publication, verified=False)
         changed = True
 
+    retired_ids: list[str] = []
     for publication_id, row in rows.items():
         if publication_id in current_ids or not isinstance(row, dict) or not row.get("verified"):
             continue
         cached = _restore_publication(row)
+        if cached is not None and not is_active_retailer(cached.retailer):
+            retired_ids.append(publication_id)
+            changed = True
+            continue
         if cached is not None and _publication_not_expired(cached):
             result.append(cached)
+
+    for publication_id in retired_ids:
+        rows.pop(publication_id, None)
 
     if changed:
         store.pop("migrated_from_version", None)

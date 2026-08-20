@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .flyer_publications import RETAILER_ORDER, fetch_all_publications
+from .retailer_sources import is_active_retailer
 from .flyer_intelligence import (
     feedback_key,
     learned_adjustment,
@@ -108,7 +109,8 @@ async def _publication() -> Publication:
 def _usable_publications(candidates: list[Publication]) -> list[Publication]:
     return [
         candidate for candidate in candidates
-        if candidate.status != "expired"
+        if is_active_retailer(candidate.retailer)
+        and candidate.status != "expired"
         and not _reader_problems(candidate)
         and not _health_problems(candidate)
     ]
@@ -117,7 +119,9 @@ def _usable_publications(candidates: list[Publication]) -> list[Publication]:
 def _stale_publication_fallback() -> list[Publication]:
     return [
         item for item in _publications_cache
-        if item.status != "expired" and not _reader_problems(item)
+        if is_active_retailer(item.retailer)
+        and item.status != "expired"
+        and not _reader_problems(item)
     ]
 
 

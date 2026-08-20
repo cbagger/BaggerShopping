@@ -168,6 +168,25 @@ def test_verified_snapshot_survives_temporary_provider_gap(monkeypatch, tmp_path
     assert len(served[0].structured_offers) == 1
 
 
+def test_retired_retailer_snapshot_is_pruned_instead_of_served(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path)
+    monkeypatch.setattr(luna_overlay, "publication_is_ready", lambda publication: True)
+
+    retired = _publication()
+    retired.retailer = "Kvickly"
+    cache_path = tmp_path / "flyer-serving-cache.json"
+    cache_path.write_text(json.dumps({
+        "version": 2,
+        "publications": {
+            retired.id: luna_overlay._publication_snapshot(retired, verified=True),
+        },
+    }), encoding="utf-8")
+
+    assert luna_overlay.apply_cached_enrichment([]) == []
+    cache = json.loads(cache_path.read_text("utf-8"))
+    assert retired.id not in cache["publications"]
+
+
 def test_snapshot_stores_raw_offer_fields_not_member_price_presentation(monkeypatch, tmp_path):
     _configure(monkeypatch, tmp_path)
     publication = _seafood_publication()

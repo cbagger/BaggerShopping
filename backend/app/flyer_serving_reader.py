@@ -6,6 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from .meny_flyer import Publication
+from .retailer_sources import is_active_retailer
 
 
 _SERVING_CACHE_VERSION = 2
@@ -58,7 +59,7 @@ def load_verified_publications(*, today: date | None = None) -> list[Publication
             publication = Publication.model_validate(payload)
         except Exception:
             continue
-        if _not_expired(publication, today=today):
+        if is_active_retailer(publication.retailer) and _not_expired(publication, today=today):
             result.append(publication)
 
     return result
