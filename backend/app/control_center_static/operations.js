@@ -57,32 +57,32 @@
   function injectLayout() {
     if ($("#operationsCockpit")) return;
 
-    const currentWork = $("#overview .current-work-panel");
-    if (currentWork) {
-      currentWork.insertAdjacentHTML("afterend", `
+    const operationsMount = $("#operationsMount");
+    if (operationsMount) {
+      operationsMount.innerHTML = `
         <section id="operationsCockpit" class="ops-section">
           <div class="ops-section-heading">
-            <div><span class="panel-eyebrow">OPERATIONS</span><h3>Kurv virker — hele kæden</h3></div>
-            <span class="quiet-label">read-only driftsbeviser</span>
+            <div><span class="panel-eyebrow">DRIFTSBEVISER</span><h3>Kurv virker — hele kæden</h3></div>
+            <span class="quiet-label">skrivebeskyttet kontrol</span>
           </div>
           <div class="ops-cockpit-grid">
             <article class="surface ops-panel ops-e2e"><div id="opsE2E"></div></article>
-            <article class="surface ops-panel"><div class="ops-title-row"><div><span class="panel-eyebrow">FRESHNESS</span><h4>Dataliv</h4></div></div><div id="opsFreshness" class="ops-list"></div></article>
-            <article class="surface ops-panel"><div class="ops-title-row"><div><span class="panel-eyebrow">JOBS & QUEUES</span><h4>Workers</h4></div></div><div id="opsJobs" class="ops-list"></div></article>
-            <article class="surface ops-panel"><div class="ops-title-row"><div><span class="panel-eyebrow">RELEASE</span><h4>Deploy & recovery</h4></div></div><div id="opsRelease"></div></article>
-            <article class="surface ops-panel"><div class="ops-title-row"><div><span class="panel-eyebrow">ALERT LIFECYCLE</span><h4>Aktive alarmer</h4></div></div><div id="opsAlerts" class="ops-list"></div></article>
+            <article class="surface ops-panel"><div class="ops-title-row"><div><span class="panel-eyebrow">DATAALDER</span><h4>Dataliv</h4></div></div><div id="opsFreshness" class="ops-list"></div></article>
+            <article class="surface ops-panel"><div class="ops-title-row"><div><span class="panel-eyebrow">JOBS & KØER</span><h4>Workers</h4></div></div><div id="opsJobs" class="ops-list"></div></article>
+            <article class="surface ops-panel"><div class="ops-title-row"><div><span class="panel-eyebrow">VERSION</span><h4>Deployment & gendannelse</h4></div></div><div id="opsRelease"></div></article>
+            <article class="surface ops-panel"><div class="ops-title-row"><div><span class="panel-eyebrow">ALARMFORLØB</span><h4>Aktive alarmer</h4></div></div><div id="opsAlerts" class="ops-list"></div></article>
           </div>
           <div class="ops-trend-grid" id="opsTrendGrid"></div>
         </section>
-      `);
+      `;
     }
 
     const lunaTop = $("#luna .luna-top-grid");
     if (lunaTop) {
       lunaTop.insertAdjacentHTML("afterend", `
         <div class="ops-luna-grid">
-          <section class="panel surface"><div class="panel-header"><div><span class="panel-eyebrow">DEGRADED IMPACT</span><h3>Hvad betyder degraded?</h3></div></div><div id="opsDegraded"></div></section>
-          <section class="panel surface"><div class="panel-header"><div><span class="panel-eyebrow">LUNA COST EVENTS</span><h3>Faktiske OpenAI-kald</h3></div></div><div id="opsOpenAIEvents" class="ops-list"></div></section>
+          <section class="panel surface"><div class="panel-header"><div><span class="panel-eyebrow">KVALITETSPÅVIRKNING</span><h3>Hvad betyder “klar med forbehold”?</h3></div></div><div id="opsDegraded"></div></section>
+          <section class="panel surface"><div class="panel-header"><div><span class="panel-eyebrow">LUNA-OMKOSTNINGER</span><h3>Faktiske OpenAI-kald</h3></div></div><div id="opsOpenAIEvents" class="ops-list"></div></section>
         </div>
       `);
     }
@@ -96,9 +96,9 @@
     if (dataCards) {
       dataCards.insertAdjacentHTML("afterend", `
         <div class="ops-data-grid">
-          <section class="panel surface"><div class="panel-header"><div><span class="panel-eyebrow">DATA HEALTH</span><h3>Integritet</h3></div></div><div id="opsIntegrity" class="ops-list"></div></section>
-          <section class="panel surface"><div class="panel-header"><div><span class="panel-eyebrow">SECURITY POSTURE</span><h3>Sikkerhed</h3></div></div><div id="opsSecurity" class="ops-list"></div></section>
-          <section class="panel surface"><div class="panel-header"><div><span class="panel-eyebrow">CLIENT FLEET</span><h3>iPhones</h3></div></div><div id="opsClients" class="ops-list"></div></section>
+          <section class="panel surface"><div class="panel-header"><div><span class="panel-eyebrow">DATASUNDHED</span><h3>Integritet</h3></div></div><div id="opsIntegrity" class="ops-list"></div></section>
+          <section class="panel surface"><div class="panel-header"><div><span class="panel-eyebrow">SIKKERHEDSSTATUS</span><h3>Sikkerhed</h3></div></div><div id="opsSecurity" class="ops-list"></div></section>
+          <section class="panel surface"><div class="panel-header"><div><span class="panel-eyebrow">REGISTREREDE ENHEDER</span><h3>iPhones</h3></div></div><div id="opsClients" class="ops-list"></div></section>
         </div>
       `);
     }
@@ -314,7 +314,7 @@
     if (summary) summary.textContent = `${counts.luna || 0} Luna · ${counts.flyer || 0} avis · ${counts.system || 0} system`;
     target.innerHTML = rows.length ? rows.map((row) => {
       const cost = row.cost_dkk != null ? `<span class="ops-event-cost">+${fmtDkk(row.cost_dkk, 4)} kr.</span>` : "";
-      const requests = row.requests != null ? `<span>${fmtInt(row.requests)} req.</span>` : "";
+      const requests = row.requests != null ? `<span>${fmtInt(row.requests)} kald</span>` : "";
       return `<div class="ops-event-row"><span class="timeline-time">${esc(fmtDateTime(row.at))}</span><i class="ops-event-dot ${tone(row.severity || row.status)}"></i><div class="ops-event-main"><strong>${esc(row.title || row.detail || row.type)}</strong><span>${esc(row.detail || row.retailer || row.category || "")}</span></div><div class="ops-event-meta">${requests}${cost}<span class="ops-category">${esc(row.category || "event")}</span></div></div>`;
     }).join("") : '<div class="empty-state">Ingen meningsfulde events i dette filter.</div>';
   }
@@ -338,30 +338,8 @@
     renderActivity(snapshot);
   }
 
-  async function fetchSnapshot() {
-    try {
-      const response = await fetch("/api/snapshot", { cache: "no-store", headers: { Accept: "application/json" } });
-      if (response.ok) render(await response.json());
-    } catch (_) {
-      // Base Control Center owns connection/error UI.
-    }
-  }
-
-  function connect() {
-    const source = new EventSource("/api/events");
-    source.addEventListener("snapshot", (event) => {
-      try {
-        render(JSON.parse(event.data));
-      } catch (_) {
-        // Base Control Center remains functional if an Operations render fails.
-      }
-    });
-    source.onerror = () => window.setTimeout(fetchSnapshot, 2500);
-  }
-
-  document.addEventListener("DOMContentLoaded", async () => {
+  document.addEventListener("DOMContentLoaded", () => {
     injectLayout();
-    await fetchSnapshot();
-    connect();
+    window.addEventListener("kurv:snapshot", (event) => render(event.detail || {}));
   });
 })();

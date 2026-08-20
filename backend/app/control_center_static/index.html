@@ -4,8 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light">
-  <meta name="theme-color" content="#f6f7f9">
+  <meta name="theme-color" content="#f4f7f2">
   <title>Kurv Control Center</title>
+  <link rel="icon" type="image/png" href="/assets/kurv-app-icon.png">
   <link rel="stylesheet" href="/assets/app.css">
   <script src="/assets/app.js" defer></script>
 </head>
@@ -13,11 +14,8 @@
   <div class="app-shell">
     <aside class="sidebar" aria-label="Navigation">
       <div class="brand-lockup">
-        <div class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 44 44" role="img">
-            <path d="M11 17.5h22l-2.15 15.2a4 4 0 0 1-3.96 3.45h-9.78a4 4 0 0 1-3.96-3.45L11 17.5Z" fill="currentColor" opacity=".12"/>
-            <path d="M14.5 17.5 19 9.8M29.5 17.5 25 9.8M11 17.5h22l-2.15 15.2a4 4 0 0 1-3.96 3.45h-9.78a4 4 0 0 1-3.96-3.45L11 17.5Z" fill="none" stroke="currentColor" stroke-width="2.35" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
+        <div class="brand-mark">
+          <img src="/assets/kurv-app-icon.png" width="48" height="48" alt="Kurv">
         </div>
         <div>
           <div class="brand-name">Kurv</div>
@@ -27,22 +25,25 @@
 
       <nav class="nav-list">
         <a href="#overview" class="nav-item is-active" data-section="overview">
-          <span class="nav-icon">⌂</span><span>Overblik</span>
+          <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 11.5 12 5l8 6.5V20a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1Z"/></svg></span><span>Dashboard</span>
+        </a>
+        <a href="#operations" class="nav-item" data-section="operations">
+          <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 17h3l2.2-6 3.1 9 2.2-6H20"/><path d="M5 4h14a2 2 0 0 1 2 2v14H3V6a2 2 0 0 1 2-2Z"/></svg></span><span>Drift & system</span>
         </a>
         <a href="#architecture" class="nav-item" data-section="architecture">
-          <span class="nav-icon">◇</span><span>Arkitektur</span>
+          <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="9" y="14" width="6" height="6" rx="1"/><path d="M7 10v2h10v-2M12 12v2"/></svg></span><span>Arkitektur</span>
         </a>
         <a href="#luna" class="nav-item" data-section="luna">
-          <span class="nav-icon">✦</span><span>Luna & aviser</span>
+          <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 1.4 4.6L18 9l-4.6 1.4L12 15l-1.4-4.6L6 9l4.6-1.4Z"/><path d="m18.5 14 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7Z"/></svg></span><span>Luna & aviser</span>
         </a>
         <a href="#integrations" class="nav-item" data-section="integrations">
-          <span class="nav-icon">↗</span><span>Integrationer</span>
+          <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 15 15 9M8 7h9v9"/><path d="M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/></svg></span><span>Integrationer</span>
         </a>
         <a href="#data" class="nav-item" data-section="data">
-          <span class="nav-icon">▤</span><span>Data & familie</span>
+          <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg></span><span>Data & familie</span>
         </a>
         <a href="#activity" class="nav-item" data-section="activity">
-          <span class="nav-icon">≋</span><span>Aktivitet</span>
+          <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h9"/><circle cx="4" cy="7" r=".5"/><circle cx="4" cy="12" r=".5"/><circle cx="4" cy="17" r=".5"/></svg></span><span>Aktivitet</span>
         </a>
       </nav>
 
@@ -54,15 +55,15 @@
             <span id="connectionDetail">Live status</span>
           </div>
         </div>
-        <div class="local-note">Kun lokalt netværk · read-only</div>
+        <div class="local-note">Kun lokalt netværk · skrivebeskyttet</div>
       </div>
     </aside>
 
     <main class="main-content">
       <header class="topbar">
         <div>
-          <div class="eyebrow">KURV SYSTEM</div>
-          <h1 id="pageTitle">Systemoverblik</h1>
+          <div class="eyebrow">KURV CONTROL CENTER</div>
+          <h1 id="pageTitle">Dashboard</h1>
         </div>
         <div class="topbar-actions">
           <div class="freshness" title="Seneste snapshot">
@@ -76,66 +77,89 @@
       <div id="globalError" class="global-error hidden" role="alert"></div>
 
       <section id="overview" class="section-block section-anchor">
-        <div class="hero-status surface" id="heroStatus">
+        <div class="hero-status command-hero surface" id="heroStatus">
           <div class="hero-copy">
             <div class="status-kicker"><span class="status-orb" id="overallOrb"></span><span id="overallKicker">Indlæser systemstatus</span></div>
             <h2 id="overallTitle">Kurv kontrolleres…</h2>
-            <p id="overallSubtitle">Live status fra QNAP, integrationslag og Kurvs egne motorer.</p>
+            <p id="overallSubtitle">Samler live status fra QNAP, aviser, Luna og integrationer.</p>
           </div>
           <div class="hero-meta">
-            <div class="meta-pill"><span>Commit</span><strong id="releaseCommit">—</strong></div>
-            <div class="meta-pill"><span>iOS</span><strong id="releaseIos">—</strong></div>
+            <div class="hero-brand-orbit" aria-hidden="true"><img src="/assets/kurv-app-icon.png" width="112" height="112" alt=""></div>
+            <div class="hero-release-line"><span>Installeret</span><strong id="releaseCommit">—</strong><i></i><span id="releaseIos">—</span></div>
           </div>
         </div>
 
-        <div class="metric-grid" id="metricGrid">
-          <article class="metric-card surface">
-            <span class="metric-label">System</span>
-            <strong class="metric-value" id="metricSystem">—</strong>
-            <span class="metric-caption" id="metricSystemCaption">komponenter</span>
-          </article>
-          <article class="metric-card surface">
-            <span class="metric-label">Luna</span>
-            <strong class="metric-value" id="metricLuna">—</strong>
-            <span class="metric-caption" id="metricLunaCaption">månedligt forbrug</span>
-          </article>
-          <article class="metric-card surface">
-            <span class="metric-label">Aviser</span>
-            <strong class="metric-value" id="metricFlyers">—</strong>
-            <span class="metric-caption" id="metricFlyersCaption">coverage</span>
-          </article>
-          <article class="metric-card surface">
-            <span class="metric-label">Familie</span>
-            <strong class="metric-value" id="metricFamily">—</strong>
-            <span class="metric-caption" id="metricFamilyCaption">familiedata</span>
-          </article>
+        <div class="dashboard-core-grid" id="dashboardSnapshotGrid">
+          <a class="dashboard-core-card dashboard-flyers-card surface" id="dashboardFlyers" href="#luna">
+            <div class="dashboard-card-top"><span class="dashboard-card-icon flyer-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h11a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2V4a1 1 0 0 1 1-1Z"/><path d="M8 7h7M8 11h7M8 15h4"/></svg></span><span class="dashboard-state" data-card-status></span></div>
+            <span class="dashboard-card-label">Aktuelle tilbudsaviser</span>
+            <strong class="dashboard-card-value" data-card-value>—</strong>
+            <span class="dashboard-card-caption" data-card-caption>Afventer avisstatus</span>
+            <div class="coverage-bar" aria-hidden="true"><span id="dashboardCoverageComplete"></span><span id="dashboardCoveragePending"></span><span id="dashboardCoverageDegraded"></span></div>
+            <span class="dashboard-card-link">Åbn aviser og kvalitet <b>→</b></span>
+          </a>
+
+          <a class="dashboard-core-card dashboard-luna-card surface" id="dashboardLuna" href="#luna">
+            <div class="dashboard-card-top"><span class="dashboard-card-icon luna-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 1.4 4.6L18 9l-4.6 1.4L12 15l-1.4-4.6L6 9l4.6-1.4Z"/><path d="m18.5 14 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7Z"/></svg></span><span class="dashboard-state" data-card-status></span></div>
+            <span class="dashboard-card-label">Luna denne måned</span>
+            <strong class="dashboard-card-value" data-card-value>—</strong>
+            <span class="dashboard-card-caption" data-card-caption>Afventer forbrug</span>
+            <div class="budget-mini"><span id="dashboardBudgetBar"></span></div>
+            <div class="dashboard-workline"><i></i><span id="dashboardWorkline">Afventer worker-status</span></div>
+            <span class="dashboard-card-link">Se budget og analyser <b>→</b></span>
+          </a>
+
+          <a class="dashboard-core-card dashboard-system-card surface" id="dashboardSystem" href="#operations">
+            <div class="dashboard-card-top"><span class="dashboard-card-icon system-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 17h3l2.2-6 3.1 9 2.2-6H20"/><path d="M5 4h14a2 2 0 0 1 2 2v14H3V6a2 2 0 0 1 2-2Z"/></svg></span><span class="dashboard-state" data-card-status></span></div>
+            <span class="dashboard-card-label">Drift & forbindelser</span>
+            <strong class="dashboard-card-value" data-card-value>—</strong>
+            <span class="dashboard-card-caption" data-card-caption>Afventer systemstatus</span>
+            <div id="dashboardIntegrationList" class="dashboard-integration-list"></div>
+            <span class="dashboard-card-link">Åbn driftsoverblik <b>→</b></span>
+          </a>
         </div>
 
-        <div class="overview-grid">
-          <section class="panel surface attention-panel">
+        <div class="dashboard-focus-grid">
+          <section class="panel surface attention-panel dashboard-actions-panel">
             <div class="panel-header">
               <div>
-                <span class="panel-eyebrow">PRIORITERET</span>
-                <h3>Kræver opmærksomhed</h3>
+                <span class="panel-eyebrow">DET VIGTIGSTE LIGE NU</span>
+                <h3 id="dashboardActionTitle">Kræver opmærksomhed</h3>
               </div>
               <span class="count-badge" id="alertCount">0</span>
             </div>
             <div id="alertsList" class="stack-list empty-state compact">Ingen aktive advarsler.</div>
+            <a href="#operations" class="text-link dashboard-panel-link">Se alle driftsdetaljer →</a>
           </section>
 
-          <section class="panel surface">
+          <section class="panel surface dashboard-family-panel">
             <div class="panel-header">
               <div>
-                <span class="panel-eyebrow">LIVE</span>
-                <h3>Runtime</h3>
+                <span class="panel-eyebrow">KURV I BRUG</span>
+                <h3>Familie & app</h3>
               </div>
-              <span class="quiet-label">QNAP</span>
+              <a href="#data" class="text-link">Se data →</a>
             </div>
-            <div id="runtimeGrid" class="runtime-list loading-lines"></div>
+            <div class="dashboard-family-stats">
+              <div><strong id="dashboardMembers">—</strong><span>medlemmer</span></div>
+              <div><strong id="dashboardFamilies">—</strong><span>familier</span></div>
+              <div><strong id="dashboardBindings">—</strong><span>tilbudsvarer</span></div>
+            </div>
+            <div class="dashboard-app-state"><span class="status-orb healthy"></span><div><strong id="dashboardIosVersion">iOS —</strong><span>Telefonernes installerede version vises ved registrering</span></div></div>
           </section>
         </div>
+      </section>
 
-        <section class="panel surface current-work-panel">
+      <section id="operations" class="section-block section-anchor">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">DRIFT & SYSTEM</span>
+            <h2>Hele Kurvs driftskæde</h2>
+            <p>Live sundhed, workers, dataliv, alarmer, deployment og backup — tekniske detaljer samlet ét sted.</p>
+          </div>
+        </div>
+        <div id="operationsMount"></div>
+        <section class="panel surface current-work-panel operations-current-work">
           <div class="panel-header">
             <div>
               <span class="panel-eyebrow">AKTUELT ARBEJDE</span>
@@ -144,6 +168,13 @@
             <a href="#luna" class="text-link">Se Luna & aviser →</a>
           </div>
           <div id="currentWork" class="current-work-grid empty-state">Afventer worker-telemetri…</div>
+        </section>
+        <section class="panel surface runtime-panel">
+          <div class="panel-header">
+            <div><span class="panel-eyebrow">LIVE PÅ QNAP</span><h3>Services</h3></div>
+            <span class="quiet-label">Live status</span>
+          </div>
+          <div id="runtimeGrid" class="runtime-list loading-lines"></div>
         </section>
       </section>
 
@@ -188,9 +219,9 @@
       <section id="luna" class="section-block section-anchor">
         <div class="section-heading">
           <div>
-            <span class="eyebrow">AI & KVALITET</span>
+            <span class="eyebrow">LUNA & KVALITET</span>
             <h2>Luna & tilbudsaviser</h2>
-            <p>Coverage, medlemstilbud, prisverifikation, retries, quarantine og faktisk OpenAI-forbrug.</p>
+            <p>Dækning, medlemstilbud, prisverifikation, genforsøg, karantæne og faktisk OpenAI-forbrug.</p>
           </div>
         </div>
 
@@ -198,7 +229,7 @@
           <section class="panel surface budget-card">
             <div class="panel-header">
               <div>
-                <span class="panel-eyebrow">OPENAI</span>
+                <span class="panel-eyebrow">LUNA-FORBRUG</span>
                 <h3>Månedsbudget</h3>
               </div>
               <span class="status-chip" id="lunaModel">—</span>
@@ -206,7 +237,7 @@
             <div class="budget-value"><strong id="lunaSpent">—</strong><span id="lunaBudget">/ — kr.</span></div>
             <div class="progress-track large"><span id="lunaBudgetBar"></span></div>
             <div class="budget-details">
-              <span><strong id="lunaRequests">—</strong> requests</span>
+              <span><strong id="lunaRequests">—</strong> kald</span>
               <span><strong id="lunaTokens">—</strong> tokens</span>
               <span><strong id="lunaRemaining">—</strong> kr. tilbage</span>
             </div>
@@ -215,15 +246,15 @@
           <section class="panel surface coverage-summary-card">
             <div class="panel-header">
               <div>
-                <span class="panel-eyebrow">FULL FLYER COVERAGE</span>
+                <span class="panel-eyebrow">AVISDÆKNING</span>
                 <h3>Aktuelle avis-generationer</h3>
               </div>
             </div>
             <div class="coverage-donut" aria-hidden="true"><div id="coverageRing"><span id="coverageTotal">—</span></div></div>
             <div class="legend-list">
-              <span><i class="legend-dot healthy"></i><b id="coverageComplete">—</b> Complete</span>
-              <span><i class="legend-dot attention"></i><b id="coveragePending">—</b> Pending</span>
-              <span><i class="legend-dot warning"></i><b id="coverageDegraded">—</b> Degraded</span>
+              <span><i class="legend-dot healthy"></i><b id="coverageComplete">—</b> Klar</span>
+              <span><i class="legend-dot attention"></i><b id="coveragePending">—</b> Analyseres</span>
+              <span><i class="legend-dot warning"></i><b id="coverageDegraded">—</b> Klar med forbehold</span>
             </div>
           </section>
         </div>
@@ -232,16 +263,16 @@
           <div class="panel-header table-header">
             <div>
               <span class="panel-eyebrow">AVISER</span>
-              <h3>Coverage & medlemstilbud</h3>
+              <h3>Dækning & medlemstilbud</h3>
             </div>
             <div class="table-tools">
               <label class="search-field small"><span>⌕</span><input id="flyerSearch" type="search" placeholder="Søg butik eller avis…"></label>
               <select id="flyerStatusFilter" class="select-field" aria-label="Filtrer avisstatus">
                 <option value="all">Alle statusser</option>
-                <option value="pending">Pending</option>
-                <option value="degraded">Degraded</option>
-                <option value="complete">Complete</option>
-                <option value="not_tracked">Ikke tracket</option>
+                <option value="pending">Analyseres</option>
+                <option value="degraded">Klar med forbehold</option>
+                <option value="complete">Klar</option>
+                <option value="not_tracked">Ikke overvåget</option>
               </select>
             </div>
           </div>
@@ -251,11 +282,11 @@
                 <tr>
                   <th>Butik / avis</th>
                   <th>Status</th>
-                  <th>Coverage</th>
+                  <th>Dækning</th>
                   <th>Medlem</th>
                   <th>Prischeck</th>
-                  <th>Retry</th>
-                  <th>Quarantine</th>
+                  <th>Genforsøg</th>
+                  <th>Karantæne</th>
                 </tr>
               </thead>
               <tbody id="flyerTableBody"></tbody>
@@ -278,7 +309,7 @@
       <section id="data" class="section-block section-anchor">
         <div class="section-heading">
           <div>
-            <span class="eyebrow">PERSISTENT STATE</span>
+            <span class="eyebrow">GEMTE DATA</span>
             <h2>Data & familie</h2>
             <p>Sanitiseret driftsstatus for familier, metadata, identitetslæring og QNAP-data — aldrig secrets eller tokens.</p>
           </div>
@@ -288,7 +319,7 @@
           <div class="panel-header">
             <div>
               <span class="panel-eyebrow">FAMILIER</span>
-              <h3>Household engine</h3>
+              <h3>Familiedata</h3>
             </div>
           </div>
           <div id="householdTable" class="household-list empty-state">Ingen data endnu.</div>

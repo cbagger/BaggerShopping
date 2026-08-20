@@ -21,7 +21,7 @@ from .control_center_catalog import IOS_RELEASE, catalog, dataflow
 from .control_telemetry import read_heartbeat
 
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 STATIC_DIR = Path(__file__).with_name("control_center_static")
 SNAPSHOT_TTL_SECONDS = 2.0
 
