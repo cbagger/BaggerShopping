@@ -257,6 +257,8 @@ def _page_context(candidate: PageAuditCandidate) -> dict[str, Any]:
         "page": candidate.page_number,
         "targets": targets,
     }
+
+
 def _page_instructions() -> str:
     return (
         "You are Kurv's semantic flyer page auditor. Inspect the full flyer page once and audit "
@@ -747,6 +749,8 @@ def _crop_context(candidate: CropCandidate) -> dict[str, Any]:
         "page_audit_facts": page_facts,
         "verification_reasons": list(candidate.reasons),
     }
+
+
 def _crop_instructions() -> str:
     return (
         "You are Kurv's targeted flyer verification layer. Inspect ONLY the advert inside the "
