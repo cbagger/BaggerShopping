@@ -20,7 +20,52 @@ RETAILER_ORDER = (
 )
 
 
-ADDITIONAL_SOURCES: tuple[RetailerSource, ...] = (
+# Customer-facing retailer registry. MENY has its dedicated iPaper fetcher;
+# every other chain is described here and flows through the same provider,
+# enrichment, readiness, search and notification pipeline.
+SOURCES: tuple[RetailerSource, ...] = (
+    RetailerSource(
+        "365discount",
+        "https://365discount.coop.dk/365avis/",
+        ("365discount.coop.dk", "tjek.com", "ipaper.io"),
+        tjek_dealer_id="DWZE1w",
+    ),
+    RetailerSource(
+        "REMA 1000",
+        "https://rema1000.dk/avis",
+        ("avis.rema1000.dk", "ipaper.io", "view.publitas.com"),
+        tjek_dealer_id="11deC",
+    ),
+    RetailerSource(
+        "Bilka",
+        "https://www.bilka.dk/bilkaavisen/",
+        ("avis.bilka.dk",),
+        tjek_dealer_id="93f13",
+    ),
+    RetailerSource(
+        "føtex",
+        "https://www.foetex.dk/foetex-avis/",
+        ("avis.foetex.dk",),
+        tjek_dealer_id="bdf5A",
+    ),
+    RetailerSource(
+        "Lidl",
+        "https://www.lidl.dk/c/tilbudsavis/s10013730",
+        ("leaflets.schwarz", "lidl.dk"),
+        tjek_dealer_id="71c90",
+    ),
+    RetailerSource(
+        "Netto",
+        "https://netto.dk/netto-avisen/",
+        ("viewer.ipaper.io", "netto.dk", "tjek.com"),
+        tjek_dealer_id="9ba51",
+    ),
+    RetailerSource(
+        "SPAR",
+        "https://spar.dk/ugensavis",
+        ("ipaper.io", "view.publitas.com", "spar.dk"),
+        tjek_dealer_id="88ddE",
+    ),
     RetailerSource(
         "SuperBrugsen",
         "https://superbrugsen.coop.dk/avis/",
@@ -54,4 +99,4 @@ ADDITIONAL_SOURCES: tuple[RetailerSource, ...] = (
 )
 
 
-__all__ = ["ADDITIONAL_SOURCES", "RETAILER_ORDER"]
+__all__ = ["RETAILER_ORDER", "SOURCES"]
