@@ -140,3 +140,49 @@ def test_legacy_publication_stall_is_removed_without_touching_other_publications
     assert removed == 1
     payload = json.loads(stall_path.read_text("utf-8"))
     assert list(payload["stalled"]) == ["other"]
+
+
+def test_cycle_request_cap_counts_failed_attempts(monkeypatch):
+    publication = _publication()
+    candidates = [
+        SimpleNamespace(fingerprint=f"page-{index}", publication=publication)
+        for index in range(5)
+    ]
+    calls = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+    async def failed(candidate, *, client):
+        calls.append(candidate.fingerprint)
+        return {"status": "failed", "error": "invalid-structured-output"}
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("LUNA_RESILIENT_MAX_REQUESTS_PER_CYCLE", "2")
+    monkeypatch.setenv("LUNA_RESILIENT_MAX_PAGE_AUDITS_PER_CYCLE", "5")
+    monkeypatch.setattr(worker.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr(worker, "load_config", lambda: {"enabled": True})
+    monkeypatch.setattr(worker, "collect_page_audit_candidates", lambda publications: candidates)
+    monkeypatch.setattr(worker, "_available", lambda values, kind: list(values))
+    monkeypatch.setattr(worker, "analyze_page_audit", failed)
+    monkeypatch.setattr(worker, "_quarantine", lambda *args: None)
+    monkeypatch.setattr(worker, "_load_quarantine", lambda: {})
+    monkeypatch.setattr(worker, "status_payload", lambda: {})
+    monkeypatch.setattr(worker, "semantic_status_payload", lambda: {})
+    monkeypatch.setattr(worker, "readiness_status_payload", lambda: {})
+    monkeypatch.setattr(worker._cost_policy, "status_payload", lambda: {})
+
+    result = asyncio.run(worker._background_enrichment_once([publication]))
+
+    assert calls == ["page-0", "page-1"]
+    assert result["requests_attempted"] == 2
+    assert result["processed"] == 0
+    assert result["quarantined_now"] == 2
+    assert result["status"] == "enrichment-progress"
