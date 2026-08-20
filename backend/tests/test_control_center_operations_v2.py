@@ -107,8 +107,8 @@ def test_openai_event_is_only_written_when_usage_really_increases(monkeypatch):
     monkeypatch.setattr(luna_controlled_worker, "append_event", lambda **kwargs: captured.append(kwargs))
     before = {"usage": {"requests": 100, "estimated_cost_dkk": 2.0, "input_tokens": 1000, "output_tokens": 100}}
     unchanged = {"usage": {"requests": 100, "estimated_cost_dkk": 2.0, "input_tokens": 1000, "output_tokens": 100}}
-    after = {"usage": {"requests": 102, "estimated_cost_dkk": 2.0234, "input_tokens": 1200, "output_tokens": 140}}
-    result = {"status": "enrichment-progress", "coverage_focus": {"publication_id": "p1", "retailer": "Netto", "title": "Netto uge 35"}}
+    after = {"usage": {"requests": 102, "estimated_cost_dkk": 2.0234, "input_tokens": 1200, "uncached_input_tokens": 80, "cached_input_tokens": 120, "cache_write_tokens": 0, "output_tokens": 140}}
+    result = {"status": "enrichment-progress", "requests_attempted": 2, "pages_processed": 1, "pricing_crops_processed": 1, "coverage_focus": {"publication_id": "p1", "retailer": "Netto", "title": "Netto uge 35"}}
 
     luna_controlled_worker._record_openai_event(before, unchanged, result)
     assert captured == []
@@ -119,6 +119,9 @@ def test_openai_event_is_only_written_when_usage_really_increases(monkeypatch):
     assert captured[0]["cost_dkk"] == pytest.approx(0.0234)
     assert captured[0]["category"] == "luna"
     assert captured[0]["event_type"] == "openai_usage"
+    assert "1 sideaudit + 1 priscrop" in captured[0]["detail"]
+    assert captured[0]["metadata"]["cached_input_tokens"] == 120
+    assert captured[0]["metadata"]["requests_attempted"] == 2
 
 
 def test_alert_lifecycle_counts_episodes_not_dashboard_refreshes(monkeypatch, tmp_path):
