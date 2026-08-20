@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SwiftUI
 
@@ -10,6 +11,17 @@ final class SmartOfferMatchService: ObservableObject {
     private let api = APIClient()
     private let matchAPI = SmartOfferMatchAPI()
     private var deferredWarning: String?
+    private var retailerPreferenceObserver: AnyCancellable?
+
+    init() {
+        retailerPreferenceObserver = RetailerPreferences.shared.$disabledRetailers
+            .dropFirst()
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.objectWillChange.send()
+                }
+            }
+    }
 
     private enum ApprovalError: LocalizedError {
         case samsungItemStillSyncing
@@ -23,7 +35,9 @@ final class SmartOfferMatchService: ObservableObject {
     }
 
     func matches(for item: ShoppingItem) -> [GroceryOffer] {
-        matchesByItem[key(item.name)] ?? []
+        (matchesByItem[key(item.name)] ?? []).filter {
+            RetailerPreferences.shared.isEnabled($0.retailer)
+        }
     }
 
     func refresh(items: [ShoppingItem], model: AppModel) async {
