@@ -13,7 +13,6 @@ RETAILER_ORDER = (
     "Netto",
     "SPAR",
     "SuperBrugsen",
-    "Kvickly",
     "Brugsen",
     "Min Købmand",
     "LET-KØB",
@@ -71,12 +70,6 @@ SOURCES: tuple[RetailerSource, ...] = (
         "https://superbrugsen.coop.dk/avis/",
         ("superbrugsen.coop.dk", "tjek.com", "image-transformer-api.tjek.com"),
         tjek_dealer_id="0b1e8",
-    ),
-    RetailerSource(
-        "Kvickly",
-        "https://kvickly.coop.dk/avis/",
-        ("kvickly.coop.dk", "tjek.com", "image-transformer-api.tjek.com"),
-        tjek_dealer_id="c1edq",
     ),
     RetailerSource(
         "Brugsen",

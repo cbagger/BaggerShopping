@@ -18,7 +18,6 @@ EXPECTED_ALL = (
     "Netto",
     "SPAR",
     "SuperBrugsen",
-    "Kvickly",
     "Brugsen",
     "Min Købmand",
     "LET-KØB",
@@ -26,14 +25,13 @@ EXPECTED_ALL = (
 
 EXPECTED_NEW = {
     "SuperBrugsen": "0b1e8",
-    "Kvickly": "c1edq",
     "Brugsen": "d311fg",
     "Min Købmand": "603dfL",
     "LET-KØB": "f6f54",
 }
 
 
-def test_all_thirteen_retailers_share_one_customer_registry():
+def test_all_twelve_retailers_share_one_customer_registry():
     assert RETAILER_ORDER == EXPECTED_ALL
     assert REGISTRY_ORDER == EXPECTED_ALL
     assert SOURCES == REGISTRY_SOURCES
@@ -41,14 +39,14 @@ def test_all_thirteen_retailers_share_one_customer_registry():
     assert flyer_push.RETAILER_ORDER == EXPECTED_ALL
 
 
-def test_five_new_retailers_are_tjek_backed_first_class_sources():
+def test_four_new_retailers_are_tjek_backed_first_class_sources():
     sources = {source.retailer: source for source in SOURCES}
     for retailer, dealer_id in EXPECTED_NEW.items():
         assert retailer in sources
         assert sources[retailer].tjek_dealer_id == dealer_id
 
 
-def test_notification_retailer_endpoint_exposes_all_thirteen():
+def test_notification_retailer_endpoint_exposes_all_twelve():
     payload = asyncio.run(flyer_push.notification_retailers())
     assert payload == {"ok": True, "retailers": list(EXPECTED_ALL)}
 
@@ -106,3 +104,9 @@ def test_each_new_retailer_uses_existing_tjek_catalog_pipeline():
         assert publications[0].page_count == 1
         assert publications[0].structured_offers[0].product_name == "Mælk"
         assert publications[0].structured_offers[0].normal_price == 15
+
+
+def test_shared_kvickly_flyer_is_not_registered_twice():
+    assert "SuperBrugsen" in EXPECTED_ALL
+    assert "Kvickly" not in EXPECTED_ALL
+    assert all(source.retailer != "Kvickly" for source in SOURCES)

@@ -11,7 +11,6 @@ enum RetailerCatalog {
         "Netto",
         "SPAR",
         "SuperBrugsen",
-        "Kvickly",
         "Brugsen",
         "Min Købmand",
         "LET-KØB"
