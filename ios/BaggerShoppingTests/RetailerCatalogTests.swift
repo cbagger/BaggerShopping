@@ -13,7 +13,6 @@ final class RetailerCatalogTests: XCTestCase {
             "Netto",
             "SPAR",
             "SuperBrugsen",
-            "Kvickly",
             "Brugsen",
             "Min Købmand",
             "LET-KØB"

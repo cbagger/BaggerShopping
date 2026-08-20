@@ -117,16 +117,16 @@ final class RetailerPreferencesTests: XCTestCase {
     }
 
     @MainActor
-    func testPushSettingsOnlyExposeLocallyActiveRetailers() {
+    func testPushSettingsExcludeRetiredAndLocallyDisabledRetailers() {
         let preferences = RetailerPreferences(defaults: defaults)
-        preferences.setEnabled(false, for: "Kvickly")
+        preferences.setEnabled(false, for: "Netto")
 
         XCTAssertEqual(
             FlyerPushManager.availablePushRetailers(
                 serverRetailers: ["MENY", "Kvickly", "Netto"],
                 preferences: preferences
             ),
-            ["MENY", "Netto"]
+            ["MENY"]
         )
     }
 }
