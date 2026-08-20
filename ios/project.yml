@@ -8,10 +8,6 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: BaggerShopping
-        excludes:
-          - Assets.xcassets
-    resources:
-      - path: BaggerShopping/Assets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dk.chewbagger.BaggerShopping
