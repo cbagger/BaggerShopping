@@ -106,3 +106,14 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
             build-for-testing
+      - name: Verify compiled Kurv app icon
+        run: |
+          APP_PATH="$(find "$HOME/Library/Developer/Xcode/DerivedData" \
+            -type d -path '*/Build/Products/Debug-iphonesimulator/Kurv.app' \
+            -print -quit)"
+          test -n "$APP_PATH"
+          test -f "$APP_PATH/Assets.car"
+          test -f "$APP_PATH/AppIcon60x60@2x.png"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons:CFBundlePrimaryIcon:CFBundleIconName' \
+            "$APP_PATH/Info.plist" | grep -Fx 'AppIcon'
+          echo "KURV_COMPILED_APPICON_OK: $APP_PATH/AppIcon60x60@2x.png"
