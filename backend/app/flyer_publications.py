@@ -13,9 +13,10 @@ from .member_pricing_sources import (
     enrich_tjek_offers,
 )
 from .meny_flyer import Publication
+from .retailer_sources import ADDITIONAL_SOURCES, RETAILER_ORDER
 
 
-RETAILER_ORDER = raw.RETAILER_ORDER
+SOURCES = (*raw.SOURCES, *ADDITIONAL_SOURCES)
 
 
 def parse_tjek_hotspots(
@@ -207,7 +208,7 @@ async def fetch_raw_publications(*, client: httpx.AsyncClient | None = None) -> 
     try:
         tasks = [_fetch_meny_publication(client=client)] + [
             fetch_retailer_publications(source, client=client)
-            for source in raw.SOURCES
+            for source in SOURCES
         ]
         outcomes = await asyncio.gather(*tasks, return_exceptions=True)
         result: list[Publication] = []
@@ -248,6 +249,7 @@ async def fetch_all_publications(*, client: httpx.AsyncClient | None = None) -> 
 
 __all__ = [
     "RETAILER_ORDER",
+    "SOURCES",
     "fetch_all_publications",
     "fetch_raw_publications",
     "fetch_retailer_publications",
