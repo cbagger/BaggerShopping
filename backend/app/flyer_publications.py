@@ -13,10 +13,7 @@ from .member_pricing_sources import (
     enrich_tjek_offers,
 )
 from .meny_flyer import Publication
-from .retailer_sources import ADDITIONAL_SOURCES, RETAILER_ORDER
-
-
-SOURCES = (*raw.SOURCES, *ADDITIONAL_SOURCES)
+from .retailer_sources import RETAILER_ORDER, SOURCES
 
 
 def parse_tjek_hotspots(
