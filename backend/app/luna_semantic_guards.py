@@ -18,6 +18,7 @@ The invariants are deliberately explicit and independently testable:
 """
 
 import hashlib
+import json
 import re
 
 from . import luna_semantic_audit as semantic
@@ -33,9 +34,52 @@ _original_validate_page_output = semantic._validate_page_output
 _original_index_page_pricing_if_safe = semantic._index_page_pricing_if_safe
 _original_page_schema = semantic._page_schema
 _original_page_prompt = semantic._page_prompt
+_original_page_instructions = semantic._page_instructions
+_original_page_context = semantic._page_context
 _original_page_fingerprint = semantic.page_fingerprint
 _original_server_needs_crop = semantic._server_needs_crop
 _original_crop_prompt = semantic._crop_prompt
+_original_crop_instructions = semantic._crop_instructions
+_original_crop_context = semantic._crop_context
+
+# OpenAI prompt caching starts at a 1,024-token prefix. This stable field
+# contract deliberately makes the safety prefix self-contained and cacheable;
+# all retailer/publication/offer facts still arrive later in the user message.
+_STATIC_FACT_FIELD_CONTRACT = (
+    "\n\nSTABLE OUTPUT FIELD CONTRACT: Treat each output field as an independent visual "
+    "claim about the exact target advert. visible says whether the target advert can be "
+    "located on the supplied image; it is not a confidence shortcut. product_name and brand "
+    "must reflect readable pack or campaign text and must stay null when the identity is not "
+    "safe. ordinary_price and member_price are numeric customer prices in Danish kroner, "
+    "without currency symbols. Do not calculate either price from percentages, unit prices, "
+    "multi-buy arithmetic or a provider value. ordinary_price is only the campaign amount "
+    "available to a customer without joining a club, using an app membership or activating a "
+    "member benefit. member_price is only an amount whose visual label, badge or layout binds "
+    "it to a membership programme for this same target. If only one headline amount is visible "
+    "and its role is ambiguous, do not place the same guess in both price fields. "
+    "membership_price_visible describes the presence of a target-specific member-price visual "
+    "treatment, independently of whether its amount can be read. member_program is the printed "
+    "programme or club name and member_app is the printed app name; never invent a brand suffix "
+    "from retailer knowledge. requires_activation is false for ordinary membership access and "
+    "true only for an explicit activate, clip, choose or coupon action. before_price is a crossed "
+    "out, comparison or normal-before amount and cannot substitute for ordinary_price unless "
+    "the advert explicitly presents it as the current non-member campaign price. unit_price "
+    "preserves the complete readable comparison such as kr/kg, kr/l, kr/100 g, kr/100 ml or "
+    "kr/stk. package_size preserves weight, volume and pack-count metadata. Never derive a "
+    "headline price from unit_price and package_size. multiple_products describes a campaign "
+    "containing more than one concrete product or named choice, not merely several packages of "
+    "one item. variants contains only concrete, visibly named same-campaign choices; exclude "
+    "sizes, quantities, generic assortment wording, serving suggestions and neighbouring packs. "
+    "identity_confidence measures target-to-advert association, pricing_confidence measures the "
+    "visual role assignment of every returned price, and variant_confidence measures whether the "
+    "named choice set is complete and correctly scoped. Confidence is evidence quality, not a "
+    "permission to infer. needs_crop_verification must be true when smaller text, overlapping "
+    "hotspots, unclear labels, incomplete member-price amounts, suspicious unit-price equality, "
+    "or conflict with provider facts prevents a safe result. Null and empty outputs are valid and "
+    "preferred whenever visual evidence is insufficient. Never use general retailer knowledge, "
+    "earlier campaigns, filename text, URL parameters, adjacent offers, page banners unrelated to "
+    "the target, or assumptions about typical club discounts as evidence."
+)
 
 _UNIT_TOKEN = r"(?P<unit>kg|kilo|l(?:iter)?|100\s*g|100\s*ml|stk\.?|styk(?:ker)?)"
 _UNIT_PRICE_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -289,8 +333,8 @@ def _strict_page_schema(candidate):
     return schema
 
 
-def _strict_page_prompt(candidate):
-    return _original_page_prompt(candidate) + (
+def _strict_page_instructions():
+    return _original_page_instructions() + (
         "\n\nIMPORTANT COVERAGE CONTRACT: Return exactly one result for EVERY target offer_id "
         "listed in the context, no more and no fewer. If a target cannot be safely associated "
         "with a visible advert, still return its exact offer_id with visible=false, null/empty "
@@ -309,11 +353,17 @@ def _strict_page_prompt(candidate):
         "price is dramatically lower than the ordinary/provider price, re-check whether it is "
         "actually a unit price and request crop verification whenever the role is not visually "
         "unambiguous."
+    ) + _STATIC_FACT_FIELD_CONTRACT
+
+
+def _strict_page_prompt(candidate):
+    return _strict_page_instructions() + "\n\n" + json.dumps(
+        _original_page_context(candidate), ensure_ascii=False, separators=(",", ":")
     )
 
 
-def _strict_crop_prompt(candidate):
-    return _original_crop_prompt(candidate) + (
+def _strict_crop_instructions():
+    return _original_crop_instructions() + (
         "\n\nIMPORTANT TARGETED MEMBER-PRICE CONTRACT: Re-read this exact crop from scratch. "
         "Set membership_price_visible=true only when the target advert itself visibly has a "
         "membership/app/club/plus price treatment. Inspect every headline price and bind each to "
@@ -328,6 +378,24 @@ def _strict_crop_prompt(candidate):
         "return the non-member campaign price as ordinary_price and the explicitly membership-tied "
         "campaign price as member_price. If the role still cannot be read safely, return null and "
         "lower pricing_confidence rather than guessing."
+    ) + _STATIC_FACT_FIELD_CONTRACT + (
+        "\n\nSTABLE CROP READING ORDER: First locate the target pack, product name and hotspot "
+        "boundary. Then enumerate every price-like number inside that boundary together with its "
+        "nearest visible label, typography, badge, strike-through and unit suffix. Classify each "
+        "number only after that evidence is paired: current non-member campaign price, explicit "
+        "member campaign price, before/reference price, unit/comparison price, deposit, quantity "
+        "or unrelated legal limit. Finally cross-check product identity, package size and named "
+        "variants before assigning confidence. A large font alone does not define a price role, "
+        "and spatial proximity alone does not bind a member badge to a neighbouring number. If "
+        "the crop boundary still includes multiple adverts, use the named target and pack imagery "
+        "to scope the answer and request further verification instead of resolving ambiguity by "
+        "guessing. This reading order is mandatory even when provider facts look plausible."
+    )
+
+
+def _strict_crop_prompt(candidate):
+    return _strict_crop_instructions() + "\n\n" + json.dumps(
+        _original_crop_context(candidate), ensure_ascii=False, separators=(",", ":")
     )
 
 
