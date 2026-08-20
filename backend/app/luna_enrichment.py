@@ -385,6 +385,8 @@ def _prompt_context(candidate: Candidate) -> dict[str, Any]:
         "review_reasons": list(candidate.decision.reasons),
         "requested_fields": list(candidate.decision.requested_fields),
     }
+
+
 def _prompt_instructions() -> str:
     return (
         "You are Kurv's flyer verification layer. Inspect ONLY the advert for the target product. "
