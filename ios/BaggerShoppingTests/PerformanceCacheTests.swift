@@ -12,6 +12,16 @@ final class PerformanceCacheTests: XCTestCase {
         XCTAssertEqual(cached.publications.first?.retailer, "365discount")
     }
 
+    func testFlyerPublicationCacheDoesNotRestoreRetiredRetailer() throws {
+        let active = try decodePublication()
+        let retired = try decodePublication(retailer: "Kvickly", id: "shared-kvickly-week")
+        FlyerPublicationCache.save([active, retired])
+
+        let cached = try XCTUnwrap(FlyerPublicationCache.load(maxAge: 60))
+
+        XCTAssertEqual(cached.publications.map(\.id), ["week-34"])
+    }
+
     func testSmartOfferMatchResponseDecodesSingleBatchForMultipleItems() throws {
         let data = Data(#"""
         {
@@ -32,11 +42,14 @@ final class PerformanceCacheTests: XCTestCase {
         XCTAssertEqual(response.matches.map(\.itemName), ["Mælk", "Rugbrød"])
     }
 
-    private func decodePublication() throws -> OfferPublication {
-        let data = Data(#"""
+    private func decodePublication(
+        retailer: String = "365discount",
+        id: String = "week-34"
+    ) throws -> OfferPublication {
+        let data = Data("""
         {
-          "id":"week-34",
-          "retailer":"365discount",
+          "id":"\(id)",
+          "retailer":"\(retailer)",
           "title":"Uge 34",
           "valid_from":"14.08.2026",
           "valid_until":"20.08.2026",
@@ -48,7 +61,7 @@ final class PerformanceCacheTests: XCTestCase {
           "reader_kind":"tjek-pages",
           "searchable":true
         }
-        """#.utf8)
+        """.utf8)
         return try JSONDecoder().decode(OfferPublication.self, from: data)
     }
 }

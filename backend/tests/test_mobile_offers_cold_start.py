@@ -73,6 +73,26 @@ def test_verified_serving_cache_reader_fails_closed_on_unverified_and_expired_ro
     assert [publication.title for publication in loaded] == ["Verified"]
 
 
+def test_verified_serving_cache_reader_excludes_retired_retailers(monkeypatch, tmp_path):
+    monkeypatch.setenv("FLYER_SERVING_CACHE_PATH", str(tmp_path / "flyer-serving-cache.json"))
+    retired = _publication(title="Shared Kvickly flyer")
+    retired.retailer = "Kvickly"
+
+    (tmp_path / "flyer-serving-cache.json").write_text(json.dumps({
+        "version": 2,
+        "publications": {
+            "retired": {
+                "fingerprint": "retired",
+                "verified": True,
+                "saved_at": 1,
+                "publication": retired.model_dump(exclude={"text", "page_texts"}),
+            },
+        },
+    }), encoding="utf-8")
+
+    assert flyer_serving_reader.load_verified_publications() == []
+
+
 def test_cold_start_serves_verified_disk_cache_before_provider_fetch(monkeypatch):
     _reset_mobile_cache(monkeypatch)
     cached = _publication(title="Disk cache")

@@ -92,4 +92,11 @@ SOURCES: tuple[RetailerSource, ...] = (
 )
 
 
-__all__ = ["RETAILER_ORDER", "SOURCES"]
+_ACTIVE_RETAILERS = frozenset(name.casefold() for name in RETAILER_ORDER)
+
+
+def is_active_retailer(value: str) -> bool:
+    return value.strip().casefold() in _ACTIVE_RETAILERS
+
+
+__all__ = ["RETAILER_ORDER", "SOURCES", "is_active_retailer"]
