@@ -257,9 +257,11 @@ struct APIClient {
         }
 
         var queryItems = [URLQueryItem(name: "q", value: term)]
-        queryItems.append(
-            URLQueryItem(name: "retailer", value: effectiveRetailers.joined(separator: ","))
-        )
+        let retailerQuery = effectiveRetailers.joined(separator: ",")
+        if retailerQuery.count <= 40 {
+            queryItems.append(URLQueryItem(name: "retailer", value: retailerQuery))
+        }
+
         let data = try await perform(
             request(
                 path: "/api/mobile/v1/offers/search",
@@ -267,8 +269,9 @@ struct APIClient {
             )
         )
         let response = try JSONDecoder().decode(OfferSearchResponse.self, from: data)
+        let effectiveSet = Set(effectiveRetailers)
         let visibleOffers = response.offers.filter {
-            RetailerPreferences.shared.isEnabled($0.retailer)
+            effectiveSet.contains($0.retailer)
         }
         return OfferSearchResponse(
             ok: response.ok,
