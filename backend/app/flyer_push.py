@@ -15,8 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from .flyer_publications import fetch_raw_publications as fetch_all_publications
-from .flyer_adapters import RETAILER_ORDER
+from .flyer_publications import RETAILER_ORDER, fetch_raw_publications as fetch_all_publications
 from .flyer_readiness import (
     observe_publications,
     publication_fingerprint,
