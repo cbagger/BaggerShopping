@@ -26,6 +26,7 @@ final class StoreModeTests: XCTestCase {
             .dairy,
             .frozen,
             .beverages,
+            .snacks,
             .household,
             .personalCare,
             .other,
