@@ -160,4 +160,37 @@ final class StoreModeTests: XCTestCase {
         XCTAssertEqual(RetailerCatalog.canonicalRetailer("REMA 1000 Aalborg SV"), "REMA 1000")
         XCTAssertNil(RetailerCatalog.canonicalRetailer("Lokal blomsterbutik"))
     }
+
+    func testActiveStoreSessionSurvivesRelaunchWithPurchasedItems() throws {
+        let suite = "StoreModeSessionTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let storage = StoreModeSessionStore(defaults: defaults, storageKey: "session")
+        let meny = StoreVisitContext(
+            id: "saved:meny",
+            retailer: "MENY",
+            address: "Skørping Center 16",
+            latitude: 56.84,
+            longitude: 9.89
+        )
+
+        storage.save(store: meny, purchasedItemIDs: ["milk-1", "milk-1", "bread-1"])
+
+        let restored = try XCTUnwrap(storage.load())
+        XCTAssertEqual(restored.store, meny)
+        XCTAssertEqual(restored.purchasedItemIDs, ["milk-1", "bread-1"])
+    }
+
+    func testExpiredStoreSessionDoesNotRestartAnOldTrip() throws {
+        let suite = "StoreModeSessionTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let storage = StoreModeSessionStore(defaults: defaults, storageKey: "session")
+        let store = StoreVisitContext(id: "saved:meny", retailer: "MENY", latitude: 56.84, longitude: 9.89)
+        storage.save(store: store, purchasedItemIDs: [])
+
+        XCTAssertNil(storage.load(maxAge: 60, now: Date().addingTimeInterval(61)))
+    }
 }

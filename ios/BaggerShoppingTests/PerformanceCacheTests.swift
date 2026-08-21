@@ -22,6 +22,32 @@ final class PerformanceCacheTests: XCTestCase {
         XCTAssertEqual(cached.publications.map(\.id), ["week-34"])
     }
 
+    func testOfferRetailerShelfUsesCachedCurrentAndUpcomingPublications() throws {
+        let current = try decodePublication(retailer: "365discount", id: "current")
+        let upcomingData = Data(#"""
+        {
+          "id":"upcoming",
+          "retailer":"MENY",
+          "title":"Næste uge",
+          "valid_from":"21.08.2026",
+          "valid_until":"27.08.2026",
+          "status":"upcoming",
+          "source_url":"https://example.test",
+          "page_count":1,
+          "page_image_urls":["https://example.test/page.jpg"],
+          "reader_url":"https://example.test",
+          "reader_kind":"tjek-pages",
+          "searchable":true
+        }
+        """#.utf8)
+        let upcoming = try JSONDecoder().decode(OfferPublication.self, from: upcomingData)
+
+        XCTAssertEqual(
+            OfferRetailerShelf.retailers(from: [current, upcoming, current]),
+            ["365discount", "MENY"]
+        )
+    }
+
     func testSmartOfferMatchResponseDecodesSingleBatchForMultipleItems() throws {
         let data = Data(#"""
         {

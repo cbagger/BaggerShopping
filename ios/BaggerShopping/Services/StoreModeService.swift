@@ -143,6 +143,55 @@ struct StoreModeProgress: Equatable {
     var isComplete: Bool { total > 0 && remaining == 0 }
 }
 
+struct StoreModeSession: Codable, Equatable {
+    let savedAt: Date
+    let store: StoreVisitContext
+    let purchasedItemIDs: [String]
+}
+
+/// Keeps an explicitly chosen physical store stable across backgrounding and
+/// relaunches. Geofence updates may change the available choices, but they do
+/// not get to replace an active shopping trip.
+struct StoreModeSessionStore {
+    private let defaults: UserDefaults
+    private let storageKey: String
+
+    init(
+        defaults: UserDefaults = .standard,
+        storageKey: String = "kurv-active-store-mode-session-v1"
+    ) {
+        self.defaults = defaults
+        self.storageKey = storageKey
+    }
+
+    func load(maxAge: TimeInterval = 6 * 60 * 60, now: Date = Date()) -> StoreModeSession? {
+        guard let data = defaults.data(forKey: storageKey),
+              let session = try? JSONDecoder().decode(StoreModeSession.self, from: data),
+              now.timeIntervalSince(session.savedAt) <= maxAge else {
+            defaults.removeObject(forKey: storageKey)
+            return nil
+        }
+        return session
+    }
+
+    func save(store: StoreVisitContext, purchasedItemIDs: [String]) {
+        let uniqueIDs = purchasedItemIDs.reduce(into: [String]()) { result, itemID in
+            if !result.contains(itemID) { result.append(itemID) }
+        }
+        let session = StoreModeSession(
+            savedAt: Date(),
+            store: store,
+            purchasedItemIDs: uniqueIDs
+        )
+        guard let data = try? JSONEncoder().encode(session) else { return }
+        defaults.set(data, forKey: storageKey)
+    }
+
+    func clear() {
+        defaults.removeObject(forKey: storageKey)
+    }
+}
+
 @MainActor
 final class StoreLayoutLearning: ObservableObject {
     private struct CategoryStat: Codable {

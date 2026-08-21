@@ -16,10 +16,7 @@ struct BaggerShoppingApp: App {
                     // Paint the last confirmed Samsung list immediately. The
                     // authoritative refresh continues in the background, so a
                     // cold network/QNAP path no longer leaves startup blank.
-                    if appModel.shoppingList == nil,
-                       let cached = ShoppingListCache.load() {
-                        appModel.shoppingList = cached.list
-                    }
+                    appModel.restoreCachedShoppingList()
                 }
                 .task {
                     async let bootstrap: Void = appModel.bootstrap()
@@ -34,7 +31,7 @@ struct BaggerShoppingApp: App {
             case .active:
                 _ = navigation.resetAfterLongInactivityIfNeeded()
                 Task {
-                    await appModel.refresh()
+                    await appModel.resumeFromBackground()
                 }
             case .inactive:
                 break

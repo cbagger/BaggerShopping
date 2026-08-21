@@ -28,6 +28,25 @@ enum FlyerPublicationCache {
     }
 }
 
+enum OfferRetailerShelf {
+    static func retailers(from publications: [OfferPublication]) -> [String] {
+        publications
+            .filter { ["current", "upcoming"].contains($0.status) && $0.searchable }
+            .map(\.retailer)
+            .reduce(into: []) { result, retailer in
+                guard RetailerPreferences.shared.isEnabled(retailer),
+                      !result.contains(retailer) else { return }
+                result.append(retailer)
+            }
+    }
+
+    static func cachedRetailers(fallback: [String] = ["MENY"]) -> [String] {
+        guard let cached = FlyerPublicationCache.load() else { return fallback }
+        let retailers = retailers(from: cached.publications)
+        return retailers.isEmpty ? fallback : retailers
+    }
+}
+
 struct CachedFlyerOffers: Codable {
     let savedAt: Date
     let offers: [GroceryOffer]
