@@ -8,6 +8,8 @@ final class AppModel: ObservableObject {
     @Published var tokenConfigured = KeychainStore.loadToken() != nil
     @Published var onboardingRequired = KeychainStore.loadToken() == nil
     @Published var mutatingItemIDs: Set<String> = []
+    @Published private(set) var pendingCheckedItemIDs: Set<String> = []
+    @Published private(set) var checkedSyncRetryItemIDs: Set<String> = []
     @Published var householdProfile: HouseholdProfile?
     @Published var latestRecoveryCode: String?
 
@@ -17,6 +19,7 @@ final class AppModel: ObservableObject {
     let storeLayouts = StoreLayoutLearning()
     let flyerPush = FlyerPushManager()
     private let api = APIClient()
+    private let checkedMutationStore = PendingCheckedMutationStore()
     private let offerMetadataKey = "bagger-shopping-offer-metadata-v2"
     private let offerMetadataMigrationKey = "bagger-shopping-offer-metadata-qnap-migrated-v1"
     private var offerMetadata: [String: OfferItemMetadata]
@@ -25,6 +28,7 @@ final class AppModel: ObservableObject {
     private var listMutationRevision = 0
     private var pendingDeletionIDs: Set<String> = []
     private var deletionTail: Task<Void, Never>?
+    private var checkedMutationFlushTask: Task<Void, Never>?
 
     init() {
         if let data = UserDefaults.standard.data(forKey: offerMetadataKey),
@@ -33,12 +37,19 @@ final class AppModel: ObservableObject {
         } else {
             offerMetadata = [:]
         }
+        pendingCheckedItemIDs = checkedMutationStore.unacknowledgedItemIDs
+    }
+
+    func restoreCachedShoppingList() {
+        guard shoppingList == nil, let cached = ShoppingListCache.load() else { return }
+        shoppingList = checkedMutationStore.applying(to: cached.list)
     }
 
     func bootstrap() async {
         geofence.sync(stores: stores.stores)
         if tokenConfigured {
             householdProfile = try? await api.fetchHouseholdProfile()
+            await flushPendingCheckedMutations()
             await refresh()
             await syncSharedCategories()
         }
@@ -62,8 +73,14 @@ final class AppModel: ObservableObject {
             // DELETE tombstones are independent of ordinary item mutations.
             // Rapid swipe-deletes can therefore disappear from the UI instantly
             // while their Samsung requests are serialized in the background.
-            let visibleItems = list.items.filter { !pendingDeletionIDs.contains($0.stableID) }
-            let visibleList = replacingItems(in: list, with: visibleItems)
+            checkedMutationStore.reconcileAcknowledged(with: list)
+            pendingCheckedItemIDs = checkedMutationStore.unacknowledgedItemIDs
+            checkedSyncRetryItemIDs.formIntersection(pendingCheckedItemIDs)
+            let listWithPendingChecks = checkedMutationStore.applying(to: list)
+            let visibleItems = listWithPendingChecks.items.filter {
+                !pendingDeletionIDs.contains($0.stableID)
+            }
+            let visibleList = replacingItems(in: listWithPendingChecks, with: visibleItems)
             shoppingList = visibleList
             let visibleIDs = Set(visibleItems.map(\.stableID))
             mutatingItemIDs.formIntersection(visibleIDs)
@@ -71,7 +88,11 @@ final class AppModel: ObservableObject {
             await syncSharedOfferMetadata()
             errorMessage = nil
         } catch {
-            errorMessage = error.localizedDescription
+            // A cached list is fully usable while the connection wakes up.
+            // Reserve the blocking error state for a launch with no list at all.
+            if shoppingList == nil {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
@@ -246,25 +267,61 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func setChecked(_ item: ShoppingItem, checked: Bool) async {
-        guard item.id != nil else { return }
-        let previous = shoppingList
+    /// Persists the visual state and the outbox entry before returning. Network
+    /// acknowledgement deliberately happens afterwards so locking the iPhone
+    /// immediately after a tap cannot lose or roll back the checkmark.
+    func setChecked(_ item: ShoppingItem, checked: Bool) {
+        guard let itemID = item.id, !itemID.isEmpty else { return }
         listMutationRevision &+= 1
         updateLocalItem(item.stableID) { changed in
             changed.checked = checked
         }
+        if let shoppingList { ShoppingListCache.save(shoppingList) }
+        guard checkedMutationStore.enqueue(item: item, checked: checked) != nil else { return }
+        pendingCheckedItemIDs.insert(itemID)
+        checkedSyncRetryItemIDs.remove(itemID)
 
-        let key = item.stableID
-        mutatingItemIDs.insert(key)
-        defer { mutatingItemIDs.remove(key) }
-        do {
-            try await api.setChecked(item: item, checked: checked)
-            if let shoppingList { ShoppingListCache.save(shoppingList) }
-            errorMessage = nil
-        } catch {
-            shoppingList = previous
-            if let previous { ShoppingListCache.save(previous) }
-            errorMessage = error.localizedDescription
+        Task { [weak self] in
+            await self?.flushPendingCheckedMutations()
+        }
+    }
+
+    func resumeFromBackground() async {
+        await flushPendingCheckedMutations()
+        await refresh()
+    }
+
+    func flushPendingCheckedMutations() async {
+        guard tokenConfigured else { return }
+        if let checkedMutationFlushTask {
+            await checkedMutationFlushTask.value
+            return
+        }
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.performCheckedMutationFlush()
+        }
+        checkedMutationFlushTask = task
+        await task.value
+        checkedMutationFlushTask = nil
+    }
+
+    private func performCheckedMutationFlush() async {
+        while let mutation = checkedMutationStore.ordered().first {
+            do {
+                try await api.setChecked(item: mutation.item, checked: mutation.checked)
+                checkedMutationStore.markAcknowledgedIfCurrent(mutation)
+                pendingCheckedItemIDs = checkedMutationStore.unacknowledgedItemIDs
+                checkedSyncRetryItemIDs.formIntersection(pendingCheckedItemIDs)
+            } catch {
+                // The exact desired value remains durable and is retried on the
+                // next app activation. A transient timeout must never show a
+                // blocking alert or reverse the local checkbox.
+                pendingCheckedItemIDs = checkedMutationStore.unacknowledgedItemIDs
+                checkedSyncRetryItemIDs.insert(mutation.itemID)
+                return
+            }
         }
     }
 

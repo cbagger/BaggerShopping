@@ -4,7 +4,7 @@ struct OffersView: View {
     @EnvironmentObject private var model: AppModel
     @State private var query = ""
     @State private var selectedRetailers: Set<String> = []
-    @State private var retailers = ["MENY"]
+    @State private var retailers = OfferRetailerShelf.cachedRetailers()
     @State private var offers: [GroceryOffer] = []
     @State private var hasSearched = false
     @State private var isLoading = false
@@ -146,12 +146,8 @@ struct OffersView: View {
     @MainActor
     private func loadRetailers() async {
         guard let response = try? await api.fetchOfferPublications() else { return }
-        let available = response.publications
-            .filter { ["current", "upcoming"].contains($0.status) && $0.searchable }
-            .map(\.retailer)
-        retailers = available.reduce(into: []) { result, retailer in
-            if !result.contains(retailer) { result.append(retailer) }
-        }
+        FlyerPublicationCache.save(response.publications)
+        retailers = OfferRetailerShelf.retailers(from: response.publications)
         selectedRetailers.formIntersection(retailers)
     }
 

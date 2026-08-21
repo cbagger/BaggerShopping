@@ -112,6 +112,19 @@ struct ShoppingListView: View {
     @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
 
     private let retailerFilterOptions = RetailerCatalog.all
+    private let storeModeSessionStore = StoreModeSessionStore()
+
+    init() {
+        let restoredSession = StoreModeSessionStore().load()
+        _activeStoreMode = State(initialValue: restoredSession?.store)
+        if let restoredSession {
+            _storeModePurchasedIDsByStore = State(initialValue: [
+                restoredSession.store.id: restoredSession.purchasedItemIDs
+            ])
+        } else {
+            _storeModePurchasedIDsByStore = State(initialValue: [:])
+        }
+    }
 
     private var activeItems: [ShoppingItem] {
         model.shoppingList?.items.filter { !$0.checked } ?? []
@@ -262,7 +275,7 @@ struct ShoppingListView: View {
             .sheet(isPresented: $showNearbyStorePicker) {
                 NearbyStorePickerView(stores: nearbyStores) { store in
                     showNearbyStorePicker = false
-                    beginStoreMode(store)
+                    beginStoreMode(store, replacingActive: true)
                 }
             }
             .task(id: offerMatchSignature) {
@@ -285,7 +298,9 @@ struct ShoppingListView: View {
             }
             .onAppear {
                 nearbyStores = model.geofence.nearbyStores
-                if let store = navigation.shoppingListRoute?.store {
+                if let activeStoreMode {
+                    model.storeLayouts.beginSession(for: activeStoreMode)
+                } else if let store = navigation.shoppingListRoute?.store {
                     beginStoreMode(store)
                 } else if let request = navigation.storeSelectionRequest {
                     handleStoreSelectionRequest(request)
@@ -400,15 +415,30 @@ struct ShoppingListView: View {
         }
     }
 
-    private func beginStoreMode(_ store: StoreVisitContext) {
+    private func beginStoreMode(_ store: StoreVisitContext, replacingActive: Bool = false) {
+        if let activeStoreMode {
+            guard activeStoreMode.id != store.id else {
+                navigation.resolveStoreSelection()
+                return
+            }
+            guard replacingActive else {
+                // A delayed/overlapping geofence notification must never replace
+                // the physical store the user already chose for this trip.
+                navigation.resolveStoreSelection()
+                return
+            }
+        }
+
         showNearbyStorePicker = false
         activeStoreMode = store
+        storeModePurchasedIDsByStore[store.id] = []
         storeModeAddItemExpanded = false
         showStoreModePurchased = false
         addItemFieldFocused = false
         selectedRetailerFilters.removeAll()
         navigation.resolveStoreSelection()
         model.storeLayouts.beginSession(for: store)
+        storeModeSessionStore.save(store: store, purchasedItemIDs: [])
     }
 
     private func endStoreMode() {
@@ -418,10 +448,15 @@ struct ShoppingListView: View {
             showStoreModePurchased = false
         }
         addItemFieldFocused = false
+        storeModeSessionStore.clear()
         navigation.endStoreMode()
     }
 
     private func handleStoreSelectionRequest(_ request: StoreSelectionRequest) {
+        guard activeStoreMode == nil else {
+            navigation.resolveStoreSelection()
+            return
+        }
         model.geofence.refreshPresence()
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(450))
@@ -1034,7 +1069,7 @@ struct ShoppingListView: View {
                 }
             }
 
-            await model.setChecked(item, checked: targetChecked)
+            model.setChecked(item, checked: targetChecked)
             let didApply = model.shoppingList?.items
                 .first(where: { $0.stableID == item.stableID })?
                 .checked == targetChecked
@@ -1067,6 +1102,9 @@ struct ShoppingListView: View {
         itemIDs.removeAll { $0 == itemID }
         if purchased { itemIDs.append(itemID) }
         storeModePurchasedIDsByStore[storeID] = itemIDs
+        if let activeStoreMode, activeStoreMode.id == storeID {
+            storeModeSessionStore.save(store: activeStoreMode, purchasedItemIDs: itemIDs)
+        }
     }
 
     @ViewBuilder
@@ -1090,7 +1128,7 @@ struct ShoppingListView: View {
                     .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(.plain)
-            .disabled(item.id == nil || model.mutatingItemIDs.contains(item.stableID))
+            .disabled(item.id == nil)
             .accessibilityLabel(item.checked ? "Markér som ikke købt" : "Markér som købt")
 
             VStack(alignment: .leading, spacing: 5) {
@@ -1190,6 +1228,19 @@ struct ShoppingListView: View {
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
+
+                if model.pendingCheckedItemIDs.contains(item.stableID) {
+                    Label(
+                        model.checkedSyncRetryItemIDs.contains(item.stableID)
+                            ? "Synkroniseres automatisk igen"
+                            : "Gemmes …",
+                        systemImage: model.checkedSyncRetryItemIDs.contains(item.stableID)
+                            ? "arrow.triangle.2.circlepath"
+                            : "icloud.and.arrow.up"
+                    )
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                }
             }
 
             Spacer(minLength: 6)
@@ -1256,7 +1307,8 @@ struct ShoppingListView: View {
                 .accessibilityLabel("Indstillinger for \(item.name)")
             }
 
-            if model.mutatingItemIDs.contains(item.stableID) {
+            if model.mutatingItemIDs.contains(item.stableID),
+               !model.pendingCheckedItemIDs.contains(item.stableID) {
                 ProgressView().controlSize(.small)
             }
         }

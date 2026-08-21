@@ -270,10 +270,9 @@ class SamsungFoodClient:
             unit=item.unit,
         )
         result = await self._post_sync_items(body)
-
-        # Ensure the item still exists. Quantity/unit are explicitly preserved in
-        # the update payload so a checkbox mutation cannot erase them.
-        await self._find_item(item_id)
+        # A successful gRPC write is the acknowledgement. Samsung's read side is
+        # eventually consistent, so an immediate second list read adds latency
+        # and can time out even though the checkbox was already saved.
         return result
 
     async def set_item_quantity(
