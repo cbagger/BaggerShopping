@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -29,6 +30,7 @@ final class AppModel: ObservableObject {
     private var pendingDeletionIDs: Set<String> = []
     private var deletionTail: Task<Void, Never>?
     private var checkedMutationFlushTask: Task<Void, Never>?
+    private var checkedMutationBackgroundTask = UIBackgroundTaskIdentifier.invalid
 
     init() {
         if let data = UserDefaults.standard.data(forKey: offerMetadataKey),
@@ -289,6 +291,35 @@ final class AppModel: ObservableObject {
     func resumeFromBackground() async {
         await flushPendingCheckedMutations()
         await refresh()
+    }
+
+    /// Requests a short iOS execution window before the app is suspended. The
+    /// mutation is already safe in the durable outbox; this simply makes it
+    /// much more likely that Samsung receives it before the screen is locked.
+    func continuePendingChecksInBackground() {
+        guard tokenConfigured,
+              !pendingCheckedItemIDs.isEmpty,
+              checkedMutationBackgroundTask == .invalid else { return }
+
+        checkedMutationBackgroundTask = UIApplication.shared.beginBackgroundTask(
+            withName: "Kurv checkbox sync"
+        ) { [weak self] in
+            Task { @MainActor in
+                self?.endCheckedMutationBackgroundTask()
+            }
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            await self.flushPendingCheckedMutations()
+            self.endCheckedMutationBackgroundTask()
+        }
+    }
+
+    private func endCheckedMutationBackgroundTask() {
+        guard checkedMutationBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(checkedMutationBackgroundTask)
+        checkedMutationBackgroundTask = .invalid
     }
 
     func flushPendingCheckedMutations() async {
