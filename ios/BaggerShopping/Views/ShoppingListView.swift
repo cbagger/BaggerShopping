@@ -105,6 +105,8 @@ struct ShoppingListView: View {
     @State private var activeStoreMode: StoreVisitContext?
     @State private var nearbyStores: [StoreVisitContext] = []
     @State private var showNearbyStorePicker = false
+    @State private var storeModePurchasedIDsByStore: [String: [String]] = [:]
+    @State private var showStoreModePurchased = true
     @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
 
     private let retailerFilterOptions = RetailerCatalog.all
@@ -163,6 +165,22 @@ struct ShoppingListView: View {
             if lhsRank != rhsRank { return lhsRank < rhsRank }
             return StoreModeService.defaultRank(for: lhs.category) < StoreModeService.defaultRank(for: rhs.category)
         }
+    }
+
+    private var storeModePurchasedItems: [ShoppingItem] {
+        guard let activeStoreMode else { return [] }
+        let purchasedIDs = storeModePurchasedIDsByStore[activeStoreMode.id] ?? []
+        let checkedByID = checkedItems.reduce(into: [String: ShoppingItem]()) {
+            $0[$1.stableID] = $1
+        }
+        return purchasedIDs.compactMap { checkedByID[$0] }
+    }
+
+    private var storeModeProgress: StoreModeProgress {
+        StoreModeService.progress(
+            remaining: storeModeItems.count,
+            purchased: storeModePurchasedItems.count
+        )
     }
 
     private var retailerGroups: [RetailerGroup] {
@@ -226,8 +244,8 @@ struct ShoppingListView: View {
                     )
                 }
             }
-            .navigationTitle(activeStoreMode?.retailer ?? "Indkøbsliste")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationTitle(activeStoreMode == nil ? "Indkøbsliste" : "Indkøbstur")
+            .navigationBarTitleDisplayMode(activeStoreMode == nil ? .large : .inline)
             .sheet(item: $renameTarget) { target in
                 RenameShoppingItemView(item: target.item)
                     .environmentObject(model)
@@ -300,20 +318,30 @@ struct ShoppingListView: View {
                 }
             }
 
-            if activeStoreMode != nil, storeModeItems.isEmpty {
-                storeModeEmptyRow
-            } else if activeItems.isEmpty {
-                emptyActiveRow
-            } else if activeStoreMode != nil {
-                ForEach(storeModeGroups) { group in
-                    Section {
-                        ForEach(group.items, id: \.stableID) { item in
-                            itemRow(item, showCategory: false)
+            if activeStoreMode != nil {
+                if storeModeItems.isEmpty {
+                    storeModeEmptyRow
+                } else {
+                    ForEach(storeModeGroups) { group in
+                        Section {
+                            ForEach(group.items, id: \.stableID) { item in
+                                itemRow(item, showCategory: false)
+                            }
+                        } header: {
+                            storeModeSectionHeader(
+                                group.category,
+                                count: group.items.count,
+                                isNext: group.id == storeModeGroups.first?.id
+                            )
                         }
-                    } header: {
-                        sectionHeader(group.category.rawValue, count: group.items.count, icon: group.category.icon)
                     }
                 }
+
+                if !storeModePurchasedItems.isEmpty {
+                    storeModePurchasedSection
+                }
+            } else if activeItems.isEmpty {
+                emptyActiveRow
             } else if sortByRetailer {
                 ForEach(retailerGroups) { group in
                     Section {
@@ -450,44 +478,57 @@ struct ShoppingListView: View {
     }
 
     private func storeModeBanner(_ store: StoreVisitContext) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .center, spacing: 11) {
                 Image(systemName: "figure.walk.motion")
-                    .font(.title2.weight(.semibold))
+                    .font(.headline.weight(.bold))
                     .foregroundStyle(.white)
-                    .frame(width: 42, height: 42)
+                    .frame(width: 36, height: 36)
                     .background(.white.opacity(0.18), in: Circle())
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Indkøbstur i \(store.retailer)")
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(store.retailer)
                         .font(.headline)
                     Text(store.address.isEmpty ? "Denne butik" : store.address)
-                        .font(.caption)
+                        .font(.caption2)
                         .foregroundStyle(.white.opacity(0.78))
-                        .lineLimit(2)
+                        .lineLimit(1)
                 }
 
                 Spacer(minLength: 4)
 
                 if nearbyStores.count > 1 {
                     Button("Skift") { showNearbyStorePicker = true }
-                        .font(.caption.weight(.bold))
+                        .font(.caption2.weight(.bold))
                         .buttonStyle(.bordered)
                         .tint(.white)
                 }
 
                 Button("Afslut") { endStoreMode() }
-                    .font(.caption.weight(.bold))
+                    .font(.caption2.weight(.bold))
                     .buttonStyle(.bordered)
                     .tint(.white)
             }
 
-            Text("Viser \(storeModeItems.count) varer til denne butik – inklusive varer uden butik. Rækkefølgen lærer netop denne butiks indretning.")
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.86))
+            if storeModeProgress.total > 0 {
+                ProgressView(value: storeModeProgress.completedFraction)
+                    .tint(.white)
+                    .background(.white.opacity(0.20), in: Capsule())
+
+                HStack {
+                    Text(storeModeProgress.isComplete
+                         ? "Turen er færdig"
+                         : "\(storeModeProgress.remaining) varer tilbage")
+                        .font(.caption.weight(.bold))
+                    Spacer()
+                    Text("\(storeModeProgress.purchased) købt")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.80))
+                }
+            }
         }
         .foregroundStyle(.white)
-        .padding(16)
+        .padding(14)
         .background(
             LinearGradient(
                 colors: [Color.green.opacity(0.92), Color.teal.opacity(0.92)],
@@ -496,7 +537,7 @@ struct ShoppingListView: View {
             ),
             in: RoundedRectangle(cornerRadius: 20, style: .continuous)
         )
-        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
+        .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 6, trailing: 16))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
     }
@@ -504,18 +545,105 @@ struct ShoppingListView: View {
     private var storeModeEmptyRow: some View {
         HStack(spacing: 12) {
             Image(systemName: "checkmark.circle.fill")
-                .font(.title2)
+                .font(.title)
                 .foregroundStyle(.green)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Ingen varer til denne tur")
+                Text(storeModePurchasedItems.isEmpty ? "Ingen varer til denne tur" : "Alt er i kurven")
                     .font(.headline)
-                Text("Varer til andre butikker er skjult. Varer uden butik vises altid her.")
+                Text(storeModePurchasedItems.isEmpty
+                     ? "Varer til andre butikker er skjult. Varer uden butik vises altid her."
+                     : "Du kan fortryde en afkrydsning under Købt nedenfor.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
         }
         .padding(16)
         .listRowSeparator(.hidden)
+    }
+
+    private func storeModeSectionHeader(
+        _ category: ShoppingCategory,
+        count: Int,
+        isNext: Bool
+    ) -> some View {
+        HStack(spacing: 8) {
+            if isNext {
+                Text("NÆSTE")
+                    .font(.caption2.weight(.heavy))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(Color.accentColor, in: Capsule())
+            }
+
+            Image(systemName: category.icon)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+            Text(category.rawValue)
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .textCase(nil)
+            Text("\(count)")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Color.primary.opacity(0.065), in: Capsule())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, isNext ? 7 : 3)
+        .padding(.bottom, 5)
+        .background(Color(uiColor: .systemGroupedBackground))
+    }
+
+    private var storeModePurchasedSection: some View {
+        Section {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    showStoreModePurchased.toggle()
+                }
+            } label: {
+                HStack(spacing: 11) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.green)
+                    Text("Købt")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text("\(storeModePurchasedItems.count)")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.primary.opacity(0.055), in: Capsule())
+                    Spacer()
+                    Text("Tryk igen ved fejl")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Image(systemName: showStoreModePurchased ? "chevron.up" : "chevron.down")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(
+                Color(uiColor: .secondarySystemGroupedBackground),
+                in: RoundedRectangle(cornerRadius: 17, style: .continuous)
+            )
+            .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: showStoreModePurchased ? 4 : 14, trailing: 16))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+
+            if showStoreModePurchased {
+                ForEach(storeModePurchasedItems, id: \.stableID) { item in
+                    itemRow(item, showCategory: true)
+                        .opacity(0.72)
+                }
+            }
+        }
     }
 
     private var addItemRow: some View {
@@ -810,34 +938,89 @@ struct ShoppingListView: View {
         .buttonStyle(.plain)
     }
 
-    @ViewBuilder
-    private func itemRow(_ item: ShoppingItem, showCategory: Bool) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                Task {
-                    let wasUnchecked = !item.checked
-                    let category = model.category(for: item)
-                    await model.setChecked(item, checked: !item.checked)
+    private func togglePurchasedState(for item: ShoppingItem) {
+        guard item.id != nil else { return }
 
-                    if wasUnchecked,
-                       let activeStoreMode,
-                       model.shoppingList?.items.first(where: { $0.stableID == item.stableID })?.checked == true {
-                        model.storeLayouts.recordPurchased(category: category, at: activeStoreMode)
+        Task { @MainActor in
+            let targetChecked = !item.checked
+            let category = model.category(for: item)
+            let store = activeStoreMode
+
+            if let store {
+                withAnimation(.snappy(duration: 0.22)) {
+                    updatePurchasedTracking(
+                        itemID: item.stableID,
+                        storeID: store.id,
+                        purchased: targetChecked
+                    )
+                }
+            }
+
+            await model.setChecked(item, checked: targetChecked)
+            let didApply = model.shoppingList?.items
+                .first(where: { $0.stableID == item.stableID })?
+                .checked == targetChecked
+
+            guard didApply else {
+                if let store {
+                    withAnimation(.snappy(duration: 0.22)) {
+                        updatePurchasedTracking(
+                            itemID: item.stableID,
+                            storeID: store.id,
+                            purchased: !targetChecked
+                        )
                     }
                 }
+                return
+            }
+
+            if targetChecked, let store {
+                model.storeLayouts.recordPurchased(category: category, at: store)
+            }
+        }
+    }
+
+    private func updatePurchasedTracking(
+        itemID: String,
+        storeID: String,
+        purchased: Bool
+    ) {
+        var itemIDs = storeModePurchasedIDsByStore[storeID] ?? []
+        itemIDs.removeAll { $0 == itemID }
+        if purchased { itemIDs.append(itemID) }
+        storeModePurchasedIDsByStore[storeID] = itemIDs
+        if purchased { showStoreModePurchased = true }
+    }
+
+    @ViewBuilder
+    private func itemRow(_ item: ShoppingItem, showCategory: Bool) -> some View {
+        HStack(spacing: activeStoreMode == nil ? 12 : 15) {
+            Button {
+                togglePurchasedState(for: item)
             } label: {
                 Image(systemName: item.checked ? "checkmark.circle.fill" : "circle")
-                    .font(.title2)
-                    .foregroundStyle(item.checked ? Color.secondary : Color.accentColor)
+                    .font(.system(size: activeStoreMode == nil ? 24 : 36, weight: .semibold))
+                    .foregroundStyle(
+                        item.checked
+                            ? (activeStoreMode == nil ? Color.secondary : Color.green)
+                            : Color.accentColor
+                    )
+                    .frame(
+                        width: activeStoreMode == nil ? 28 : 50,
+                        height: activeStoreMode == nil ? 34 : 50
+                    )
+                    .contentShape(Circle())
                     .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(.plain)
-            .disabled(item.id == nil)
+            .disabled(item.id == nil || model.mutatingItemIDs.contains(item.stableID))
             .accessibilityLabel(item.checked ? "Markér som ikke købt" : "Markér som købt")
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.name)
-                    .font(.body.weight(item.checked ? .regular : .semibold))
+                    .font(activeStoreMode == nil
+                          ? .body.weight(item.checked ? .regular : .semibold)
+                          : .title3.weight(item.checked ? .medium : .semibold))
                     .strikethrough(item.checked)
                     .foregroundStyle(item.checked ? .secondary : .primary)
                     .lineLimit(2)
@@ -993,11 +1176,11 @@ struct ShoppingListView: View {
                 ProgressView().controlSize(.small)
             }
         }
-        .padding(.horizontal, 13)
-        .padding(.vertical, 9)
+        .padding(.horizontal, activeStoreMode == nil ? 13 : 15)
+        .padding(.vertical, activeStoreMode == nil ? 9 : 15)
         .background(
             Color(uiColor: .secondarySystemGroupedBackground),
-            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            in: RoundedRectangle(cornerRadius: activeStoreMode == nil ? 16 : 20, style: .continuous)
         )
         .contentShape(Rectangle())
         .simultaneousGesture(
@@ -1023,7 +1206,12 @@ struct ShoppingListView: View {
                 }
             }
         }
-        .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
+        .listRowInsets(EdgeInsets(
+            top: activeStoreMode == nil ? 2 : 4,
+            leading: 16,
+            bottom: activeStoreMode == nil ? 2 : 4,
+            trailing: 16
+        ))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
     }
