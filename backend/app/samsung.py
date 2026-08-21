@@ -19,6 +19,22 @@ from .grpc_web import (
 from .models import ShoppingItem, ShoppingListResponse
 
 
+# SyncItems requires the item's current name/quantity in every checkbox write.
+# Keep only a short-lived snapshot from a successful Samsung list read so the
+# common shopping-trip path can write directly without risking that an old
+# phone payload overwrites a newer rename or quantity.
+_ITEM_SNAPSHOT_TTL_SECONDS = 120.0
+_item_snapshots: dict[str, tuple[float, dict[str, ShoppingItem]]] = {}
+
+
+def _normalized_item_id(item_id: str) -> str:
+    return item_id.replace("-", "").casefold()
+
+
+def reset_item_snapshot_cache_for_tests() -> None:
+    _item_snapshots.clear()
+
+
 class SamsungFoodError(RuntimeError):
     pass
 
@@ -68,7 +84,41 @@ class SamsungFoodClient:
                 f"{response.text[:500]}"
             )
 
-        return self._normalize_list(response.json())
+        normalized = self._normalize_list(response.json())
+        self._remember_item_snapshot(normalized.items)
+        return normalized
+
+    def _remember_item_snapshot(self, items: list[ShoppingItem]) -> None:
+        by_id = {
+            _normalized_item_id(item.id): item.model_copy(deep=True)
+            for item in items
+            if item.id
+        }
+        _item_snapshots[self.list_id] = (time.monotonic(), by_id)
+
+    def _cached_item(self, item_id: str) -> ShoppingItem | None:
+        snapshot = _item_snapshots.get(self.list_id)
+        if snapshot is None:
+            return None
+        created_at, items = snapshot
+        if time.monotonic() - created_at > _ITEM_SNAPSHOT_TTL_SECONDS:
+            _item_snapshots.pop(self.list_id, None)
+            return None
+        item = items.get(_normalized_item_id(item_id))
+        return item.model_copy(deep=True) if item is not None else None
+
+    def _update_cached_item(self, item_id: str, **changes: Any) -> None:
+        snapshot = _item_snapshots.get(self.list_id)
+        if snapshot is None:
+            return
+        created_at, items = snapshot
+        key = _normalized_item_id(item_id)
+        item = items.get(key)
+        if item is not None:
+            # Preserve the original read timestamp. A write does not make the
+            # other fields authoritative for another full TTL window.
+            items[key] = item.model_copy(update=changes, deep=True)
+            _item_snapshots[self.list_id] = (created_at, items)
 
     def _normalize_list(self, payload: dict[str, Any]) -> ShoppingListResponse:
         list_meta = payload.get("list") or {}
@@ -252,14 +302,16 @@ class SamsungFoodClient:
 
     async def _find_item(self, item_id: str) -> ShoppingItem:
         current = await self.get_list()
-        wanted = item_id.replace("-", "").casefold()
+        wanted = _normalized_item_id(item_id)
         for item in current.items:
-            if item.id and item.id.replace("-", "").casefold() == wanted:
+            if item.id and _normalized_item_id(item.id) == wanted:
                 return item
         raise SamsungFoodError(f"Shopping item not found: {item_id}")
 
     async def set_item_checked(self, item_id: str, checked: bool) -> dict[str, Any]:
-        item = await self._find_item(item_id)
+        item = self._cached_item(item_id)
+        if item is None:
+            item = await self._find_item(item_id)
         body = build_sync_items_checked_request(
             self.list_id,
             item_id,
@@ -270,6 +322,7 @@ class SamsungFoodClient:
             unit=item.unit,
         )
         result = await self._post_sync_items(body)
+        self._update_cached_item(item_id, checked=checked)
         # A successful gRPC write is the acknowledgement. Samsung's read side is
         # eventually consistent, so an immediate second list read adds latency
         # and can time out even though the checkbox was already saved.
