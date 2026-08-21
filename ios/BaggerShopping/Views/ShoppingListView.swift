@@ -106,7 +106,9 @@ struct ShoppingListView: View {
     @State private var nearbyStores: [StoreVisitContext] = []
     @State private var showNearbyStorePicker = false
     @State private var storeModePurchasedIDsByStore: [String: [String]] = [:]
-    @State private var showStoreModePurchased = true
+    @State private var showStoreModePurchased = false
+    @State private var storeModeAddItemExpanded = false
+    @FocusState private var addItemFieldFocused: Bool
     @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
 
     private let retailerFilterOptions = RetailerCatalog.all
@@ -305,10 +307,11 @@ struct ShoppingListView: View {
 
     private var shoppingListContent: some View {
         List {
-            addItemRow
             if let activeStoreMode {
                 storeModeBanner(activeStoreMode)
+                storeModeAddItemRow
             } else {
+                addItemRow
                 if !nearbyStores.isEmpty {
                     nearbyStoreModeLauncher
                 }
@@ -388,7 +391,7 @@ struct ShoppingListView: View {
         .scrollContentBackground(.hidden)
         .background(Color(uiColor: .systemGroupedBackground))
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            Color.clear.frame(height: 76)
+            Color.clear.frame(height: activeStoreMode == nil ? 86 : 124)
         }
         .refreshable {
             await model.refresh()
@@ -400,6 +403,9 @@ struct ShoppingListView: View {
     private func beginStoreMode(_ store: StoreVisitContext) {
         showNearbyStorePicker = false
         activeStoreMode = store
+        storeModeAddItemExpanded = false
+        showStoreModePurchased = false
+        addItemFieldFocused = false
         selectedRetailerFilters.removeAll()
         navigation.resolveStoreSelection()
         model.storeLayouts.beginSession(for: store)
@@ -408,7 +414,10 @@ struct ShoppingListView: View {
     private func endStoreMode() {
         withAnimation(.snappy(duration: 0.22)) {
             activeStoreMode = nil
+            storeModeAddItemExpanded = false
+            showStoreModePurchased = false
         }
+        addItemFieldFocused = false
         navigation.endStoreMode()
     }
 
@@ -478,7 +487,7 @@ struct ShoppingListView: View {
     }
 
     private func storeModeBanner(_ store: StoreVisitContext) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 11) {
                 Image(systemName: "figure.walk.motion")
                     .font(.headline.weight(.bold))
@@ -489,7 +498,7 @@ struct ShoppingListView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(store.retailer)
                         .font(.headline)
-                    Text(store.address.isEmpty ? "Denne butik" : store.address)
+                    Text(StoreModeService.compactAddress(store.address))
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.78))
                         .lineLimit(1)
@@ -504,10 +513,12 @@ struct ShoppingListView: View {
                         .tint(.white)
                 }
 
-                Button("Afslut") { endStoreMode() }
-                    .font(.caption2.weight(.bold))
-                    .buttonStyle(.bordered)
-                    .tint(.white)
+                if !storeModeProgress.isComplete {
+                    Button("Afslut") { endStoreMode() }
+                        .font(.caption2.weight(.bold))
+                        .buttonStyle(.bordered)
+                        .tint(.white)
+                }
             }
 
             if storeModeProgress.total > 0 {
@@ -524,6 +535,19 @@ struct ShoppingListView: View {
                     Text("\(storeModeProgress.purchased) købt")
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.80))
+                }
+
+                if storeModeProgress.isComplete {
+                    Button(action: endStoreMode) {
+                        Label("Afslut indkøbstur", systemImage: "checkmark")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(Color.green)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(.white, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Lukker butikstilstand og viser hele indkøbslisten")
                 }
             }
         }
@@ -567,33 +591,31 @@ struct ShoppingListView: View {
         isNext: Bool
     ) -> some View {
         HStack(spacing: 8) {
-            if isNext {
-                Text("NÆSTE")
-                    .font(.caption2.weight(.heavy))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(Color.accentColor, in: Capsule())
-            }
-
             Image(systemName: category.icon)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color.accentColor)
-            Text(category.rawValue)
+            Text(isNext ? "Næste · \(category.rawValue)" : category.rawValue)
                 .font(.headline)
-                .foregroundStyle(.primary)
+                .foregroundStyle(isNext ? Color.accentColor : Color.primary)
                 .textCase(nil)
+            Spacer(minLength: 4)
             Text("\(count)")
                 .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isNext ? Color.accentColor : Color.secondary)
                 .padding(.horizontal, 7)
                 .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.065), in: Capsule())
+                .background(
+                    (isNext ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.065)),
+                    in: Capsule()
+                )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top, isNext ? 7 : 3)
-        .padding(.bottom, 5)
-        .background(Color(uiColor: .systemGroupedBackground))
+        .padding(.horizontal, isNext ? 11 : 0)
+        .padding(.vertical, isNext ? 9 : 5)
+        .background(
+            isNext ? Color.accentColor.opacity(0.09) : Color(uiColor: .systemGroupedBackground),
+            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+        )
     }
 
     private var storeModePurchasedSection: some View {
@@ -640,13 +662,52 @@ struct ShoppingListView: View {
             if showStoreModePurchased {
                 ForEach(storeModePurchasedItems, id: \.stableID) { item in
                     itemRow(item, showCategory: true)
-                        .opacity(0.72)
+                        .opacity(0.62)
                 }
             }
         }
     }
 
+    private var storeModeAddItemRow: some View {
+        Group {
+            if storeModeAddItemExpanded || !newItem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                addItemComposer(compact: true)
+            } else {
+                HStack {
+                    Button {
+                        withAnimation(.snappy(duration: 0.18)) {
+                            storeModeAddItemExpanded = true
+                        }
+                        addItemFieldFocused = true
+                    } label: {
+                        Label("Tilføj vare", systemImage: "plus.circle.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 12)
+                            .frame(height: 36)
+                            .background(
+                                Color(uiColor: .secondarySystemGroupedBackground),
+                                in: Capsule()
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 4, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+
     private var addItemRow: some View {
+        addItemComposer(compact: false)
+            .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 3, trailing: 16))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+    }
+
+    private func addItemComposer(compact: Bool) -> some View {
         HStack(spacing: 10) {
             Image(systemName: "plus")
                 .font(.subheadline.weight(.bold))
@@ -656,6 +717,7 @@ struct ShoppingListView: View {
 
             TextField("Tilføj vare", text: $newItem)
                 .font(.body.weight(.medium))
+                .focused($addItemFieldFocused)
                 .textInputAutocapitalization(.sentences)
                 .submitLabel(.done)
                 .onSubmit { addNewItem() }
@@ -668,17 +730,29 @@ struct ShoppingListView: View {
                 }
                 .buttonStyle(.plain)
                 .transition(.scale.combined(with: .opacity))
+            } else if compact {
+                Button {
+                    withAnimation(.snappy(duration: 0.18)) {
+                        storeModeAddItemExpanded = false
+                    }
+                    addItemFieldFocused = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 28, height: 28)
+                        .background(Color.primary.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Luk tilføj vare")
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, compact ? 7 : 10)
         .background(
             Color(uiColor: .secondarySystemGroupedBackground),
             in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
-        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 3, trailing: 16))
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
     }
 
     private var sortModeRow: some View {
@@ -912,9 +986,13 @@ struct ShoppingListView: View {
         let value = newItem
         guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         newItem = ""
+        storeModeAddItemExpanded = false
+        addItemFieldFocused = false
         Task {
             if !(await model.addManualItemResponsive(value)) {
                 newItem = value
+                storeModeAddItemExpanded = activeStoreMode != nil
+                addItemFieldFocused = true
             }
         }
     }
@@ -989,7 +1067,6 @@ struct ShoppingListView: View {
         itemIDs.removeAll { $0 == itemID }
         if purchased { itemIDs.append(itemID) }
         storeModePurchasedIDsByStore[storeID] = itemIDs
-        if purchased { showStoreModePurchased = true }
     }
 
     @ViewBuilder
@@ -1026,16 +1103,23 @@ struct ShoppingListView: View {
                     .lineLimit(2)
 
                 if let retailer = model.offerRetailer(for: item) {
+                    let hideRetailer = activeStoreMode?.retailer.caseInsensitiveCompare(retailer) == .orderedSame
                     Button {
                         showOfferPreview(for: item)
                     } label: {
                         HStack(spacing: 5) {
                             Image(systemName: "tag.fill")
-                            Text(retailer).lineLimit(1)
+                            if !hideRetailer {
+                                Text(retailer).lineLimit(1)
+                            }
                             if let price = model.offerPrice(for: item) {
-                                Text("·")
+                                if !hideRetailer {
+                                    Text("·")
+                                }
                                 Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
                                     .monospacedDigit()
+                            } else if hideRetailer {
+                                Text("Tilbud")
                             }
                             if model.offerMetadataReference(for: item)?.offerID != nil {
                                 Image(systemName: "photo")

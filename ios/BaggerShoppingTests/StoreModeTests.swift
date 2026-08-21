@@ -96,6 +96,15 @@ final class StoreModeTests: XCTestCase {
         XCTAssertTrue(complete.isComplete)
     }
 
+    func testStoreModeUsesACompactReadableAddress() {
+        XCTAssertEqual(
+            StoreModeService.compactAddress("Skørping Center 16, 9520 Skørping, Danmark"),
+            "Skørping Center 16"
+        )
+        XCTAssertEqual(StoreModeService.compactAddress("Jyllandsgade 12"), "Jyllandsgade 12")
+        XCTAssertEqual(StoreModeService.compactAddress("   "), "Denne butik")
+    }
+
     @MainActor
     func testLayoutLearningIsScopedToExactPhysicalStore() {
         let suite = "StoreModeTests-\(UUID().uuidString)"

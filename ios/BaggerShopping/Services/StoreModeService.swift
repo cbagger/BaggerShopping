@@ -117,6 +117,18 @@ enum StoreModeService {
             purchased: max(purchased, 0)
         )
     }
+
+    static func compactAddress(_ address: String) -> String {
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Denne butik" }
+
+        guard let street = trimmed
+            .split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true)
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !street.isEmpty else { return trimmed }
+        return street
+    }
 }
 
 struct StoreModeProgress: Equatable {
