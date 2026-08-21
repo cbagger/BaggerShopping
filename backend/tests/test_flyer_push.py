@@ -1,6 +1,7 @@
 import os
 import asyncio
 import time
+from datetime import date, timedelta
 
 os.environ.setdefault("MOBILE_API_TOKEN", "test-token")
 
@@ -18,9 +19,11 @@ HEADERS = {"Authorization": "Bearer test-token"}
 
 
 def publication(identifier: str, retailer: str = "MENY") -> Publication:
+    valid_from = date.today()
+    valid_until = valid_from + timedelta(days=6)
     return Publication(
-        id=identifier, retailer=retailer, title="Uge 34", valid_from="14.08.2026",
-        valid_until="20.08.2026", status="current", source_url="https://example.test",
+        id=identifier, retailer=retailer, title="Uge 34", valid_from=valid_from.strftime("%d.%m.%Y"),
+        valid_until=valid_until.strftime("%d.%m.%Y"), status="current", source_url="https://example.test",
         page_count=1, page_image_urls=["https://example.test/1.jpg"],
     )
 
