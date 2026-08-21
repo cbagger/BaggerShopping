@@ -1,0 +1,107 @@
+import XCTest
+@testable import BaggerShopping
+
+final class StoreModeTests: XCTestCase {
+    func testStoreModeIncludesCurrentRetailerAndUnassignedButNotOtherStores() {
+        let store = StoreVisitContext(
+            id: "netto-skoring",
+            retailer: "Netto",
+            address: "Jyllandsgade 12, 9520 Skørping",
+            latitude: 56.84,
+            longitude: 9.89
+        )
+
+        XCTAssertTrue(StoreModeService.includes(assignedRetailer: "Netto", in: store))
+        XCTAssertTrue(StoreModeService.includes(assignedRetailer: nil, in: store))
+        XCTAssertFalse(StoreModeService.includes(assignedRetailer: "MENY", in: store))
+    }
+
+    func testDefaultWalkingRouteMatchesRequestedStoreFlow() {
+        XCTAssertEqual(StoreModeService.defaultCategoryOrder, [
+            .fruitAndVegetables,
+            .bakery,
+            .pantry,
+            .meat,
+            .deli,
+            .dairy,
+            .frozen,
+            .beverages,
+            .household,
+            .personalCare,
+            .other,
+        ])
+    }
+
+    func testSameRetailerAtTwoAddressesHasSeparateIdentity() {
+        let first = StoreVisitContext.automaticallyDetected(
+            retailer: "Netto",
+            address: "Jyllandsgade 12, Skørping",
+            latitude: 56.836,
+            longitude: 9.891
+        )
+        let second = StoreVisitContext.automaticallyDetected(
+            retailer: "Netto",
+            address: "Hobrovej 450, Aalborg",
+            latitude: 57.001,
+            longitude: 9.910
+        )
+
+        XCTAssertNotEqual(first.id, second.id)
+    }
+
+    @MainActor
+    func testLayoutLearningIsScopedToExactPhysicalStore() {
+        let suite = "StoreModeTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let learning = StoreLayoutLearning(defaults: defaults, storageKey: "layout")
+        let first = StoreVisitContext(
+            id: "netto-skoring",
+            retailer: "Netto",
+            latitude: 56.836,
+            longitude: 9.891
+        )
+        let second = StoreVisitContext(
+            id: "netto-aalborg",
+            retailer: "Netto",
+            latitude: 57.001,
+            longitude: 9.910
+        )
+
+        learning.beginSession(for: first)
+        learning.recordPurchased(category: .household, at: first)
+
+        XCTAssertLessThan(
+            learning.rank(for: .household, at: first),
+            learning.rank(for: .household, at: second)
+        )
+        XCTAssertEqual(
+            learning.rank(for: .household, at: second),
+            StoreModeService.defaultRank(for: .household)
+        )
+    }
+
+    func testNotificationPayloadRestoresExactStoreContext() throws {
+        let original = StoreVisitContext(
+            id: "saved:123",
+            retailer: "REMA 1000",
+            address: "Himmerlandsvej 112, 9520 Skørping",
+            latitude: 56.84,
+            longitude: 9.89
+        )
+
+        let restored = try XCTUnwrap(
+            StoreVisitContext.fromNotificationUserInfo(original.notificationUserInfo)
+        )
+
+        XCTAssertEqual(restored, original)
+    }
+
+    func testRetailerCatalogRecognizesBranchNames() {
+        XCTAssertEqual(RetailerCatalog.canonicalRetailer("Netto Skørping"), "Netto")
+        XCTAssertEqual(RetailerCatalog.canonicalRetailer("REMA 1000 Aalborg SV"), "REMA 1000")
+        XCTAssertNil(RetailerCatalog.canonicalRetailer("Lokal blomsterbutik"))
+    }
+}

@@ -14,6 +14,7 @@ final class AppModel: ObservableObject {
     let stores = StoreRepository()
     let geofence = GeofenceManager()
     let categories = ShoppingCategoryService()
+    let storeLayouts = StoreLayoutLearning()
     let flyerPush = FlyerPushManager()
     private let api = APIClient()
     private let offerMetadataKey = "bagger-shopping-offer-metadata-v2"

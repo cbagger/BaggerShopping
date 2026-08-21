@@ -1,5 +1,6 @@
 import Foundation
 import CoreLocation
+import MapKit
 import UserNotifications
 import UIKit
 
@@ -15,6 +16,8 @@ struct GeofenceRegionDiagnostic: Identifiable, Hashable {
 
 @MainActor
 final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelegate, UNUserNotificationCenterDelegate {
+    private static let storeArrivalCategory = "KURV_STORE_ARRIVAL"
+    private static let startShoppingAction = "KURV_START_SHOPPING"
     @Published private(set) var authorizationStatus: CLAuthorizationStatus = .notDetermined
     @Published private(set) var notificationAuthorizationText = "Ukendt"
     @Published private(set) var monitoredCount = 0
@@ -32,12 +35,16 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     private let api = APIClient()
     private let cooldownSeconds: TimeInterval = 2 * 60 * 60
     private let metadataCacheKey = "geofence-offer-metadata-cache-v1"
-    private var storeNamesByIdentifier: [String: String] = [:]
+    private var storesByIdentifier: [String: StoreVisitContext] = [:]
     private var latestLocation: CLLocation?
+    private var lastAutomaticLookupAt: Date?
+    private var lastAutomaticLookupLocation: CLLocation?
 
     override init() {
         super.init()
         manager.delegate = self
+        manager.activityType = .other
+        manager.pausesLocationUpdatesAutomatically = true
         UNUserNotificationCenter.current().delegate = self
 
         authorizationStatus = manager.authorizationStatus
@@ -53,13 +60,17 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         // immediately asks Core Location for the current state of enabled stores.
         MemberPricePresence.clear()
         refreshRegionDiagnostics()
-        Task { await refreshNotificationAuthorization() }
+        Task {
+            await configureNotificationActions()
+            await refreshNotificationAuthorization()
+        }
     }
 
     func requestPermissions() async {
         _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
         await refreshNotificationAuthorization()
         manager.requestAlwaysAuthorization()
+        startAutomaticStoreDetectionIfAuthorized()
     }
 
     func refreshNotificationAuthorization() async {
@@ -68,8 +79,8 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     func sync(stores: [StoreLocation]) {
-        storeNamesByIdentifier = Dictionary(
-            uniqueKeysWithValues: stores.map { ("store:\($0.id.uuidString)", $0.name) }
+        storesByIdentifier = Dictionary(
+            uniqueKeysWithValues: stores.map { ("store:\($0.id.uuidString)", StoreVisitContext(store: $0)) }
         )
 
         // Presence must be re-proven by Core Location after every monitoring
@@ -94,6 +105,7 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
 
         refreshRegionDiagnostics()
         refreshPresence()
+        startAutomaticStoreDetectionIfAuthorized()
     }
 
     func refreshPresence() {
@@ -144,13 +156,19 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         let metadata = try await api.fetchOfferMetadata().metadata
         saveMetadataCache(metadata)
         ShoppingListCache.save(list)
-        let retailer = storeNamesByIdentifier.values.sorted().first ?? "valgte butik"
-        let storeItems = Self.items(for: retailer, in: list, metadata: metadata)
+        let context = storesByIdentifier.values.sorted { $0.retailer < $1.retailer }.first
+            ?? StoreVisitContext(
+                id: "diagnostic-store",
+                retailer: "valgte butik",
+                latitude: 0,
+                longitude: 0
+            )
+        let storeItems = Self.items(for: context.retailer, in: list, metadata: metadata)
         let unassignedItems = Self.unassignedItems(in: list, metadata: metadata)
         try await scheduleShoppingNotification(
             storeItems: storeItems,
             unassignedItems: unassignedItems,
-            retailer: retailer,
+            context: context,
             cached: false
         )
     }
@@ -170,8 +188,11 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
             self.authorizationStatus = manager.authorizationStatus
             if manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse {
                 self.refreshPresence()
+                self.startAutomaticStoreDetectionIfAuthorized()
             } else {
                 MemberPricePresence.clear()
+                self.manager.stopMonitoringVisits()
+                self.manager.stopMonitoringSignificantLocationChanges()
             }
         }
     }
@@ -205,13 +226,14 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         guard region.identifier.hasPrefix("store:") else { return }
 
         Task { @MainActor in
-            let storeName = self.displayName(for: region.identifier)
+            let context = self.context(for: region.identifier)
+            let storeName = context.retailer
             let message = "\(storeName) – \(Self.timestamp())"
             self.lastEnterEvent = message
             UserDefaults.standard.set(message, forKey: "geofence-last-enter-event")
             MemberPricePresence.setInside(true, storeName: storeName)
             self.setRegionState(identifier: region.identifier, state: "INSIDE")
-            await self.handleStoreEntry(regionIdentifier: region.identifier)
+            await self.handleStoreArrival(context)
         }
     }
 
@@ -266,6 +288,20 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
                 max(location.horizontalAccuracy, 0)
             )
             self.refreshRegionDiagnostics()
+            await self.detectAutomaticStore(near: location)
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
+        let location = CLLocation(
+            coordinate: visit.coordinate,
+            altitude: 0,
+            horizontalAccuracy: visit.horizontalAccuracy,
+            verticalAccuracy: -1,
+            timestamp: visit.arrivalDate == .distantPast ? Date() : visit.arrivalDate
+        )
+        Task { @MainActor in
+            await self.detectAutomaticStore(near: location, force: true)
         }
     }
 
@@ -290,8 +326,15 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         didReceive response: UNNotificationResponse
     ) async {
         let userInfo = response.notification.request.content.userInfo
+        if userInfo["route"] as? String == "store-mode",
+           let store = StoreVisitContext.fromNotificationUserInfo(userInfo) {
+            NotificationCenter.default.post(name: .openStoreMode, object: store)
+            return
+        }
         if userInfo["route"] as? String == "shopping-list",
            let retailer = userInfo["retailer"] as? String {
+            // Backward compatibility for notifications already delivered by
+            // build 63 and earlier.
             NotificationCenter.default.post(name: .openShoppingListRetailer, object: retailer)
             return
         }
@@ -305,13 +348,13 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         }
     }
 
-    private func handleStoreEntry(regionIdentifier: String) async {
-        let storeName = displayName(for: regionIdentifier)
+    private func handleStoreArrival(_ context: StoreVisitContext) async {
+        let storeName = context.retailer
         let attempt = "\(storeName) – \(Self.timestamp())"
         lastNotificationAttempt = attempt
         UserDefaults.standard.set(attempt, forKey: "geofence-last-notification-attempt")
 
-        let cooldownKey = "geofence-last-notification-\(regionIdentifier)"
+        let cooldownKey = "geofence-last-notification-store:\(context.id)"
         let last = UserDefaults.standard.double(forKey: cooldownKey)
 
         if last > 0, Date().timeIntervalSince1970 - last < cooldownSeconds {
@@ -360,7 +403,7 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
             try await scheduleShoppingNotification(
                 storeItems: storeItems,
                 unassignedItems: unassignedItems,
-                retailer: storeName,
+                context: context,
                 cached: false
             )
 
@@ -388,7 +431,7 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
                     try await scheduleShoppingNotification(
                         storeItems: storeItems,
                         unassignedItems: unassignedItems,
-                        retailer: storeName,
+                        context: context,
                         cached: true
                     )
 
@@ -412,11 +455,12 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     private func scheduleShoppingNotification(
         storeItems: [ShoppingItem],
         unassignedItems: [ShoppingItem],
-        retailer: String,
+        context: StoreVisitContext,
         cached: Bool
     ) async throws {
+        let retailer = context.retailer
         let content = UNMutableNotificationContent()
-        content.title = "Du er ved \(retailer)"
+        content.title = "Du er ved \(retailer) – start indkøbstur?"
 
         if storeItems.isEmpty {
             let noun = unassignedItems.count == 1 ? "vare" : "varer"
@@ -439,7 +483,8 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         }
 
         content.sound = .default
-        content.userInfo = ["route": "shopping-list", "retailer": retailer]
+        content.categoryIdentifier = Self.storeArrivalCategory
+        content.userInfo = context.notificationUserInfo
 
         try await UNUserNotificationCenter.current().add(
             UNNotificationRequest(
@@ -463,9 +508,10 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         in list: ShoppingListResponse,
         metadata: [OfferMetadataDTO]
     ) -> [ShoppingItem] {
-        let retailerKey = normalizedKey(retailer)
+        let retailerKey = normalizedKey(RetailerCatalog.canonicalRetailer(retailer) ?? retailer)
         let retailerByItem = metadata.reduce(into: [String: String]()) { result, record in
-            result[normalizedKey(record.itemName)] = normalizedKey(record.retailer)
+            let canonical = RetailerCatalog.canonicalRetailer(record.retailer) ?? record.retailer
+            result[normalizedKey(record.itemName)] = normalizedKey(canonical)
         }
         return list.items.filter { item in
             !item.checked && retailerByItem[normalizedKey(item.name)] == retailerKey
@@ -563,7 +609,98 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     private func displayName(for identifier: String) -> String {
-        storeNamesByIdentifier[identifier] ?? identifier.replacingOccurrences(of: "store:", with: "")
+        context(for: identifier).retailer
+    }
+
+    private func context(for identifier: String) -> StoreVisitContext {
+        storesByIdentifier[identifier] ?? StoreVisitContext(
+            id: identifier,
+            retailer: identifier.replacingOccurrences(of: "store:", with: ""),
+            latitude: 0,
+            longitude: 0
+        )
+    }
+
+    private func configureNotificationActions() async {
+        let action = UNNotificationAction(
+            identifier: Self.startShoppingAction,
+            title: "Start indkøbstur",
+            options: [.foreground]
+        )
+        let category = UNNotificationCategory(
+            identifier: Self.storeArrivalCategory,
+            actions: [action],
+            intentIdentifiers: [],
+            options: []
+        )
+        let center = UNUserNotificationCenter.current()
+        var categories = await center.notificationCategories()
+        categories.update(with: category)
+        center.setNotificationCategories(categories)
+    }
+
+    private func startAutomaticStoreDetectionIfAuthorized() {
+        guard authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse else { return }
+        guard CLLocationManager.significantLocationChangeMonitoringAvailable() else { return }
+        manager.startMonitoringVisits()
+        manager.startMonitoringSignificantLocationChanges()
+    }
+
+    private func detectAutomaticStore(near location: CLLocation, force: Bool = false) async {
+        guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 200 else { return }
+
+        if !force,
+           let lastAutomaticLookupAt,
+           Date().timeIntervalSince(lastAutomaticLookupAt) < 10 * 60,
+           let lastAutomaticLookupLocation,
+           location.distance(from: lastAutomaticLookupLocation) < 100 {
+            return
+        }
+        lastAutomaticLookupAt = Date()
+        lastAutomaticLookupLocation = location
+
+        // A manually monitored store is more precise and didEnterRegion owns
+        // its notification. Automatic discovery only fills the no-store gap.
+        let overlapsSavedStore = storesByIdentifier.values.contains { store in
+            CLLocation(latitude: store.latitude, longitude: store.longitude).distance(from: location) <= 180
+        }
+        guard !overlapsSavedStore else { return }
+
+        let request = MKLocalSearch.Request()
+        request.region = MKCoordinateRegion(
+            center: location.coordinate,
+            latitudinalMeters: 500,
+            longitudinalMeters: 500
+        )
+        request.resultTypes = .pointOfInterest
+        request.pointOfInterestFilter = MKPointOfInterestFilter(including: [.foodMarket])
+
+        guard let response = try? await MKLocalSearch(request: request).start() else { return }
+        let nearby = response.mapItems.compactMap { item -> (StoreVisitContext, CLLocationDistance)? in
+            guard let name = item.name,
+                  let retailer = RetailerCatalog.canonicalRetailer(name) else { return nil }
+            let placemark = item.placemark
+            let storeLocation = CLLocation(
+                latitude: placemark.coordinate.latitude,
+                longitude: placemark.coordinate.longitude
+            )
+            let distance = storeLocation.distance(from: location)
+            guard distance <= 160 else { return nil }
+            return (
+                StoreVisitContext.automaticallyDetected(
+                    retailer: retailer,
+                    address: placemark.title ?? "",
+                    latitude: placemark.coordinate.latitude,
+                    longitude: placemark.coordinate.longitude
+                ),
+                distance
+            )
+        }
+        .sorted { $0.1 < $1.1 }
+        .first
+
+        guard let context = nearby?.0 else { return }
+        await handleStoreArrival(context)
     }
 
     private static func notificationStatusText(_ status: UNAuthorizationStatus) -> String {

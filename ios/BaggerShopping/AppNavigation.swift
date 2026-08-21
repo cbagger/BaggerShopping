@@ -10,7 +10,7 @@ enum AppTab: Hashable {
 
 struct ShoppingListRoute: Equatable {
     let id = UUID()
-    let retailer: String
+    let store: StoreVisitContext
 }
 
 struct FlyerRoute: Equatable {
@@ -21,6 +21,7 @@ struct FlyerRoute: Equatable {
 
 extension Notification.Name {
     static let openShoppingListRetailer = Notification.Name("kurv.openShoppingListRetailer")
+    static let openStoreMode = Notification.Name("kurv.openStoreMode")
     static let openFlyerPublication = Notification.Name("kurv.openFlyerPublication")
 }
 
@@ -36,6 +37,14 @@ final class AppNavigation: ObservableObject {
     private var lastExternalNavigationAt: Date?
 
     init() {
+        NotificationCenter.default.addObserver(
+            forName: .openStoreMode,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let store = notification.object as? StoreVisitContext else { return }
+            Task { @MainActor in self?.openStoreMode(store) }
+        }
         NotificationCenter.default.addObserver(
             forName: .openShoppingListRetailer,
             object: nil,
@@ -60,9 +69,23 @@ final class AppNavigation: ObservableObject {
     func openShoppingList(retailer: String) {
         let trimmed = retailer.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        openStoreMode(StoreVisitContext(
+            id: "legacy:\(ShoppingCategoryService.normalize(trimmed))",
+            retailer: trimmed,
+            latitude: 0,
+            longitude: 0
+        ))
+    }
+
+    func openStoreMode(_ store: StoreVisitContext) {
+        guard !store.retailer.isEmpty else { return }
         selectedTab = .shoppingList
         lastExternalNavigationAt = Date()
-        shoppingListRoute = ShoppingListRoute(retailer: trimmed)
+        shoppingListRoute = ShoppingListRoute(store: store)
+    }
+
+    func endStoreMode() {
+        shoppingListRoute = nil
     }
 
     func openFlyer(publicationID: String, retailer: String? = nil) {
