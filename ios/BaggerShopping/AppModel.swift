@@ -9,6 +9,7 @@ final class AppModel: ObservableObject {
     @Published var tokenConfigured = KeychainStore.loadToken() != nil
     @Published var onboardingRequired = KeychainStore.loadToken() == nil
     @Published var mutatingItemIDs: Set<String> = []
+    @Published private(set) var isAddingItem = false
     @Published private(set) var pendingCheckedItemIDs: Set<String> = []
     @Published private(set) var checkedSyncRetryItemIDs: Set<String> = []
     @Published var householdProfile: HouseholdProfile?
@@ -170,6 +171,8 @@ final class AppModel: ObservableObject {
     ) async -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
+        guard beginItemAddition() else { return false }
+        defer { finishItemAddition() }
 
         let previous = shoppingList
         listMutationRevision &+= 1
@@ -237,6 +240,17 @@ final class AppModel: ObservableObject {
             errorMessage = error.localizedDescription
             return false
         }
+    }
+
+    @discardableResult
+    func beginItemAddition() -> Bool {
+        guard !isAddingItem else { return false }
+        isAddingItem = true
+        return true
+    }
+
+    func finishItemAddition() {
+        isAddingItem = false
     }
 
     private func scheduleReconciliation(for name: String) {

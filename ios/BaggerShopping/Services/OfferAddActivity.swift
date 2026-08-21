@@ -20,6 +20,10 @@ final class OfferAddActivity: ObservableObject {
         var showsProgress: Bool {
             self == .checking || self == .adding
         }
+
+        var blocksNewAdditions: Bool {
+            self == .checking || self == .adding
+        }
     }
 
     static let shared = OfferAddActivity()
@@ -32,6 +36,13 @@ final class OfferAddActivity: ObservableObject {
     func beginChecking() {
         clearTask?.cancel()
         phase = .checking
+    }
+
+    @discardableResult
+    func tryBeginChecking() -> Bool {
+        guard !phase.blocksNewAdditions else { return false }
+        beginChecking()
+        return true
     }
 
     func beginAdding() {

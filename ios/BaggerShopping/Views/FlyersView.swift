@@ -237,6 +237,7 @@ private struct NativeFlyerReader: View {
                             FlyerPage(
                                 url: url,
                                 offers: offers.filter { $0.pageNumber == index + 1 },
+                                additionsDisabled: model.isAddingItem || offerAddActivity.phase.blocksNewAdditions,
                                 select: choose,
                                 report: report
                             )
@@ -328,6 +329,7 @@ private struct NativeFlyerReader: View {
     }
 
     private func add(_ name: String, from selectedOffer: GroceryOffer? = nil) {
+        guard offerAddActivity.tryBeginChecking() else { return }
         let offer = selectedOffer
             ?? pendingOffer
             ?? offers.first { $0.variants.contains(where: { $0.name == name }) }
@@ -349,7 +351,7 @@ private struct NativeFlyerReader: View {
 
     private func addWithoutPriceCheck(_ name: String, from offer: GroceryOffer) {
         Task {
-            _ = await model.addItem(
+            let added = await model.addItem(
                 name,
                 retailer: offer.retailer,
                 offerPrice: offer.price,
@@ -360,6 +362,7 @@ private struct NativeFlyerReader: View {
                 matchedItemName: name,
                 offerSnapshot: offer
             )
+            if !added { offerAddActivity.clear() }
         }
     }
 
@@ -382,6 +385,7 @@ private struct NativeFlyerReader: View {
 private struct FlyerPage: View {
     let url: URL
     let offers: [GroceryOffer]
+    let additionsDisabled: Bool
     let select: (GroceryOffer) -> Void
     let report: (GroceryOffer, String) -> Void
 
@@ -392,7 +396,8 @@ private struct FlyerPage: View {
                 offers: offers,
                 select: select,
                 report: report,
-                size: proxy.size
+                size: proxy.size,
+                hotspotsEnabled: !additionsDisabled
             )
             .frame(width: proxy.size.width, height: proxy.size.height)
             .background(Color.black)
@@ -550,6 +555,7 @@ private struct ZoomableFlyerPage: UIViewRepresentable {
     let select: (GroceryOffer) -> Void
     let report: (GroceryOffer, String) -> Void
     let size: CGSize
+    let hotspotsEnabled: Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -559,7 +565,7 @@ private struct ZoomableFlyerPage: UIViewRepresentable {
                 select: select,
                 report: report,
                 size: size,
-                hotspotsEnabled: true
+                hotspotsEnabled: hotspotsEnabled
             )
         )
     }
@@ -625,7 +631,7 @@ private struct ZoomableFlyerPage: UIViewRepresentable {
                 select: select,
                 report: report,
                 size: size,
-                hotspotsEnabled: true
+                hotspotsEnabled: hotspotsEnabled
             )
         )
 
@@ -647,7 +653,7 @@ private struct ZoomableFlyerPage: UIViewRepresentable {
             self.canvas = canvas
             self.canvasSize = canvas.size
             self.hostingController = UIHostingController(
-                rootView: canvas.withHotspotsEnabled(true)
+                rootView: canvas.withHotspotsEnabled(canvas.hotspotsEnabled)
             )
             super.init()
         }
@@ -745,7 +751,9 @@ private struct ZoomableFlyerPage: UIViewRepresentable {
         }
 
         private func renderCanvas() {
-            hostingController.rootView = canvas.withHotspotsEnabled(hotspotsEnabled)
+            hostingController.rootView = canvas.withHotspotsEnabled(
+                hotspotsEnabled && canvas.hotspotsEnabled
+            )
         }
 
         private func reenableHotspotsIfAtRest(after delay: TimeInterval) {
