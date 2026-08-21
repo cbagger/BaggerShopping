@@ -18,6 +18,7 @@ from .control_center_catalog import IOS_RELEASE, catalog, dataflow
 from .control_telemetry import all_heartbeats, read_heartbeat
 from .households import LEGACY_HOUSEHOLD_ID, legacy_worker_context, load_store as load_households
 from .mobile_offer_metadata import load_offer_metadata_store
+from .retailer_sources import is_active_retailer
 
 
 PROBE_TIMEOUT_SECONDS = 3.0
@@ -316,7 +317,11 @@ def current_publications(luna_store: dict[str, Any]) -> tuple[list[dict[str, Any
     rows: list[dict[str, Any]] = []
     counts = {"pending": 0, "complete": 0, "degraded": 0, "not_tracked": 0}
     for publication_id, source in readiness.get("publications", {}).items():
-        if not isinstance(source, dict) or not _publication_is_current(source):
+        if (
+            not isinstance(source, dict)
+            or not _publication_is_current(source)
+            or not is_active_retailer(str(source.get("retailer") or ""))
+        ):
             continue
         fingerprint = str(source.get("fingerprint") or "")
         key = luna_member_coverage.coverage_key(publication_id, fingerprint)
@@ -443,7 +448,11 @@ def derive_component_states(runtime: dict[str, dict[str, Any]], *, samsung: dict
         parent_state = states.get(parent, {"health": "info", "state": "available"})
         states[component_id] = {"health": parent_state.get("health", "info"), "state": "available" if parent_state.get("health") == "healthy" else parent_state.get("state", "unknown"), "detail": f"Hosted by {parent}"}
     if current_coverage.get("degraded", 0) > 0:
-        states["member-coverage"] = {"health": "attention", "state": "degraded-present", "detail": f"{current_coverage.get('degraded', 0)} aktuelle avis-generationer degraded"}
+        states["member-coverage"] = {
+            "health": "healthy",
+            "state": "quality-filtered",
+            "detail": f"{current_coverage.get('degraded', 0)} aktuelle aviser er tilgængelige med automatisk kvalitetsfiltrering",
+        }
     if household_summary.get("households", 0) <= 0:
         states["household-engine"] = {"health": "attention", "state": "no-households", "detail": "Ingen familier registreret"}
     for component in components:
@@ -459,9 +468,6 @@ def alerts(runtime: dict[str, dict[str, Any]], components: list[dict[str, Any]],
             result.append({"severity": "critical", "title": f"{row.get('name')} er utilgængelig", "detail": row.get("error")})
         elif row.get("health") == "attention":
             result.append({"severity": "warning", "title": f"{row.get('name')} kræver opmærksomhed", "detail": row.get("detail") or row.get("error")})
-    degraded = [row for row in publications if row.get("coverage_status") == "degraded"]
-    if degraded:
-        result.append({"severity": "warning", "title": f"{len(degraded)} aktuelle avis-generationer er degraded", "detail": "Åbn Luna & aviser for konkrete quarantine-årsager."})
     usage = luna.get("usage", {}) if isinstance(luna.get("usage"), dict) else {}
     budget, spent = float(usage.get("budget_dkk") or 0), float(usage.get("estimated_cost_dkk") or 0)
     if budget and spent / budget >= 0.8:
@@ -497,6 +503,8 @@ async def build_snapshot(*, control_center_version: str) -> dict[str, Any]:
     luna_store, luna_events = luna_store_summary()
     coverage = luna_member_coverage.status_payload()
     readiness = flyer_readiness.status_payload()
+    readiness_rows = flyer_readiness.load_store().get("publications", {})
+    retained_count = len(readiness_rows) if isinstance(readiness_rows, dict) else 0
     publications, current_coverage = current_publications(luna_store)
     households = summarize_households()
     offer_metadata = summarize_offer_metadata()
@@ -528,6 +536,13 @@ async def build_snapshot(*, control_center_version: str) -> dict[str, Any]:
             "current_coverage": current_coverage,
             "history_coverage": coverage.get("counts", {}),
             "publications": publications,
+            "archive": {
+                "retained_generations": retained_count,
+                "current_active_generations": len(publications),
+                "archived_generations": max(0, retained_count - len(publications)),
+                "retention_policy": "beholdes_indtil_videre",
+                "images_stored_locally": False,
+            },
             "push": {
                 "initialized": bool(flyer_push_store.get("initialized")),
                 "enabled_devices": sum(1 for row in flyer_push_store.get("devices", {}).values() if isinstance(row, dict) and row.get("enabled")),

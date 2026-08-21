@@ -150,6 +150,22 @@ def test_expired_readiness_rows_do_not_pollute_current_coverage(monkeypatch):
     assert sum(counts.values()) == 0
 
 
+def test_inactive_retailer_rows_do_not_pollute_current_coverage(monkeypatch):
+    source = _source("old-kvickly", "fingerprint")
+    source["publications"]["old-kvickly"]["retailer"] = "Kvickly"
+    _stub_current_publication_dependencies(monkeypatch, source)
+    monkeypatch.setattr(snapshot.luna_member_coverage, "_load", lambda: {"items": {}})
+    rows, counts = snapshot.current_publications({})
+    assert rows == []
+    assert sum(counts.values()) == 0
+
+
+def test_degraded_publications_are_informational_not_actionable():
+    publications = [{"coverage_status": "degraded", "retailer": "Lidl"}]
+    result = snapshot.alerts({}, [], publications, {"usage": {}})
+    assert result == []
+
+
 def test_exact_luna_member_stats_require_matching_verified_serving_generation(monkeypatch):
     offer = SimpleNamespace(id="offer-1")
     publication = SimpleNamespace(structured_offers=[offer])
@@ -171,7 +187,7 @@ def test_exact_luna_member_stats_require_matching_verified_serving_generation(mo
     assert result["records"] == 1
 
 
-def test_component_state_reports_budget_samsung_and_degraded_coverage():
+def test_component_state_treats_automatic_quality_filtering_as_healthy():
     runtime = {
         "core-api": {"health": "healthy", "state": "online", "latency_ms": 5, "payload": {}},
         "mobile-api": {"health": "healthy", "state": "online", "latency_ms": 4, "payload": {}},
@@ -191,7 +207,8 @@ def test_component_state_reports_budget_samsung_and_degraded_coverage():
     by_id = {row["id"]: row for row in states}
     assert by_id["openai-luna"]["health"] == "healthy"
     assert by_id["samsung-food"]["state"] == "connected"
-    assert by_id["member-coverage"]["health"] == "attention"
+    assert by_id["member-coverage"]["health"] == "healthy"
+    assert by_id["member-coverage"]["state"] == "quality-filtered"
     assert by_id["apple-apns"]["state"] == "configured"
     assert by_id["geofence-engine"]["state"] == "deployed"
 

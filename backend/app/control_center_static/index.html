@@ -221,7 +221,7 @@
           <div>
             <span class="eyebrow">LUNA & KVALITET</span>
             <h2>Luna & tilbudsaviser</h2>
-            <p>Dækning, medlemstilbud, prisverifikation, genforsøg, karantæne og faktisk OpenAI-forbrug.</p>
+            <p>Dækning, medlemstilbud, prisverifikation, automatisk kvalitetsfiltrering og faktisk OpenAI-forbrug.</p>
           </div>
         </div>
 
@@ -254,7 +254,7 @@
             <div class="legend-list">
               <span><i class="legend-dot healthy"></i><b id="coverageComplete">—</b> Klar</span>
               <span><i class="legend-dot attention"></i><b id="coveragePending">—</b> Analyseres</span>
-              <span><i class="legend-dot warning"></i><b id="coverageDegraded">—</b> Klar med forbehold</span>
+              <span><i class="legend-dot healthy"></i><b id="coverageDegraded">—</b> Kvalitetsfiltreret</span>
             </div>
           </section>
         </div>
@@ -270,7 +270,7 @@
               <select id="flyerStatusFilter" class="select-field" aria-label="Filtrer avisstatus">
                 <option value="all">Alle statusser</option>
                 <option value="pending">Analyseres</option>
-                <option value="degraded">Klar med forbehold</option>
+                <option value="degraded">Kvalitetsfiltreret</option>
                 <option value="complete">Klar</option>
                 <option value="not_tracked">Ikke overvåget</option>
               </select>
@@ -286,7 +286,7 @@
                   <th>Medlem</th>
                   <th>Prischeck</th>
                   <th>Genforsøg</th>
-                  <th>Karantæne</th>
+                  <th>Frasorteret</th>
                 </tr>
               </thead>
               <tbody id="flyerTableBody"></tbody>

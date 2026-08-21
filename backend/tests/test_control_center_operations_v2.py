@@ -51,6 +51,8 @@ def test_storage_status_never_labels_whole_qnap_used_bytes_as_kurv(monkeypatch):
     assert result["qnap_volume_free_bytes"] == 1_024_000_000
     assert result["qnap_volume_used_bytes"] == 3_072_000_000
     assert result["qnap_volume_used_bytes"] != result["kurv_persistent_bytes"]
+    assert "flyer_history_bytes" in result
+    assert result["other_kurv_bytes"] <= result["kurv_persistent_bytes"]
     assert "hele det underliggende volume" in result["scope_note"]
 
 

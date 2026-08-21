@@ -254,11 +254,14 @@
     const target = $("#dataCards");
     if (!target) return;
     const storage = snapshot.data?.storage || {};
+    const archive = snapshot.flyers?.archive || {};
     const households = snapshot.data?.households || {};
     const metadata = snapshot.data?.offer_metadata || {};
     const identity = snapshot.data?.product_identity || {};
     target.innerHTML = `
       <article class="data-stat-card surface ops-storage-primary"><span>Kurv persistent data</span><strong>${fmtBytes(storage.kurv_persistent_bytes)}</strong><small>Kun Kurv /data — ikke resten af QNAP</small></article>
+      <article class="data-stat-card surface"><span>Avisarkiv</span><strong>${fmtBytes(storage.flyer_history_bytes)}</strong><small>${fmtInt(archive.retained_generations)} generationer gemt · ${fmtInt(archive.current_active_generations)} aktuelle · billeder gemmes ikke lokalt</small></article>
+      <article class="data-stat-card surface"><span>Øvrige Kurv-data</span><strong>${fmtBytes(storage.other_kurv_bytes)}</strong><small>Familier, lister, metadata, push og øvrig persistent tilstand</small></article>
       <article class="data-stat-card surface"><span>QNAP ledig plads</span><strong>${fmtBytes(storage.qnap_volume_free_bytes)}</strong><small>Hele QNAP-volume · total ${fmtBytes(storage.qnap_volume_total_bytes)} · host brugt ${fmtBytes(storage.qnap_volume_used_bytes)}</small></article>
       <article class="data-stat-card surface"><span>Familiedata</span><strong>${fmtInt(households.members)}</strong><small>${fmtInt(households.households)} familier · ${fmtInt(households.pending_invites)} aktive invites</small></article>
       <article class="data-stat-card surface"><span>Tilbudsmetadata</span><strong>${fmtInt(metadata.records)}</strong><small>${fmtInt(metadata.pinned)} pinned · ${fmtInt(metadata.with_offer_snapshot)} snapshots</small></article>
