@@ -31,6 +31,8 @@ extension AppModel {
             .split(whereSeparator: { $0.isWhitespace })
             .joined(separator: " ")
         guard !name.isEmpty else { return false }
+        guard beginItemAddition() else { return false }
+        defer { finishItemAddition() }
 
         let provisional = ShoppingItem(
             id: nil,

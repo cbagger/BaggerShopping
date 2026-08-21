@@ -26,4 +26,34 @@ final class OfferAddActivityTests: XCTestCase {
         XCTAssertEqual(activity.phase, .idle)
         XCTAssertNil(activity.phase.message)
     }
+
+    @MainActor
+    func testSecondOfferAdditionIsRejectedUntilFirstFinishes() {
+        let activity = OfferAddActivity.shared
+        activity.clear()
+
+        XCTAssertTrue(activity.tryBeginChecking())
+        XCTAssertFalse(activity.tryBeginChecking())
+
+        activity.beginAdding()
+        XCTAssertFalse(activity.tryBeginChecking())
+
+        activity.clear()
+        XCTAssertTrue(activity.tryBeginChecking())
+        activity.clear()
+    }
+
+    @MainActor
+    func testAppModelAllowsOnlyOneSamsungAddWriteAtATime() {
+        let model = AppModel()
+
+        XCTAssertTrue(model.beginItemAddition())
+        XCTAssertTrue(model.isAddingItem)
+        XCTAssertFalse(model.beginItemAddition())
+
+        model.finishItemAddition()
+        XCTAssertFalse(model.isAddingItem)
+        XCTAssertTrue(model.beginItemAddition())
+        model.finishItemAddition()
+    }
 }

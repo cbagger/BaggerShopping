@@ -756,14 +756,20 @@ struct ShoppingListView: View {
                 .textInputAutocapitalization(.sentences)
                 .submitLabel(.done)
                 .onSubmit { addNewItem() }
+                .disabled(model.isAddingItem)
 
             if !newItem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Button(action: addNewItem) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
-                        .symbolRenderingMode(.hierarchical)
+                    if model.isAddingItem {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.title2)
+                            .symbolRenderingMode(.hierarchical)
+                    }
                 }
                 .buttonStyle(.plain)
+                .disabled(model.isAddingItem)
                 .transition(.scale.combined(with: .opacity))
             } else if compact {
                 Button {
@@ -1019,7 +1025,8 @@ struct ShoppingListView: View {
 
     private func addNewItem() {
         let value = newItem
-        guard !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard !model.isAddingItem,
+              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         newItem = ""
         storeModeAddItemExpanded = false
         addItemFieldFocused = false

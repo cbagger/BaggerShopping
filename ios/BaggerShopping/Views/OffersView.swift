@@ -100,6 +100,7 @@ struct OffersView: View {
                                     offerID: offer.id,
                                     publicationID: offer.publicationID
                                 ),
+                                additionDisabled: model.isAddingItem || OfferAddActivity.shared.phase.blocksNewAdditions,
                                 preview: { previewOffer = offer }
                             ) {
                                 switch offer.choiceState {
@@ -152,6 +153,7 @@ struct OffersView: View {
     }
 
     private func add(_ itemName: String, from offer: GroceryOffer) {
+        guard OfferAddActivity.shared.tryBeginChecking() else { return }
         let knownOffers = selectedRetailers.isEmpty ? offers : []
         Task {
             let cheaper = await OfferPriceGuard().cheaperOffers(
@@ -173,7 +175,7 @@ struct OffersView: View {
 
     private func addWithoutPriceCheck(_ itemName: String, from offer: GroceryOffer) {
         Task {
-            if await model.addItem(
+            let added = await model.addItem(
                 itemName,
                 retailer: offer.retailer,
                 offerPrice: offer.price,
@@ -183,8 +185,11 @@ struct OffersView: View {
                 publicationID: offer.publicationID,
                 matchedItemName: itemName,
                 offerSnapshot: offer
-            ) {
+            )
+            if added {
                 withAnimation { addedOfferID = offer.id }
+            } else {
+                OfferAddActivity.shared.clear()
             }
         }
     }
@@ -266,6 +271,7 @@ struct FlowLayout: Layout {
 private struct OfferCard: View {
     let offer: GroceryOffer
     let wasAdded: Bool
+    let additionDisabled: Bool
     let preview: () -> Void
     let add: () -> Void
 
@@ -356,7 +362,7 @@ private struct OfferCard: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(wasAdded ? .green : .accentColor)
-                .disabled(wasAdded)
+                .disabled(wasAdded || additionDisabled)
             }
         }
         .padding(14)
