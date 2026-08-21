@@ -74,6 +74,6 @@ def test_health_advertises_paged_dashboard():
     response = TestClient(control_center.app).get("/api/health")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["version"] == "1.3.0"
+    assert payload["version"] == "1.4.0"
     assert payload["paged_dashboard"] is True
     assert payload["read_only"] is True

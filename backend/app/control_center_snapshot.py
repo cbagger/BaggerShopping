@@ -18,6 +18,7 @@ from .control_center_catalog import IOS_RELEASE, catalog, dataflow
 from .control_telemetry import all_heartbeats, read_heartbeat
 from .households import LEGACY_HOUSEHOLD_ID, legacy_worker_context, load_store as load_households
 from .mobile_offer_metadata import load_offer_metadata_store
+from .retailer_sources import is_active_retailer
 
 
 PROBE_TIMEOUT_SECONDS = 3.0
@@ -316,227 +317,246 @@ def current_publications(luna_store: dict[str, Any]) -> tuple[list[dict[str, Any
     rows: list[dict[str, Any]] = []
     counts = {"pending": 0, "complete": 0, "degraded": 0, "not_tracked": 0}
     for publication_id, source in readiness.get("publications", {}).items():
-        if not isinstance(source, dict) or not _publication_is_current(source):
+        if (
+            not isinstance(source, dict)
+            or not _publication_is_current(source)
+            or not is_active_retailer(str(source.get("retailer") or ""))
+        ):
             continue
-        fingerprint = str(source.get("fingerprint") or "")
-        key = luna_member_coverage.coverage_key(publication_id, fingerprint)
-        cov = coverage_items.get(key) if fingerprint else None
-        cov = cov if isinstance(cov, dict) else None
-        cov_status = str(cov.get("status") or "not_tracked") if cov else "not_tracked"
-        counts[cov_status if cov_status in counts else "not_tracked"] += 1
-        total_pages = len(source.get("page_fingerprints", {})) if isinstance(source.get("page_fingerprints"), dict) else 0
-        remaining = cov.get("pages_remaining") if cov else None
-        if cov_status in {"complete", "degraded"}:
-            done = total_pages
-        elif isinstance(remaining, int) and total_pages:
-            done = max(0, total_pages - remaining)
-        else:
-            done = 0
-        progress = 100 if total_pages == 0 and cov_status in {"complete", "degraded"} else (round(done / total_pages * 100) if total_pages else 0)
-        qrows = quarantine_by_publication.get((str(publication_id), fingerprint), [])
-        qreasons = Counter(str(row.get("reason") or "unknown") for row in qrows)
-        exact = _exact_luna_stats(str(publication_id), fingerprint, luna_store=luna_store, serving_rows=serving_rows)
-        rows.append({
-            "publication_id": str(publication_id),
-            "retailer": str(source.get("retailer") or "Ukendt"),
-            "title": str(source.get("title") or "Tilbudsavis"),
-            "valid_from": source.get("valid_from"),
-            "valid_until": source.get("valid_until"),
-            "source_status": str(source.get("status") or "unknown"),
-            "coverage_status": cov_status,
-            "fingerprint": fingerprint,
-            "pages_total": total_pages,
-            "pages_done": done,
-            "pages_remaining": remaining,
-            "progress": progress,
-            "pricing_remaining": cov.get("pricing_remaining") if cov else None,
-            "member_fallback_remaining": cov.get("member_fallback_remaining") if cov else None,
-            "hard_quarantined": int(cov.get("hard_quarantined") or 0) if cov else 0,
-            "quarantine_count": len(qrows),
-            "quarantine_reasons": dict(qreasons.most_common(8)),
-            "retry_candidates": retries_by_publication.get((str(publication_id), fingerprint), 0),
-            "member_prices_verified": exact["member_prices"],
-            "luna_records": exact["records"],
-            "luna_failed_records": exact["failed"],
-            "luna_generation_stats_available": exact["available"],
-            "detected_at": source.get("detected_at"),
-            "ready_at": source.get("ready_at"),
-            "coverage_updated_at": cov.get("updated_at") if cov else None,
-            "last_error": source.get("last_error"),
-        })
-    order = {"pending": 0, "degraded": 1, "not_tracked": 2, "complete": 3}
-    rows.sort(key=lambda row: (order.get(row["coverage_status"], 9), row["retailer"].casefold(), row["title"].casefold()))
-    return rows, counts
+        fingerprint = str(source.get("fingerprint") or ""5ë¾·¶‰Ëkºwµç][ÛœÓ[İ[ŠNÂˆYˆ
+Ü\˜][ÛœÓ[İ[
+HÂˆÜ\˜][ÛœÓ[İ[š[›™\’SHˆÙXİ[ÛˆYH›Ü\˜][ÛœĞÛØÚÜ]ˆÛ\ÜÏH›ÜË\ÙXİ[Ûˆ‚ˆ]ˆÛ\ÜÏH›ÜË\ÙXİ[Û‹ZXY[™È‚ˆ]Ü[ˆÛ\ÜÏHœ[™[Y^YXœ›İÈ‘’Q•Ğ‘U’TÑTÜÜ[Ï’İ\ˆš\šÙ\ˆ8 %[Hğé™[ÚÏÙ]‚ˆÜ[ˆÛ\ÜÏHœ]ZY][X™[œÚÜš]™X™\ÚŞ]]ÛÛ›ÛÜÜ[‚ˆÙ]‚ˆ]ˆÛ\ÜÏH›ÜËXÛØÚÜ]YÜšY‚ˆ\XÛHÛ\ÜÏHœİ\™˜XÙHÜË\[™[ÜËYL™H]ˆYH›ÜÑL‘HÙ]Ø\XÛO‚ˆ\XÛHÛ\ÜÏHœİ\™˜XÙHÜË\[™[]ˆÛ\ÜÏH›ÜË]]K\›İÈ]Ü[ˆÛ\ÜÏHœ[™[Y^YXœ›İÈ‘UPSTÜÜ[‘][]ÚÙ]Ù]]ˆYH›ÜÑœ™\Ú™\ÜÈˆÛ\ÜÏH›ÜË[\İÙ]Ø\XÛO‚ˆ\XÛHÛ\ÜÏHœİ\™˜XÙHÜË\[™[]ˆÛ\ÜÏH›ÜË]]K\›İÈ]Ü[ˆÛ\ÜÏHœ[™[Y^YXœ›İÈ’“Ğ”È	ˆğæTÜÜ[•ÛÜšÙ\œÏÚÙ]Ù]]ˆYH›ÜÒ›ØœÈˆÛ\ÜÏH›ÜË[\İÙ]Ø\XÛO‚ˆ\XÛHÛ\ÜÏHœİ\™˜XÙHÜË\[™[]ˆÛ\ÜÏH›ÜË]]K\›İÈ]Ü[ˆÛ\ÜÏHœ[™[Y^YXœ›İÈ•‘T”ÒSÓÜÜ[‘\Ş[Y[	ˆÙ[™[›™[ÙOÚÙ]Ù]]ˆYH›ÜÔ™[X\ÙHÙ]Ø\XÛO‚ˆ\XÛHÛ\ÜÏHœİ\™˜XÙHÜË\[™[]ˆÛ\ÜÏH›ÜË]]K\›İÈ]Ü[ˆÛ\ÜÏHœ[™[Y^YXœ›İÈST“Q“Ô“0æÜÜ[Zİ]™H[\›Y\ÚÙ]Ù]]ˆYH›ÜĞ[\ÈˆÛ\ÜÏH›ÜË[\İÙ]Ø\XÛO‚ˆÙ]‚ˆ]ˆÛ\ÜÏH›ÜË]™[™YÜšYˆYH›ÜÕ™[™ÜšYÙ]‚ˆÜÙXİ[Û‚ˆÂˆB‚ˆÛÛœİ[˜UÜH	
+ˆÛ[˜H›[˜K]ÜYÜšYŠNÂˆYˆ
+[˜UÜ
+HÂˆ[˜UÜš[œÙ\Y˜XÙ[S
+˜Y\™[™‹ˆ]ˆÛ\ÜÏH›ÜË[[˜KYÜšY‚ˆÙXİ[ÛˆÛ\ÜÏHœ[™[İ\™˜XÙH]ˆÛ\ÜÏHœ[™[ZXY\ˆ]Ü[ˆÛ\ÜÏHœ[™[Y^YXœ›İÈ’ÕSUUÔ0áU’T’Ó’S‘ÏÜÜ[Ï’˜Y™]Y\ˆ8 'Û\ˆYY›Ü˜™ZÛ8 'OÏÚÏÙ]Ù]]ˆYH›ÜÑYÜ˜YYÙ]ÜÙXİ[Û‚ˆÙXİ[ÛˆÛ\ÜÏHœ[™[İ\™˜XÙH]ˆÛ\ÜÏHœ[™[ZXY\ˆ]Ü[ˆÛ\ÜÏHœ[™[Y^YXœ›İÈ“SKSÓRÓÔÕ’S‘ÑTÜÜ[Ï‘˜Zİ\ÚÙHÜ[RKZØ[ÚÏÙ]Ù]]ˆYH›ÜÓÜ[RQ]™[ÈˆÛ\ÜÏH›ÜË[\İÙ]ÜÙXİ[Û‚ˆÙ]‚ˆ
+NÂˆB‚ˆÛÛœİ[YÜ˜][Û‘ÜšYH	
+ˆÚ[YÜ˜][Û‘ÜšYŠNÂˆYˆ
+[YÜ˜][Û‘ÜšY
+HÂˆ[YÜ˜][Û‘ÜšYš[œÙ\Y˜XÙ[S
+˜™Y›Ü™X™YÚ[ˆ‹]ˆYH›ÜÒ[YÜ˜][Û”]X[]HˆÛ\ÜÏH›ÜË\]X[]KYÜšYÙ]˜
+NÂˆB‚ˆÛÛœİ]PØ\™ÈH	
+ˆÙ]PØ\™ÈŠNÂˆYˆ
+]PØ\™ÊHÂˆ]PØ\™Ëš[œÙ\Y˜XÙ[S
+˜Y\™[™‹ˆ]ˆÛ\ÜÏH›ÜËY]KYÜšY‚ˆÙXİ[ÛˆÛ\ÜÏHœ[™[İ\™˜XÙH]ˆÛ\ÜÏHœ[™[ZXY\ˆ]Ü[ˆÛ\ÜÏHœ[™[Y^YXœ›İÈ‘UTÕS‘QÜÜ[Ï’[YÜš]]ÚÏÙ]Ù]]ˆYH›ÜÒ[YÜš]HˆÛ\ÜÏH›ÜË[\İÙ]ÜÙXİ[Û‚ˆÙXİ[ÛˆÛ\ÜÏHœ[™[İ\™˜XÙH]ˆÛ\ÜÏHœ[™[ZXY\ˆ]Ü[ˆÛ\ÜÏHœ[™[Y^YXœ›İÈ”ÒRÒÑT’QÔÕUTÏÜÜ[Ï”ÚZÚÙ\šYÚÏÙ]Ù]]ˆYH›ÜÔÙXİ\š]HˆÛ\ÜÏH›ÜË[\İÙ]ÜÙXİ[Û‚ˆÙXİ[ÛˆÛ\ÜÏHœ[™[İ\™˜XÙH]ˆÛ\ÜÏHœ[™[ZXY\ˆ]Ü[ˆÛ\ÜÏHœ[™[Y^YXœ›İÈ”‘QÒTÕ‘T‘QHS’QTÜÜ[ÏšTÛ™\ÏÚÏÙ]Ù]]ˆYH›ÜĞÛY[ÈˆÛ\ÜÏH›ÜË[\İÙ]ÜÙXİ[Û‚ˆÙ]‚ˆ
+NÂˆB‚ˆÛÛœİXİ]š]RXY[™ÈH	
+ˆØXİ]š]HœÙXİ[Û‹ZXY[™ÈŠNÂˆYˆ
+Xİ]š]RXY[™ÊHÂˆÛÛœİ\˜YÜ˜\H	
+œ‹Xİ]š]RXY[™ÊNÂˆYˆ
+\˜YÜ˜\
+H\˜YÜ˜\^ÛÛ[H’İ[ˆY[š[™ÜÙ[H0é›™[Ù\ˆŞ\İ[\ÚÚY]š\Üİ]\ÈÙÈ˜Zİ\ÚÙH[˜KÓÜ[RKZØ[ˆX\™X]\Û[™ÈÚÚ[\ËˆÂˆXİ]š]RXY[™Ëš[œÙ\Y˜XÙ[S
+˜Y\™[™‹ˆ]ˆÛ\ÜÏH›ÜËXXİ]š]K]ÛÛ˜\ˆ‚ˆ]ˆÛ\ÜÏHœÙYÛY[YXÛÛ›ÛˆYH›ÜĞXİ]š]Qš[\œÈ‚ˆ]ÛˆÛ\ÜÏHœÙYÛY[\ËXXİ]™Hˆ]KXXİ]š]OH˜[[OØ]Û‚ˆ]ÛˆÛ\ÜÏHœÙYÛY[ˆ]KXXİ]š]OH›[˜H“[˜HÈÜ[ROØ]Û‚ˆ]ÛˆÛ\ÜÏHœÙYÛY[ˆ]KXXİ]š]OH™›Y\ˆ]š\Ù\Ø]Û‚ˆ]ÛˆÛ\ÜÏHœÙYÛY[ˆ]KXXİ]š]OHœŞ\İ[H”Ş\İ[OØ]Û‚ˆÙ]‚ˆ]ˆYH›ÜĞXİ]š]Tİ[[X\HˆÛ\ÜÏHœ]ZY][X™[Ù]‚ˆÙ]‚ˆ
+NÂˆ		
+ˆÛÜĞXİ]š]Qš[\œÈœÙYÛY[ŠK™›Ü‘XXÚ
 
+]ÛŠHOˆ]Û‹˜Y]™[\İ[™\Š˜ÛXÚÈ‹
 
-def volume_status() -> dict[str, Any]:
-    try:
-        stats = os.statvfs("/data")
-        total = stats.f_frsize * stats.f_blocks
-        free = stats.f_frsize * stats.f_bavail
-        used = max(0, total - free)
-        return {"total_bytes": total, "used_bytes": used, "free_bytes": free, "used_percent": round(used / total * 100, 1) if total else 0}
-    except OSError:
-        return {"total_bytes": None, "used_bytes": None, "free_bytes": None, "used_percent": None}
+HOˆÂˆ		
+ˆÛÜĞXİ]š]Qš[\œÈœÙYÛY[ŠK™›Ü‘XXÚ
 
+][JHOˆ][K˜Û\ÜÓ\İœ™[[İ™Jš\ËXXİ]™HŠJNÂˆ]Û‹˜Û\ÜÓ\İ˜Y
+š\ËXXİ]™HŠNÂˆXİ]š]Qš[\ˆH]Û‹™]\Ù]˜Xİ]š]NÂˆYˆ
+]\İ
+H™[™\Xİ]š]J]\İ
+NÂˆJJNÂˆBˆB‚ˆ[˜İ[Ûˆ™[™\‘L‘JÛ˜\Úİ
+HÂˆÛÛœİL™HHÛ˜\Úİ›Ü\˜][ÛœÏË™[™İ×Ù[™ßNÂˆÛÛœİ\™Ù]H	
+ˆÛÜÑL‘HŠNÂˆYˆ
+]\™Ù]
+H™]\›ÂˆÛÛœİX[HHL™K›Ü\˜][Û˜[Üİ]\ÈOOHšX[HÂˆ\™Ù]š[›™\’SHˆ]ˆÛ\ÜÏH›ÜË]]K\›İÈ]Ü[ˆÛ\ÜÏHœ[™[Y^YXœ›İÈ‘S‘UËQS‘ÜÜ[‰ÚX[HÈ’İ\œÈšYÚğé™H\ˆİ[™ˆˆ‘šYÚğé™[ˆÜ°é™\ˆÜpéœšÜÛÛZYŸOÚÙ]‰Ø˜YÙJL™K›Ü\˜][Û˜[Üİ]\ËL™K›Ü\˜][Û˜[Üİ]\Ê_OÙ]‚ˆÛ\ÜÏH›ÜËXÛÜH‰Ù\ØÊL™K››İHˆŠ_OÜ‚ˆ]ˆÛ\ÜÏH›ÜË\İYÙK\İš\‰ÊL™KœİYÙ\È×JK›X\
 
-def release_info(control_center_version: str) -> dict[str, Any]:
-    path = Path(os.getenv("KURV_DEPLOYED_COMMIT_PATH", "/data/deployed-commit.txt"))
-    try:
-        commit = path.read_text("utf-8").strip()
-    except OSError:
-        commit = os.getenv("KURV_DEPLOYED_COMMIT", "").strip()
-    return {"commit": commit or "unknown", "control_center": control_center_version, "ios": dict(IOS_RELEASE), "deployment_marker": _file_info(path)}
+İYÙJHOˆ]ˆÛ\ÜÏH›ÜË\İYÙH	İÛ™JİYÙKœİ]\Ê_HOÚO]İ›Û™Ï‰Ù\ØÊİYÙK›˜[YJ_OÜİ›Û™ÏÜ[‰Ù\ØÊİYÙK™]Z[İYÙKœİ]\Ê_OÜÜ[Ù]Ù]˜
+Kš›Ú[ŠˆŠ_OÙ]‚ˆ]ˆÛ\ÜÏH›ÜË\]X[]K[[™HÜ[’İ˜[]]Üİ]\ÏÜÜ[‰Ø˜YÙJL™Kœ]X[]WÜİ]\ËL™Kœ]X[]WÜİ]\Ê_OÙ]‚ˆÂˆB‚ˆ[˜İ[Ûˆ™[™\‘œ™\Ú™\ÜÊÛ˜\Úİ
+HÂˆÛÛœİ\™Ù]H	
+ˆÛÜÑœ™\Ú™\ÜÈŠNÂˆYˆ
+]\™Ù]
+H™]\›Âˆ\™Ù]š[›™\’SH
+Û˜\Úİ›Ü\˜][ÛœÏË™œ™\Ú™\ÜÈ×JK›X\
 
+›İÊHOˆˆ]ˆÛ\ÜÏH›ÜË\›İÈÜ[ˆÛ\ÜÏH›ÜË\İ]KYİ	İÛ™J›İËšX[
+_HÜÜ[]İ›Û™Ï‰Ù\ØÊ›İË›˜[YJ_OÜİ›Û™ÏÛX[‰Ù\ØÊ›İË™]Z[
+›İË˜]ÈÙ[™\İ	Ù›]]U[YJ›İË˜]
+_Xˆš[™Ù[ˆ[Y\İ[\ŠJ_OÜÛX[Ù]‰Ù\ØÊ›]YÙJ›İË˜YÙWÜÙXÛÛ™ÊJ_OØÙ]‚ˆ
+Kš›Ú[ŠˆŠNÂˆB‚ˆ[˜İ[Ûˆ™[™\’›ØœÊÛ˜\Úİ
+HÂˆÛÛœİ\™Ù]H	
+ˆÛÜÒ›ØœÈŠNÂˆYˆ
+]\™Ù]
+H™]\›Âˆ\™Ù]š[›™\’SH
+Û˜\Úİ›Ü\˜][ÛœÏËš›ØœÈ×JK›X\
 
-def derive_component_states(runtime: dict[str, dict[str, Any]], *, samsung: dict[str, Any], luna: dict[str, Any], flyer_push_store: dict[str, Any], household_summary: dict[str, Any], current_coverage: dict[str, int]) -> list[dict[str, Any]]:
-    components = catalog()
-    states: dict[str, dict[str, Any]] = {}
-    for component_id in ("core-api", "mobile-api", "samsung-login-broker"):
-        row = runtime.get(component_id, {})
-        latency = row.get("latency_ms")
-        states[component_id] = {"health": row.get("health", "error"), "state": row.get("state", "unknown"), "detail": row.get("error") or (f"{latency} ms" if latency is not None else None)}
-    for component_id in ("luna-worker", "flyer-push-worker", "shopping-cleanup-worker"):
-        row = runtime.get(component_id, {})
-        states[component_id] = {"health": row.get("health", "attention"), "state": row.get("state", "unknown"), "detail": row.get("detail") or row.get("error")}
-    states["control-center"] = {"health": "healthy", "state": "online", "detail": "Local-only Â· read-only"}
+›ØŠHOˆÂˆÛÛœİ›Øİ\ÈH›Ø‹™›Øİ\È	‰ˆ\[Ùˆ›Ø‹™›Øİ\ÈOOH›Øš™XİˆÈ	Ú›Ø‹™›Øİ\Ëœ™]Z[\ˆˆŸH	Ú›Ø‹™›Øİ\Ë]HˆŸXš[J
+HˆˆÂˆÛÛœİ™^H›Ø‹›™^Ü[—Ú[—Úİ\œÈOH[È°éœİHÛH	Ó[X™\Š›Ø‹›™^Ü[—Ú[—Úİ\œÊKÓØØ[Tİš[™Ê™KQÈ‹ÈX^[][Qœ˜Xİ[Û‘YÚ]ÎˆHJ_H˜ˆˆÂˆ™]\›ˆ]ˆÛ\ÜÏH›ÜË\›İÈÜ[ˆÛ\ÜÏH›ÜË\İ]KYİ	İÛ™J›Ø‹šX[
+_HÜÜ[]İ›Û™Ï‰Ù\ØÊ›Ø‹›˜[YJ_OÜİ›Û™ÏÛX[‰Ù\ØÊ›Øİ\È™^›Ø‹™]Z[›Ø‹œİ]HšYHŠ_OÜÛX[Ù]‰Ù\ØÊ›Ø‹œİ]H¸ %Š_OØÙ]˜ÂˆJKš›Ú[ŠˆŠNÂˆB‚ˆ[˜İ[Ûˆ™[™\”™[X\ÙJÛ˜\Úİ
+HÂˆÛÛœİ\™Ù]H	
+ˆÛÜÔ™[X\ÙHŠNÂˆYˆ
+]\™Ù]
+H™]\›ÂˆÛÛœİ™[X\ÙHHÛ˜\Úİ›Ü\˜][ÛœÏË™\Ş[Y[ßNÂˆÛÛœİ˜XÚİ\HÛ˜\Úİ›Ü\˜][ÛœÏË˜˜XÚİ\ßNÂˆÛÛœİšYÛ™HH™[X\ÙK™šYOOH››Û™HˆÈšX[Hˆˆ™[X\ÙK™šYOOH™]XİYˆÈ™\œ›Üˆˆˆš[™›ÈÂˆ\™Ù]š[›™\’SHˆ]ˆÛ\ÜÏH›ÜË\™[X\ÙKYÜšY‚ˆ]Ü[ÛÛ›ÛÙ[\ÜÜ[İ›Û™Ï‰Ù\ØÊ™[X\ÙK˜ÛÛ›ÛØÙ[\ˆ¸ %Š_OÜİ›Û™ÏÙ]‚ˆ]Ü[Z[ÛÛ[Z]ÜÜ[İ›Û™ÈÛ\ÜÏH›[Û›È‰Ù\ØÊİš[™Ê™[X\ÙK˜Z[ØÛÛ[Z][šÛ›İÛˆŠKœÛXÙJL
+J_OÜİ›Û™ÏÙ]‚ˆ]Ü[‘\ŞHX\šÙ\ÜÜ[İ›Û™ÈÛ\ÜÏH›[Û›È‰Ù\ØÊİš[™Ê™[X\ÙK›X\šÙ\—ØÛÛ[Z][šÛ›İÛˆŠKœÛXÙJL
+J_OÜİ›Û™ÏÙ]‚ˆ]Ü[‘šYÜÜ[‰Ø˜YÙJšYÛ™K™[X\ÙK™šY[šÛ›İÛˆŠ_OÙ]‚ˆÙ]‚ˆ]ˆÛ\ÜÏH›ÜËX˜XÚİ\Ü[”Ù[™\İH˜XÚİ\ÜÜ[İ›Û™Ï‰Ø˜XÚİ\›\İØ˜XÚİ\Ø]È\ØÊ›]]U[YJ˜XÚİ\›\İØ˜XÚİ\Ø]
+JHˆ’ZÚÙH™YÚ\İ™\™][™HŸOÜİ›Û™ÏÛX[‰Ù\ØÊ˜XÚİ\››İH
+˜XÚİ\˜YÙWÜÙXÛÛ™ÈOH[È	Ù›]YÙJ˜XÚİ\˜YÙWÜÙXÛÛ™Ê_HØ[[Y[ˆˆŠJ_OÜÛX[Ù]‚ˆÂˆB‚ˆ[˜İ[Ûˆ™[™\[\Y™XŞXÛJÛ˜\Úİ
+HÂˆÛÛœİ\™Ù]H	
+ˆÛÜĞ[\ÈŠNÂˆYˆ
+]\™Ù]
+H™]\›ÂˆÛÛœİ[\ÈHÛ˜\Úİ˜[\È×NÂˆYˆ
+X[\Ë›[™İ
+HÂˆ\™Ù]š[›™\’SH]ˆÛ\ÜÏH›ÜË\›İÈÜ[ˆÛ\ÜÏH›ÜË\İ]KYİX[HÜÜ[]İ›Û™Ï’[™Ù[ˆZİ]™H[\›Y\Üİ›Û™ÏÛX[’[™Ù[ˆYØ[™İ°éœ™[™H[\›KY\\ÛÙ\ÜÛX[Ù]šX[OØÙ]˜Âˆ™]\›ÂˆBˆ\™Ù]š[›™\’SH[\Ë›X\
 
-    samsung_payload = samsung.get("payload", {}) if isinstance(samsung.get("payload"), dict) else {}
-    samsung_auth = str(samsung_payload.get("samsung_auth") or "unknown")
-    if samsung.get("ok") and samsung_auth == "ok":
-        samsung_health, samsung_state = "healthy", "connected"
-    elif samsung.get("ok"):
-        samsung_health, samsung_state = "attention", samsung_auth
-    else:
-        samsung_health, samsung_state = "attention", "validation-unavailable"
-    states["samsung-food"] = {"health": samsung_health, "state": samsung_state, "detail": "Verificeres hÃ¸jst hvert 5. minut"}
-    states["samsung-auth"] = {"health": samsung_health, "state": samsung_state, "detail": "Samsung token state"}
-    states["grpc-web"] = {"health": samsung_health, "state": "available" if samsung_health == "healthy" else "attention", "detail": "Samsung transport"}
+›İÊHOˆˆ]ˆÛ\ÜÏH›ÜË\›İÈÜ[ˆÛ\ÜÏH›ÜË\İ]KYİ	İÛ™J›İËœÙ]™\š]J_HÜÜ[]İ›Û™Ï‰Ù\ØÊ›İË]J_OÜİ›Û™ÏÛX[™°îœİÙ]	Ù\ØÊ›]]U[YJ›İË™š\œİÜÙY[ŠJ_H0­È	Ù\ØÊ›İË™]Z[ˆŠ_OÜÛX[Ù]‰Ù\ØÊ›]YÙJ›İË™\˜][Û—ÜÙXÛÛ™ÊJ_H0­È	Ù›][
+›İË›ØØİ\œ™[˜Ù\Ê_påÏØÙ]‚ˆ
+Kš›Ú[ŠˆŠNÂˆB‚ˆ[˜İ[ÛˆÜ\šÛ[™JÙ\šY\ÊHÂˆÛÛœİ›İÜÈH
+Ù\šY\È×JK™š[\Š
+›İÊHOˆ›İÈ	‰ˆ›İË˜[YHOOH[	‰ˆ›İË˜[YHOOH[™Yš[™Y
+NÂˆYˆ
+›İÜË›[™İŠH™]\›ˆ]ˆÛ\ÜÏH›ÜË\Ü\šËY[\H”Ø[[\ˆËYYÙ\È\İÜšZø )Ù]˜ÂˆÛÛœİ˜[Y\ÈH›İÜË›X\
 
-    usage = luna.get("usage", {}) if isinstance(luna.get("usage"), dict) else {}
-    budget, spent, remaining = float(usage.get("budget_dkk") or 0), float(usage.get("estimated_cost_dkk") or 0), float(usage.get("remaining_dkk") or 0)
-    if not luna.get("enabled"):
-        openai_health, openai_state = "attention", "disabled"
-    elif not luna.get("api_key_configured"):
-        openai_health, openai_state = "error", "missing-api-key"
-    elif remaining <= 0 and budget > 0:
-        openai_health, openai_state = "attention", "budget-exhausted"
-    else:
-        openai_health, openai_state = "healthy", "available"
-    states["openai-luna"] = {"health": openai_health, "state": openai_state, "detail": f"{spent:.2f} / {budget:.0f} kr." if budget else f"{spent:.2f} kr."}
+›İÊHOˆ[X™\Š›İË˜[YJJNÂˆÛÛœİZ[ˆHX]›Z[Š‹‹˜[Y\ÊNÂˆÛÛœİX^HX]›X^
+‹‹˜[Y\ÊNÂˆÛÛœİÜ[ˆHX^HZ[ˆNÂˆÛÛœİÚ[ÈH˜[Y\Ë›X\
 
-    push_hb = runtime.get("flyer-push-worker", {})
-    provider_age = _age(push_hb.get("payload", {}).get("last_provider_check_at"))
-    provider_health = "healthy" if provider_age is not None and provider_age < 7200 else "attention"
-    states["provider-tjek"] = {"health": provider_health, "state": "active" if provider_health == "healthy" else "stale", "detail": f"Seneste provider-check {provider_age}s siden" if provider_age is not None else "Afventer fÃ¸rste provider-check"}
-    enabled_devices = sum(1 for row in flyer_push_store.get("devices", {}).values() if isinstance(row, dict) and row.get("enabled"))
-    apns_health = runtime.get("flyer-push-worker", {}).get("health", "attention")
-    states["apple-apns"] = {"health": apns_health, "state": "configured" if enabled_devices else "no-enabled-devices", "detail": f"{enabled_devices} aktive push-enheder"}
+˜[YK[™^
+HOˆ	Ê[™^È
+˜[Y\Ë›[™İHJH
+ˆL
+KÑš^Y
+Š_K	ÊH
 
-    inherit = {
-        "household-engine": "mobile-api", "shopping-sync": "core-api", "offer-metadata": "mobile-api", "mobile-offers": "mobile-api",
-        "flyer-adapters": "mobile-api", "flyer-readiness": "luna-worker", "flyer-serving": "mobile-api", "flyer-intelligence": "mobile-api",
-        "member-pricing": "mobile-api", "luna-semantic-audit": "luna-worker", "luna-semantic-guards": "luna-worker", "luna-pricing-reader": "mobile-api",
-        "member-coverage": "luna-worker", "luna-cost-policy": "luna-worker", "product-identity": "mobile-api", "variant-engine": "mobile-api",
-    }
-    for component_id, parent in inherit.items():
-        parent_state = states.get(parent, {"health": "info", "state": "available"})
-        states[component_id] = {"health": parent_state.get("health", "info"), "state": "available" if parent_state.get("health") == "healthy" else parent_state.get("state", "unknown"), "detail": f"Hosted by {parent}"}
-    if current_coverage.get("degraded", 0) > 0:
-        states["member-coverage"] = {"health": "attention", "state": "degraded-present", "detail": f"{current_coverage.get('degraded', 0)} aktuelle avis-generationer degraded"}
-    if household_summary.get("households", 0) <= 0:
-        states["household-engine"] = {"health": "attention", "state": "no-households", "detail": "Ingen familier registreret"}
-    for component in components:
-        if component.get("runtime") == "ios":
-            states[component["id"]] = {"health": "info", "state": "deployed", "detail": f"iOS {IOS_RELEASE['version']} Â· build {IOS_RELEASE['build']} Â· runtime pÃ¥ telefonen"}
-    return [{**component, **states.get(component["id"], {"health": "info", "state": "available", "detail": None})} for component in components]
+˜[YHHZ[ŠHÈÜ[ˆ
+ˆ
+JKÑš^Y
+Š_X
+Kš›Ú[ŠˆŠNÂˆ™]\›ˆİ™ÈÛ\ÜÏH›ÜË\Ü\šÈˆšY]Ğ›ŞHŒLÌˆˆ™\Ù\™P\ÜXİ˜][ÏH››Û™Hˆ\šXKZY[HYHÛ[[™HÚ[ÏH‰ÜÚ[ßHˆ™XİÜ‹YY™™XİH››Û‹\ØØ[[™Ë\İ›ÚÙHÜÛ[[™OÜİ™Ï˜ÂˆB‚ˆ[˜İ[Ûˆ™[™\•™[™ÊÛ˜\Úİ
+HÂˆÛÛœİ\™Ù]H	
+ˆÛÜÕ™[™ÜšYŠNÂˆYˆ
+]\™Ù]
+H™]\›ÂˆÛÛœİÙ\šY\ÈHÛ˜\Úİ›Ü\˜][ÛœÏË™[™ÏËœÙ\šY\ÈßNÂˆÛÛœİYš[š][ÛœÈHÂˆÈ˜ÛÜ™WÛ\È‹ÛÜ™H][˜ŞH‹›\È—KˆÈ›[Øš[WÛ\È‹“[Øš[H][˜ŞH‹›\È—KˆÈ›[˜WØÛÜİÙÚÈ‹“[˜HÜ[™‹šÜ‹ˆ—KˆÈ˜Ûİ™\˜YÙWÙYÜ˜YY‹‘YÜ˜YY‹˜]š\Ù\ˆ—KˆNÂˆ\™Ù]š[›™\’SHYš[š][ÛœË›X\
 
+ÚÙ^KX™[[š]JHOˆÂˆÛÛœİ›İÜÈHÙ\šY\ÖÚÙ^WH×NÂˆÛÛœİİ\œ™[H›İÜË˜]
+LJNÂˆÛÛœİš\œİH›İÜÖÌNÂˆÛÛœİ[HHİ\œ™[	‰ˆš\œİÈ[X™\Šİ\œ™[˜[YJHH[X™\Šš\œİ˜[YJHˆ[Âˆ™]\›ˆ\XÛHÛ\ÜÏHœİ\™˜XÙHÜË]™[™XØ\™]Ü[‰Ù\ØÊX™[
+_OÜÜ[İ›Û™Ï‰Øİ\œ™[È	Ó[X™\Šİ\œ™[˜[YJKÓØØ[Tİš[™Ê™KQÈ‹ÈX^[][Qœ˜Xİ[Û‘YÚ]ÎˆˆJ_H	İ[š]Xˆ¸ %ŸOÜİ›Û™ÏÛX[‰Ù[HOH[Èš[™Ù[ˆ™[™[™Hˆˆ	Ù[HHÈŠÈˆˆˆŸIÙ[KÓØØ[Tİš[™Ê™KQÈ‹ÈX^[][Qœ˜Xİ[Û‘YÚ]ÎˆˆJ_Hİ™\ˆ\İÜšZÚÙ[˜OÜÛX[Ù]‰ÜÜ\šÛ[™J›İÜÊ_OØ\XÛO˜ÂˆJKš›Ú[ŠˆŠNÂˆB‚ˆ[˜İ[Ûˆ™[™\‘YÜ˜YY
+Û˜\Úİ
+HÂˆÛÛœİ\™Ù]H	
+ˆÛÜÑYÜ˜YYŠNÂˆYˆ
+]\™Ù]
+H™]\›ÂˆÛÛœİ]HHÛ˜\Úİ›Ü\˜][ÛœÏË™YÜ˜YYÚ[\XİßNÂˆ\™Ù]š[›™\’SHˆ]ˆÛ\ÜÏH›ÜËZ[\XİYÜšY‚ˆ]İ›Û™Ï‰Ù›][
+]K™YÜ˜YYÜX›XØ][ÛœÊ_OÜİ›Û™ÏÜ[™YÜ˜YYÜÜ[Ù]‚ˆ]İ›Û™Ï‰Ù›][
+]K˜İ\İÛY\—ÜÙ[œÚ]]™WÜX›XØ][ÛœÊ_OÜİ›Û™ÏÜ[œİ[Y[š\ËÛY[X™\‹\Ù[œÚ]]™OÜÜ[Ù]‚ˆ]İ›Û™Ï‰Ù›][
+]K›İ\—Ü]X[]WÜX›XØ][ÛœÊ_OÜİ›Û™ÏÜ[°îœšYÈİ˜[]]ÜÜ[Ù]‚ˆÙ]‚ˆÛ\ÜÏH›ÜËXÛÜH‰Ù\ØÊ]K››İHˆŠ_OÜ‚ˆ]ˆÛ\ÜÏH›ÜË\™X\ÛÛœÈ‰Ê]KÜÜ™X\ÛÛœÈ×JK›[™İÈ]KÜÜ™X\ÛÛœË›X\
 
-def alerts(runtime: dict[str, dict[str, Any]], components: list[dict[str, Any]], publications: list[dict[str, Any]], luna: dict[str, Any]) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for row in runtime.values():
-        if row.get("health") == "error":
-            result.append({"severity": "critical", "title": f"{row.get('name')} er utilgÃ¦ngelig", "detail": row.get("error")})
-        elif row.get("health") == "attention":
-            result.append({"severity": "warning", "title": f"{row.get('name')} krÃ¦ver opmÃ¦rksomhed", "detail": row.get("detail") or row.get("error")})
-    degraded = [row for row in publications if row.get("coverage_status") == "degraded"]
-    if degraded:
-        result.append({"severity": "warning", "title": f"{len(degraded)} aktuelle avis-generationer er degraded", "detail": "Ã…bn Luna & aviser for konkrete quarantine-Ã¥rsager."})
-    usage = luna.get("usage", {}) if isinstance(luna.get("usage"), dict) else {}
-    budget, spent = float(usage.get("budget_dkk") or 0), float(usage.get("estimated_cost_dkk") or 0)
-    if budget and spent / budget >= 0.8:
-        result.append({"severity": "warning", "title": "Luna-budget nÃ¦rmer sig loftet", "detail": f"{spent:.2f} af {budget:.2f} kr. brugt denne mÃ¥ned."})
-    for component in components:
-        if component.get("health") == "error" and not any(component.get("name") in str(row.get("title")) for row in result):
-            result.append({"severity": "critical", "title": f"{component.get('name')} har fejlstatus", "detail": component.get("detail")})
-    return result[:20]
+›İÊHOˆ]Ü[‰Ù\ØÊ›İËœ™X\ÛÛŠ_OÜÜ[İ›Û™Ï‰Ù›][
+›İË˜Ûİ[
+_OÜİ›Û™ÏÙ]˜
+Kš›Ú[ŠˆŠHˆ	ÏÜ[ˆÛ\ÜÏH™[\K\İ]HÛÛ\Xİ’[™Ù[ˆZİY[H]X\˜[[™Kpé\œØYÙ\‹ÜÜ[‰ßOÙ]‚ˆÂˆB‚ˆ[˜İ[Ûˆ™[™\“Ü[RQ]™[ÊÛ˜\Úİ
+HÂˆÛÛœİ\™Ù]H	
+ˆÛÜÓÜ[RQ]™[ÈŠNÂˆYˆ
+]\™Ù]
+H™]\›ÂˆÛÛœİ›İÜÈH
+Û˜\Úİ[[Y]OË[Y[[™H×JK™š[\Š
+›İÊHOˆ›İË˜Ø]YÛÜHOOH›[˜Hˆ	‰ˆ›İË\HOOH›Ü[˜ZWİ\ØYÙHŠKœÛXÙJŠNÂˆ\™Ù]š[›™\’SH›İÜË›[™İˆÈ›İÜË›X\
 
+›İÊHOˆ]ˆÛ\ÜÏH›ÜË\›İÈÜ[ˆÛ\ÜÏH›ÜË\İ]KYİÛÜİÜÜ[]İ›Û™Ï‰Ù\ØÊ›İË]J_OÜİ›Û™ÏÛX[‰Ù\ØÊ›İË™]Z[ˆŠ_OÜÛX[Ù]‰Ü›İË˜ÛÜİÙÚÈOH[È
+ÉÙ›]ÚÊ›İË˜ÛÜİÙÚË
+_HÜ‹˜ˆ¸ %ŸOØÙ]˜
+Kš›Ú[ŠˆŠBˆˆ	Ï]ˆÛ\ÜÏH™[\K\İ]HÛÛ\Xİ’[™Ù[ˆYHÜ[RKZØ[™YÚ\İ™\™]ÚY[ˆÜ\˜][ÛœÈŒˆ›]ˆZİ]™\™]Ù]‰ÎÂˆB‚ˆ[˜İ[Ûˆ™[™\’[YÜ˜][Û”]X[]JÛ˜\Úİ
+HÂˆÛÛœİ\™Ù]H	
+ˆÛÜÒ[YÜ˜][Û”]X[]HŠNÂˆYˆ
+]\™Ù]
+H™]\›Âˆ\™Ù]š[›™\’SH
+Û˜\Úİ›Ü\˜][ÛœÏËš[YÜ˜][Û—Ü]X[]H×JK›X\
 
-def timeline(luna_events: list[dict[str, Any]], publications: list[dict[str, Any]], runtime: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    events = list(luna_events)
-    for row in publications:
-        if row.get("coverage_status") in {"complete", "degraded"} and row.get("coverage_updated_at"):
-            events.append({"at": int(row["coverage_updated_at"]), "type": "coverage", "status": row["coverage_status"], "retailer": row["retailer"], "detail": row["title"]})
-    for name, row in runtime.items():
-        if row.get("checked_at"):
-            events.append({"at": int(row["checked_at"]), "type": "runtime", "status": row.get("state"), "retailer": "", "detail": name})
-    events = [row for row in events if int(row.get("at") or 0) > 0]
-    events.sort(key=lambda row: int(row.get("at") or 0), reverse=True)
-    return events[:80]
+›İÊHOˆˆ\XÛHÛ\ÜÏHœİ\™˜XÙHÜË\]X[]KXØ\™]ˆÛ\ÜÏH›ÜË]]K\›İÈİ›Û™Ï‰Ù\ØÊ›İË›˜[YJ_OÜİ›Û™Ï‰Ø˜YÙJ›İËšX[›İËœİ]J_OÙ]]ˆÛ\ÜÏH›ÜË\]X[]K[Y]šXÜÈÜ[”ÚYİHİXØÙ\È‰Ù\ØÊ›]]U[YJ›İË›\İÜİXØÙ\Ü×Ø]
+J_OØÜÜ[‰Ü›İË›][˜ŞWÛ\ÈOH[ÈÜ[“][˜ŞH‰Ù›][
+›İË›][˜ŞWÛ\Ê_H\ÏØÜÜ[˜ˆˆŸOÙ]‰Ù\ØÊ›İË™]Z[ˆŠ_OÜØ\XÛO‚ˆ
+Kš›Ú[ŠˆŠNÂˆB‚ˆ[˜İ[Ûˆ™[™\‘]JÛ˜\Úİ
+HÂˆÛÛœİ\™Ù]H	
+ˆÙ]PØ\™ÈŠNÂˆYˆ
+]\™Ù]
+H™]\›ÂˆÛÛœİİÜ˜YÙHHÛ˜\Úİ™]OËœİÜ˜YÙHßNÂˆÛÛœİ\˜Ú]™HHÛ˜\Úİ™›Y\œÏË˜\˜Ú]™HßNÂˆÛÛœİİ\ÙZÛÈHÛ˜\Úİ™]OËšİ\ÙZÛÈßNÂˆÛÛœİY]Y]HHÛ˜\Úİ™]OË›Ù™™\—ÛY]Y]HßNÂˆÛÛœİY[]HHÛ˜\Úİ™]OËœ›ÙXİÚY[]HßNÂˆ\™Ù]š[›™\’SHˆ\XÛHÛ\ÜÏH™]K\İ]XØ\™İ\™˜XÙHÜË\İÜ˜YÙK\š[X\HÜ[’İ\ˆ\œÚ\İ[]OÜÜ[İ›Û™Ï‰Ù›]]\ÊİÜ˜YÙKšİ\—Ü\œÚ\İ[Ø]\Ê_OÜİ›Û™ÏÛX[’İ[ˆİ\ˆÙ]H8 %ZÚÙH™\İ[ˆYˆSTÜÛX[Ø\XÛO‚ˆ\XÛHÛ\ÜÏH™]K\İ]XØ\™İ\™˜XÙHÜ[]š\Ø\šÚ]ÜÜ[İ›Û™Ï‰Ù›]]\ÊİÜ˜YÙK™›Y\—Ú\İÜWØ]\Ê_OÜİ›Û™ÏÛX[‰Ù›][
+\˜Ú]™Kœ™]Z[™YÙÙ[™\˜][ÛœÊ_HÙ[™\˜][Û™\ˆÙ[]0­È	Ù›][
+\˜Ú]™K˜İ\œ™[ØXİ]™WÙÙ[™\˜][ÛœÊ_HZİY[H0­Èš[Y\ˆÙ[[Y\ÈZÚÙHÚØ[ÜÛX[Ø\XÛO‚ˆ\XÛHÛ\ÜÏH™]K\İ]XØ\™İ\™˜XÙHÜ[°æœšYÙHİ\‹Y]OÜÜ[İ›Û™Ï‰Ù›]]\ÊİÜ˜YÙK›İ\—Úİ\—Ø]\Ê_OÜİ›Û™ÏÛX[‘˜[Z[Y\‹\İ\‹Y]Y]K\ÚÙÈ0îœšYÈ\œÚ\İ[[İ[™ÜÛX[Ø\XÛO‚ˆ\XÛHÛ\ÜÏH™]K\İ]XØ\™İ\™˜XÙHÜ[”STYYÈYÏÜÜ[İ›Û™Ï‰Ù›]]\ÊİÜ˜YÙKœ[˜\İ›Û[YWÙœ™YWØ]\Ê_OÜİ›Û™ÏÛX[’[HST]›Û[YH0­Èİ[	Ù›]]\ÊİÜ˜YÙKœ[˜\İ›Û[YWİİ[Ø]\Ê_H0­ÈÜİœYİ	Ù›]]\ÊİÜ˜YÙKœ[˜\İ›Û[YWİ\ÙYØ]\Ê_OÜÛX[Ø\XÛO‚ˆ\XÛHÛ\ÜÏH™]K\İ]XØ\™İ\™˜XÙHÜ[‘˜[Z[YY]OÜÜ[İ›Û™Ï‰Ù›][
+İ\ÙZÛË›Y[X™\œÊ_OÜİ›Û™ÏÛX[‰Ù›][
+İ\ÙZÛËšİ\ÙZÛÊ_H˜[Z[Y\ˆ0­È	Ù›][
+İ\ÙZÛËœ[™[™×Ú[š]\Ê_HZİ]™H[š]\ÏÜÛX[Ø\XÛO‚ˆ\XÛHÛ\ÜÏH™]K\İ]XØ\™İ\™˜XÙHÜ[•[YÛY]Y]OÜÜ[İ›Û™Ï‰Ù›][
+Y]Y]Kœ™XÛÜ™Ê_OÜİ›Û™ÏÛX[‰Ù›][
+Y]Y]Kœ[›™Y
+_H[›™Y0­È	Ù›][
+Y]Y]KÚ]ÛÙ™™\—ÜÛ˜\Úİ
+_HÛ˜\ÚİÏÜÛX[Ø\XÛO‚ˆ\XÛHÛ\ÜÏH™]K\İ]XØ\™İ\™˜XÙHÜ[’Y[]K[0éœš[™ÏÜÜ[İ›Û™Ï‰Ù›][
+Y[]KœİÜ™YÜ[\Ê_OÜİ›Û™ÏÛX[œ\œÚ\İ[›ÙXİY[]Hİ]OÜÛX[Ø\XÛO‚ˆ\XÛHÛ\ÜÏH™]K\İ]XØ\™İ\™˜XÙHÜ[ÛÛ›ÛÙ[\ˆ\İÜšZÏÜÜ[İ›Û™Ï‰Ù›]]\ÊİÜ˜YÙK˜ÛÛ›ÛØÙ[\—İ[[Y]WØ]\Ê_OÜİ›Û™ÏÛX[™]™[Ë™[™ÈÙÈ[\[Y™XŞXÛOÜÛX[Ø\XÛO‚ˆÂˆB‚ˆ[˜İ[Ûˆ™[™\“\İ
+\™Ù]Ù[XİÜ‹›İÜÊHÂˆÛÛœİ\™Ù]H	
+\™Ù]Ù[XİÜŠNÂˆYˆ
+]\™Ù]
+H™]\›Âˆ\™Ù]š[›™\’SH›İÜË›X\
 
+›İÊHOˆ]ˆÛ\ÜÏH›ÜË\›İÈÜ[ˆÛ\ÜÏH›ÜË\İ]KYİ	İÛ™J›İËœİ]\Ê_HÜÜ[]İ›Û™Ï‰Ù\ØÊ›İË›˜[YJ_OÜİ›Û™ÏÛX[‰Ù\ØÊ›İË™]Z[ˆŠ_OÜÛX[Ù]‰Ù\ØÊ›İËœİ]\È¸ %Š_OØÙ]˜
+Kš›Ú[ŠˆŠNÂˆB‚ˆ[˜İ[Ûˆ™[™\’[YÜš]JÛ˜\Úİ
+HÂˆ™[™\“\İ
+ˆÛÜÒ[YÜš]H‹Û˜\Úİ™]OËš[YÜš]OË˜ÚXÚÜÈ×JNÂˆB‚ˆ[˜İ[Ûˆ™[™\”ÙXİ\š]JÛ˜\Úİ
+HÂˆ™[™\“\İ
+ˆÛÜÔÙXİ\š]H‹Û˜\Úİ›Ü\˜][ÛœÏËœÙXİ\š]H×JNÂˆB‚ˆ[˜İ[Ûˆ™[™\ÛY[ÊÛ˜\Úİ
+HÂˆÛÛœİ\™Ù]H	
+ˆÛÜĞÛY[ÈŠNÂˆYˆ
+]\™Ù]
+H™]\›ÂˆÛÛœİÛY[ÈHÛ˜\Úİ›Ü\˜][ÛœÏË˜ÛY[ÈßNÂˆÛÛœİ›İÜÈHÛY[Ë˜ÛY[È×NÂˆ\™Ù]š[›™\’SHˆ]ˆÛ\ÜÏH›ÜËXÛY[\İ[[X\Hİ›Û™Ï‰Ù›][
+ÛY[Ë™[˜X›Y
+_KÉÙ›][
+ÛY[Ëœ™YÚ\İ\™Y
+_OÜİ›Û™ÏÜ[œ\ÚXZİ]™HÛY[\ÜÜ[Ù]‚ˆ	Ü›İÜË›[™İÈ›İÜË›X\
 
-async def build_snapshot(*, control_center_version: str) -> dict[str, Any]:
-    probes, samsung = await asyncio.gather(runtime_probes(), samsung_probe())
-    runtime = {
-        **probes,
-        "luna-worker": heartbeat_runtime("luna-worker"),
-        "flyer-push-worker": heartbeat_runtime("flyer-push-worker"),
-        "shopping-cleanup-worker": heartbeat_runtime("shopping-cleanup-worker"),
-    }
-    luna = luna_enrichment.status_payload()
-    luna_store, luna_events = luna_store_summary()
-    coverage = luna_member_coverage.status_payload()
-    readiness = flyer_readiness.status_payload()
-    publications, current_coverage = current_publications(luna_store)
-    households = summarize_households()
-    offer_metadata = summarize_offer_metadata()
-    identity = summarize_product_identity()
-    category_overrides = category_override_summary()
-    flyer_push_store = flyer_push._load()
-    retry_state = luna_resilient_strong_worker._load_retry_state()
-    quarantine = luna_resilient_worker._load_quarantine()
-    cost_policy = luna_cost_policy.status_payload()
-    components = derive_component_states(runtime, samsung=samsung, luna=luna, flyer_push_store=flyer_push_store, household_summary=households, current_coverage=current_coverage)
-    active_alerts = alerts(runtime, components, publications, luna)
-    activity = timeline(luna_events, publications, runtime)
-    health_counts = Counter(component.get("health", "info") for component in components)
-    runtime_errors = sum(1 for row in runtime.values() if row.get("health") == "error")
-    overall = "critical" if runtime_errors else "attention" if active_alerts else "healthy"
-    return {
-        "generated_at": int(time.time()),
-        "generated_iso": datetime.now().astimezone().isoformat(),
-        "overall": {"status": overall, "components": len(components), "health_counts": dict(health_counts), "alerts": len(active_alerts)},
-        "release": release_info(control_center_version),
-        "runtime": runtime,
-        "components": components,
-        "dataflow": dataflow(),
-        "alerts": active_alerts,
-        "integrations": {"samsung": samsung},
-        "luna": {**luna, "coverage": coverage, "current_coverage": current_coverage, "quarantined": len(quarantine), "retry_candidates": len(retry_state), "cost_policy": cost_policy, "store": _file_info(luna_enrichment.STORE_PATH), "events_stored": len(luna_store.get("events", [])) if isinstance(luna_store.get("events"), list) else 0},
-        "flyers": {
-            "readiness": readiness,
-            "current_coverage": current_coverage,
-            "history_coverage": coverage.get("counts", {}),
-            "publications": publications,
-            "push": {
-                "initialized": bool(flyer_push_store.get("initialized")),
-                "enabled_devices": sum(1 for row in flyer_push_store.get("devices", {}).values() if isinstance(row, dict) and row.get("enabled")),
-                "registered_devices": len(flyer_push_store.get("devices", {})) if isinstance(flyer_push_store.get("devices"), dict) else 0,
-                "last_check_at": flyer_push_store.get("last_check_at"),
-                "last_ready_delivery_at": flyer_push_store.get("last_ready_delivery_at"),
-                "seen_publications": len(flyer_push_store.get("seen_publications", [])),
-            },
-        },
-        "data": {"households": households, "offer_metadata": offer_metadata, "product_identity": identity, "category_overrides": category_overrides, "volume": volume_status()},
-        "telemetry": {"heartbeats": all_heartbeats(), "timeline": activity},
-    }
+›İÊHOˆ]ˆÛ\ÜÏH›ÜË\›İÈÜ[ˆÛ\ÜÏH›ÜË\İ]KYİ	Ü›İË™[˜X›YÈšX[Hˆˆ˜][[ÛˆŸHÜÜ[]İ›Û™Ï‰Ù\ØÊ›İË›X™[
+_OÜİ›Û™ÏÛX[‰Ù\ØÊÜ›İË™\œÚ[Ûˆ	‰ˆ‰Ü›İË™\œÚ[ÛŸX›İË˜Z[	‰ˆZ[	Ü›İË˜Z[X›İË™[š\›Û›Y[K™š[\Š›ÛÛX[ŠKš›Ú[Šˆ0­ÈŠHTœÈ™YÚ\İ˜][ÛˆŠ_OÜÛX[Ù]‰Ù\ØÊ›İËœ\ÚÜ\›Z\ÜÚ[Ûˆ
+›İË™[˜X›YÈ™[˜X›Yˆˆ™\ØX›YŠJ_OØÙ]˜
+Kš›Ú[ŠˆŠHˆ	Ï]ˆÛ\ÜÏH™[\K\İ]HÛÛ\Xİ’[™Ù[ˆTœËZÛY[\ˆ™YÚ\İ™\™]Ù]‰ßBˆÛ\ÜÏH›ÜË[ZXÜ›ØÛÜH‰Ù\ØÊÛY[Ë››İHˆŠ_OÜ‚ˆÂˆB‚ˆ[˜İ[Ûˆ™[™\‘\[™[˜ŞRX[
+Û˜\Úİ
+HÂˆÛÛœİYÙRX[H™]ÈX\
+
+Û˜\Úİ›Ü\˜][ÛœÏË™\[™[˜ŞWÛX\Ë™YÙ\È×JK›X\
+
+YÙJHOˆØ	ÙYÙK™œ›Û_O‰ÙYÙKßXYÙKšX[JJNÂˆÛÛœİ›Ù\ÈH		
+ˆÙ]Y›İÈ™›İË[›ÙHŠNÂˆ›Ù\Ë™›Ü‘XXÚ
+
+›ÙK[™^
+HOˆÂˆÛÛœİ™^H›Ù\ÖÚ[™^
+ÈWNÂˆÛÛœİX[H™^ÈYÙRX[™Ù]
+	Û›ÙK™]\Ù]˜ÛÛ\Û™[O‰Û™^™]\Ù]˜ÛÛ\Û™[X
+Hˆ[Âˆ›ÙK˜Û\ÜÓ\İœ™[[İ™J›ÜËYYÙKZX[H‹›ÜËYYÙKX][[Ûˆ‹›ÜËYYÙKY\œ›ÜˆŠNÂˆYˆ
+X[
+H›ÙK˜Û\ÜÓ\İ˜Y
+ÜËYYÙKIİÛ™JX[
+_X
+NÂˆJNÂˆB‚ˆ[˜İ[Ûˆ™[™\Xİ]š]JÛ˜\Úİ
+HÂˆÛÛœİ\™Ù]H	
+ˆİ[Y[[™HŠNÂˆYˆ
+]\™Ù]
+H™]\›ÂˆÛÛœİ[HÛ˜\Úİ[[Y]OË[Y[[™H×NÂˆÛÛœİ›İÜÈHXİ]š]Qš[\ˆOOH˜[ˆÈ[ˆ[™š[\Š
+›İÊHOˆ›İË˜Ø]YÛÜHOOHXİ]š]Qš[\ŠNÂˆÛÛœİÛİ[ÈHÛ˜\Úİ[[Y]OË˜Xİ]š]WØØ]YÛÜšY\ÈßNÂˆÛÛœİİ[[X\HH	
+ˆÛÜĞXİ]š]Tİ[[X\HŠNÂˆYˆ
+İ[[X\JHİ[[X\K^ÛÛ[H	ØÛİ[Ë›[˜HH[˜H0­È	ØÛİ[Ë™›Y\ˆH]š\È0­È	ØÛİ[ËœŞ\İ[HHŞ\İ[XÂˆ\™Ù]š[›™\’SH›İÜË›[™İÈ›İÜË›X\
+
+›İÊHOˆÂˆÛÛœİÛÜİH›İË˜ÛÜİÙÚÈOH[ÈÜ[ˆÛ\ÜÏH›ÜËY]™[XÛÜİŠÉÙ›]ÚÊ›İË˜ÛÜİÙÚË
+_HÜ‹ÜÜ[˜ˆˆÂˆÛÛœİ™\]Y\İÈH›İËœ™\]Y\İÈOH[ÈÜ[‰Ù›][
+›İËœ™\]Y\İÊ_HØ[ÜÜ[˜ˆˆÂˆ™]\›ˆ]ˆÛ\ÜÏH›ÜËY]™[\›İÈÜ[ˆÛ\ÜÏH[Y[[™K][YH‰Ù\ØÊ›]]U[YJ›İË˜]
+J_OÜÜ[HÛ\ÜÏH›ÜËY]™[Yİ	İÛ™J›İËœÙ]™\š]H›İËœİ]\Ê_HÚO]ˆÛ\ÜÏH›ÜËY]™[[XZ[ˆİ›Û™Ï‰Ù\ØÊ›İË]H›İË™]Z[›İË\J_OÜİ›Û™ÏÜ[‰Ù\ØÊ›İË™]Z[›İËœ™]Z[\ˆ›İË˜Ø]YÛÜHˆŠ_OÜÜ[Ù]]ˆÛ\ÜÏH›ÜËY]™[[Y]H‰Ü™\]Y\İßIØÛÜİOÜ[ˆÛ\ÜÏH›ÜËXØ]YÛÜH‰Ù\ØÊ›İË˜Ø]YÛÜH™]™[Š_OÜÜ[Ù]Ù]˜ÂˆJKš›Ú[ŠˆŠHˆ	Ï]ˆÛ\ÜÏH™[\K\İ]H’[™Ù[ˆY[š[™ÜÙ[H]™[ÈH]Hš[\‹Ù]‰ÎÂˆB‚ˆ[˜İ[Ûˆ™[™\ŠÛ˜\Úİ
+HÂˆ]\İHÛ˜\ÚİÂˆ™[™\‘L‘JÛ˜\Úİ
+NÂˆ™[™\‘œ™\Ú™\ÜÊÛ˜\Úİ
+NÂˆ™[™\’›ØœÊÛ˜\Úİ
+NÂˆ™[™\”™[X\ÙJÛ˜\Úİ
+NÂˆ™[™\[\Y™XŞXÛJÛ˜\Úİ
+NÂˆ™[™\•™[™ÊÛ˜\Úİ
+NÂˆ™[™\‘YÜ˜YY
+Û˜\Úİ
+NÂˆ™[™\“Ü[RQ]™[ÊÛ˜\Úİ
+NÂˆ™[™\’[YÜ˜][Û”]X[]JÛ˜\Úİ
+NÂˆ™[™\‘]JÛ˜\Úİ
+NÂˆ™[™\’[YÜš]JÛ˜\Úİ
+NÂˆ™[™\”ÙXİ\š]JÛ˜\Úİ
+NÂˆ™[™\ÛY[ÊÛ˜\Úİ
+NÂˆ™[™\‘\[™[˜ŞRX[
+Û˜\Úİ
+NÂˆ™[™\Xİ]š]JÛ˜\Úİ
+NÂˆB‚ˆØİ[Y[˜Y]™[\İ[™\Š‘ÓPÛÛ[ØYY‹
+
+HOˆÂˆ[š™Xİ^[İ]
+
+NÂˆÚ[™İË˜Y]™[\İ[™\Ššİ\œÛ˜\Úİ‹
+]™[
+HOˆ™[™\Š]™[™]Z[ßJJNÂˆJNÂŸJJ
+NÂ

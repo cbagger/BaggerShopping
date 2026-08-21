@@ -137,14 +137,32 @@ def storage_status() -> dict[str, Any]:
         host_used = max(0, total - free)
     except OSError:
         total = free = host_used = None
+    flyer_files = {
+        "readiness": persistent / "flyer-readiness.json",
+        "serving_cache": persistent / "flyer-serving-cache.json",
+        "luna_analysis": persistent / "luna-enrichment-store.json",
+        "coverage": persistent / "luna-member-coverage.json",
+        "quality_filter": persistent / "luna-quarantined-work.json",
+        "retry_state": persistent / "luna-retry-work.json",
+    }
+    flyer_breakdown: dict[str, int] = {}
+    for name, path in flyer_files.items():
+        try:
+            flyer_breakdown[name] = path.stat().st_size
+        except OSError:
+            flyer_breakdown[name] = 0
+    flyer_bytes = sum(flyer_breakdown.values())
     return {
         "kurv_persistent_bytes": kurv_bytes,
+        "flyer_history_bytes": flyer_bytes,
+        "flyer_history_breakdown": flyer_breakdown,
+        "other_kurv_bytes": max(0, kurv_bytes - flyer_bytes),
         "control_center_telemetry_bytes": ops_bytes,
         "qnap_volume_total_bytes": total,
         "qnap_volume_free_bytes": free,
         "qnap_volume_used_bytes": host_used,
         "qnap_volume_used_percent": round(host_used / total * 100, 1) if total else None,
-        "scope_note": "Kurv-forbrug er kun /data. QNAP-tal er hele det underliggende volume og vises separat.",
+        "scope_note": "Kurv-forbrug er kun /data. Avisarkivet er JSON-data og URL-referencer; selve avisbillederne gemmes ikke lokalt. QNAP-tal er hele det underliggende volume og vises separat.",
     }
 
 
@@ -323,7 +341,7 @@ def end_to_end_status(*, runtime: dict[str, dict[str, Any]], freshness: list[dic
     critical = any(row["status"] == "error" for row in stages)
     attention = any(row["status"] not in {"healthy", "info"} for row in stages)
     operational = "critical" if critical else "attention" if attention else "healthy"
-    quality = "attention" if int(current_coverage.get("degraded", 0)) > 0 else "healthy"
+    quality = "filtered" if int(current_coverage.get("degraded", 0)) > 0 else "healthy"
     return {
         "operational_status": operational,
         "quality_status": quality,

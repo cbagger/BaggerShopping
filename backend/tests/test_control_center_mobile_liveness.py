@@ -64,4 +64,4 @@ def test_mobile_non_404_probe_failure_remains_failure(monkeypatch):
 
 
 def test_control_center_dashboard_version_is_1_3_0():
-    assert control_center.APP_VERSION == "1.3.0"
+    assert control_center.APP_VERSION == "1.4.0"

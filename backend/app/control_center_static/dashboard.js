@@ -31,7 +31,8 @@
     const value = String(status || "unknown");
     if (["healthy", "success", "none", "complete", "online", "running", "available", "configured", "active"].includes(value)) return "healthy";
     if (["critical", "error", "stale", "unavailable"].includes(value)) return "error";
-    if (["attention", "warning", "degraded", "pending", "detected"].includes(value)) return "attention";
+    if (["attention", "warning", "pending", "detected"].includes(value)) return "attention";
+    if (["degraded", "quality-filtered", "filtered"].includes(value)) return "healthy";
     return "info";
   }
 
@@ -39,8 +40,8 @@
     return String(value || "")
       .replaceAll("aktuelle avis-generationer er degraded", "aktuelle tilbudsaviser er klar med forbehold")
       .replaceAll("aktuelle avis-generationer", "aktuelle tilbudsaviser")
-      .replaceAll("quarantine-årsager", "årsager til karantæne")
-      .replaceAll("degraded", "klar med forbehold")
+      .replaceAll("quarantine-årsager", "automatisk kvalitetsfiltrering")
+      .replaceAll("degraded", "kvalitetsfiltreret")
       .replaceAll("pending", "i kø")
       .replaceAll("requests", "kald")
       .replaceAll("configured", "konfigureret")
@@ -133,8 +134,8 @@
     const ready = complete + degraded;
     setCard("dashboardFlyers", {
       value: `${ready} af ${total || 0} klar`,
-      caption: `${complete} fuldt kontrolleret · ${degraded} med forbehold · ${pending} analyseres`,
-      status: pending > 0 || degraded > 0 || notTracked > 0 ? "attention" : "healthy",
+      caption: `${complete} uden frasortering · ${degraded} med automatisk kvalitetsfiltrering · ${pending} analyseres`,
+      status: pending > 0 || notTracked > 0 ? "attention" : "healthy",
     });
     const widths = total ? [complete, pending + notTracked, degraded].map((value) => `${value / total * 100}%`) : ["0%", "0%", "0%"];
     const completeBar = $("#dashboardCoverageComplete");
@@ -191,7 +192,7 @@
     }
   }
 
-  function renderActions(activeActions) {
+  function renderActions(activeActions, snapshot) {
     const title = $("#dashboardActionTitle");
     const count = $("#alertCount");
     const list = $("#alertsList");
@@ -200,7 +201,11 @@
     if (!activeActions.length) {
       title.textContent = "Ingen handling nødvendig";
       list.className = "stack-list dashboard-clear-state";
-      list.innerHTML = '<div class="dashboard-clear-icon">✓</div><div><strong>Alt er under kontrol</strong><span>Der er ingen aktive drifts- eller kvalitetsalarmer.</span></div>';
+      const filtered = number(snapshot?.luna?.current_coverage?.degraded);
+      const detail = filtered
+        ? `${fmtInt(filtered)} aktuelle aviser har automatisk kvalitetsfiltrering. Det kræver ingen handling.`
+        : "Der er ingen aktive driftsalarmer.";
+      list.innerHTML = `<div class="dashboard-clear-icon">✓</div><div><strong>Alt er under kontrol</strong><span>${esc(detail)}</span></div>`;
       return;
     }
     title.textContent = "Kræver opmærksomhed";
@@ -234,7 +239,7 @@
     renderFlyers(snapshot);
     renderLuna(snapshot);
     renderSystem(snapshot);
-    renderActions(activeActions);
+    renderActions(activeActions, snapshot);
     renderFamily(snapshot);
   }
 
