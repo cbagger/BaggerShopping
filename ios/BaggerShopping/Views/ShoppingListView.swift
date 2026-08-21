@@ -39,6 +39,7 @@ struct ShoppingListView: View {
     @State private var offerTarget: ShoppingItemOfferTarget?
     @State private var offerPreviewTarget: ShoppingItemOfferPreviewTarget?
     @State private var showCheckedItems = false
+    @State private var activeStoreMode: StoreVisitContext?
     @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
 
     private let retailerFilterOptions = RetailerCatalog.all
@@ -77,6 +78,26 @@ struct ShoppingListView: View {
 
     private var groupedActiveItems: [CategoryGroup] {
         categoryGroups(for: currentItems)
+    }
+
+    private var storeModeItems: [ShoppingItem] {
+        guard let activeStoreMode else { return [] }
+        return activeItems.filter {
+            StoreModeService.includes(
+                assignedRetailer: model.assignedRetailer(for: $0),
+                in: activeStoreMode
+            )
+        }
+    }
+
+    private var storeModeGroups: [CategoryGroup] {
+        guard let activeStoreMode else { return [] }
+        return categoryGroups(for: storeModeItems).sorted { lhs, rhs in
+            let lhsRank = model.storeLayouts.rank(for: lhs.category, at: activeStoreMode)
+            let rhsRank = model.storeLayouts.rank(for: rhs.category, at: activeStoreMode)
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            return StoreModeService.defaultRank(for: lhs.category) < StoreModeService.defaultRank(for: rhs.category)
+        }
     }
 
     private var retailerGroups: [RetailerGroup] {
@@ -140,7 +161,7 @@ struct ShoppingListView: View {
                     )
                 }
             }
-            .navigationTitle("Indkøbsliste")
+            .navigationTitle(activeStoreMode?.retailer ?? "Indkøbsliste")
             .navigationBarTitleDisplayMode(.large)
             .sheet(item: $renameTarget) { target in
                 RenameShoppingItemView(item: target.item)
@@ -161,8 +182,12 @@ struct ShoppingListView: View {
             }
             .onChange(of: navigation.shoppingListRoute?.id) { _, _ in
                 guard let route = navigation.shoppingListRoute else { return }
-                sortByRetailer = true
-                selectedRetailerFilters = [route.retailer]
+                beginStoreMode(route.store)
+            }
+            .onAppear {
+                if let store = navigation.shoppingListRoute?.store {
+                    beginStoreMode(store)
+                }
             }
             .alert(
                 "Fejl",
@@ -181,14 +206,29 @@ struct ShoppingListView: View {
     private var shoppingListContent: some View {
         List {
             addItemRow
-            sortModeRow
-
-            if sortByRetailer {
-                retailerFiltersRow
+            if let activeStoreMode {
+                storeModeBanner(activeStoreMode)
+            } else {
+                sortModeRow
+                if sortByRetailer {
+                    retailerFiltersRow
+                }
             }
 
-            if activeItems.isEmpty {
+            if activeStoreMode != nil, storeModeItems.isEmpty {
+                storeModeEmptyRow
+            } else if activeItems.isEmpty {
                 emptyActiveRow
+            } else if activeStoreMode != nil {
+                ForEach(storeModeGroups) { group in
+                    Section {
+                        ForEach(group.items, id: \.stableID) { item in
+                            itemRow(item, showCategory: false)
+                        }
+                    } header: {
+                        sectionHeader(group.category.rawValue, count: group.items.count, icon: group.category.icon)
+                    }
+                }
             } else if sortByRetailer {
                 ForEach(retailerGroups) { group in
                     Section {
@@ -226,7 +266,7 @@ struct ShoppingListView: View {
                 }
             }
 
-            if !checkedItems.isEmpty {
+            if activeStoreMode == nil, !checkedItems.isEmpty {
                 checkedItemsSection
             }
         }
@@ -242,6 +282,81 @@ struct ShoppingListView: View {
             await model.syncSharedCategories()
             await smartOffers.refresh(items: activeItems, model: model)
         }
+    }
+
+    private func beginStoreMode(_ store: StoreVisitContext) {
+        activeStoreMode = store
+        selectedRetailerFilters.removeAll()
+        model.storeLayouts.beginSession(for: store)
+    }
+
+    private func endStoreMode() {
+        withAnimation(.snappy(duration: 0.22)) {
+            activeStoreMode = nil
+        }
+        navigation.endStoreMode()
+    }
+
+    private func storeModeBanner(_ store: StoreVisitContext) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "figure.walk.motion")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 42, height: 42)
+                    .background(.white.opacity(0.18), in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Indkøbstur i \(store.retailer)")
+                        .font(.headline)
+                    Text(store.address.isEmpty ? "Denne butik" : store.address)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.78))
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 4)
+
+                Button("Afslut") { endStoreMode() }
+                    .font(.caption.weight(.bold))
+                    .buttonStyle(.bordered)
+                    .tint(.white)
+            }
+
+            Text("Viser \(storeModeItems.count) varer til denne butik – inklusive varer uden butik. Rækkefølgen lærer netop denne butiks indretning.")
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.86))
+        }
+        .foregroundStyle(.white)
+        .padding(16)
+        .background(
+            LinearGradient(
+                colors: [Color.green.opacity(0.92), Color.teal.opacity(0.92)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        )
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+
+    private var storeModeEmptyRow: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.title2)
+                .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Ingen varer til denne tur")
+                    .font(.headline)
+                Text("Varer til andre butikker er skjult. Varer uden butik vises altid her.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+        .listRowSeparator(.hidden)
     }
 
     private var addItemRow: some View {
@@ -540,7 +655,17 @@ struct ShoppingListView: View {
     private func itemRow(_ item: ShoppingItem, showCategory: Bool) -> some View {
         HStack(spacing: 12) {
             Button {
-                Task { await model.setChecked(item, checked: !item.checked) }
+                Task {
+                    let wasUnchecked = !item.checked
+                    let category = model.category(for: item)
+                    await model.setChecked(item, checked: !item.checked)
+
+                    if wasUnchecked,
+                       let activeStoreMode,
+                       model.shoppingList?.items.first(where: { $0.stableID == item.stableID })?.checked == true {
+                        model.storeLayouts.recordPurchased(category: category, at: activeStoreMode)
+                    }
+                }
             } label: {
                 Image(systemName: item.checked ? "checkmark.circle.fill" : "circle")
                     .font(.title2)
