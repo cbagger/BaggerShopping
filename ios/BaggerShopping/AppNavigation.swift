@@ -13,6 +13,11 @@ struct ShoppingListRoute: Equatable {
     let store: StoreVisitContext
 }
 
+struct StoreSelectionRequest: Equatable {
+    let id = UUID()
+    let fallbackStore: StoreVisitContext?
+}
+
 struct FlyerRoute: Equatable {
     let id = UUID()
     let publicationID: String
@@ -22,6 +27,7 @@ struct FlyerRoute: Equatable {
 extension Notification.Name {
     static let openShoppingListRetailer = Notification.Name("kurv.openShoppingListRetailer")
     static let openStoreMode = Notification.Name("kurv.openStoreMode")
+    static let openStoreModeSelection = Notification.Name("kurv.openStoreModeSelection")
     static let openFlyerPublication = Notification.Name("kurv.openFlyerPublication")
 }
 
@@ -32,6 +38,7 @@ final class AppNavigation: ObservableObject {
     @Published var selectedTab: AppTab = .shoppingList
     @Published private(set) var rootResetID = UUID()
     @Published private(set) var shoppingListRoute: ShoppingListRoute?
+    @Published private(set) var storeSelectionRequest: StoreSelectionRequest?
     @Published private(set) var flyerRoute: FlyerRoute?
     private var backgroundedAt: Date?
     private var lastExternalNavigationAt: Date?
@@ -44,6 +51,14 @@ final class AppNavigation: ObservableObject {
         ) { [weak self] notification in
             guard let store = notification.object as? StoreVisitContext else { return }
             Task { @MainActor in self?.openStoreMode(store) }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .openStoreModeSelection,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let fallbackStore = notification.object as? StoreVisitContext
+            Task { @MainActor in self?.requestStoreSelection(fallback: fallbackStore) }
         }
         NotificationCenter.default.addObserver(
             forName: .openShoppingListRetailer,
@@ -81,11 +96,24 @@ final class AppNavigation: ObservableObject {
         guard !store.retailer.isEmpty else { return }
         selectedTab = .shoppingList
         lastExternalNavigationAt = Date()
+        storeSelectionRequest = nil
         shoppingListRoute = ShoppingListRoute(store: store)
+    }
+
+    func requestStoreSelection(fallback: StoreVisitContext? = nil) {
+        selectedTab = .shoppingList
+        lastExternalNavigationAt = Date()
+        shoppingListRoute = nil
+        storeSelectionRequest = StoreSelectionRequest(fallbackStore: fallback)
     }
 
     func endStoreMode() {
         shoppingListRoute = nil
+        storeSelectionRequest = nil
+    }
+
+    func resolveStoreSelection() {
+        storeSelectionRequest = nil
     }
 
     func openFlyer(publicationID: String, retailer: String? = nil) {
@@ -115,6 +143,7 @@ final class AppNavigation: ObservableObject {
 
         selectedTab = .shoppingList
         shoppingListRoute = nil
+        storeSelectionRequest = nil
         flyerRoute = nil
         rootResetID = UUID()
         return true

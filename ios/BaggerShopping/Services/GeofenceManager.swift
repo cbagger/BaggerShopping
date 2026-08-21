@@ -30,12 +30,14 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     @Published private(set) var lastNotificationAttempt: String?
     @Published private(set) var lastNotificationResult: String?
     @Published private(set) var lastListFetchResult: String?
+    @Published private(set) var nearbyStores: [StoreVisitContext] = []
 
     private let manager = CLLocationManager()
     private let api = APIClient()
     private let cooldownSeconds: TimeInterval = 2 * 60 * 60
     private let metadataCacheKey = "geofence-offer-metadata-cache-v1"
     private var storesByIdentifier: [String: StoreVisitContext] = [:]
+    private var insideRegionIdentifiers: Set<String> = []
     private var latestLocation: CLLocation?
     private var lastAutomaticLookupAt: Date?
     private var lastAutomaticLookupLocation: CLLocation?
@@ -85,7 +87,8 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
 
         // Presence must be re-proven by Core Location after every monitoring
         // sync. A stale INSIDE state must never surface an activation reminder.
-        MemberPricePresence.clear()
+        insideRegionIdentifiers.removeAll()
+        updateNearbyStores()
 
         for region in manager.monitoredRegions where region.identifier.hasPrefix("store:") {
             manager.stopMonitoring(for: region)
@@ -190,7 +193,8 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
                 self.refreshPresence()
                 self.startAutomaticStoreDetectionIfAuthorized()
             } else {
-                MemberPricePresence.clear()
+                self.insideRegionIdentifiers.removeAll()
+                self.updateNearbyStores()
                 self.manager.stopMonitoringVisits()
                 self.manager.stopMonitoringSignificantLocationChanges()
             }
@@ -214,8 +218,8 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     ) {
         Task { @MainActor in
             let regionName = region.map { self.displayName(for: $0.identifier) } ?? "ukendt region"
-            if region != nil {
-                MemberPricePresence.setInside(false, storeName: regionName)
+            if let region {
+                self.setInside(false, regionIdentifier: region.identifier)
             }
             self.lastMonitoringError = "\(regionName): \(error.localizedDescription)"
             self.refreshRegionDiagnostics()
@@ -231,7 +235,7 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
             let message = "\(storeName) – \(Self.timestamp())"
             self.lastEnterEvent = message
             UserDefaults.standard.set(message, forKey: "geofence-last-enter-event")
-            MemberPricePresence.setInside(true, storeName: storeName)
+            self.setInside(true, regionIdentifier: region.identifier)
             self.setRegionState(identifier: region.identifier, state: "INSIDE")
             await self.handleStoreArrival(context)
         }
@@ -245,7 +249,7 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
             let message = "\(storeName) – \(Self.timestamp())"
             self.lastExitEvent = message
             UserDefaults.standard.set(message, forKey: "geofence-last-exit-event")
-            MemberPricePresence.setInside(false, storeName: storeName)
+            self.setInside(false, regionIdentifier: region.identifier)
             self.setRegionState(identifier: region.identifier, state: "OUTSIDE")
         }
     }
@@ -266,8 +270,7 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         }
 
         Task { @MainActor in
-            let storeName = self.displayName(for: region.identifier)
-            MemberPricePresence.setInside(state == .inside, storeName: storeName)
+            self.setInside(state == .inside, regionIdentifier: region.identifier)
             self.setRegionState(identifier: region.identifier, state: stateText)
             self.lastStateCheck = "Senest opdateret \(Self.timestamp())"
         }
@@ -326,6 +329,11 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         didReceive response: UNNotificationResponse
     ) async {
         let userInfo = response.notification.request.content.userInfo
+        if userInfo["route"] as? String == "store-mode-selection" {
+            let fallbackStore = StoreVisitContext.fromNotificationUserInfo(userInfo)
+            NotificationCenter.default.post(name: .openStoreModeSelection, object: fallbackStore)
+            return
+        }
         if userInfo["route"] as? String == "store-mode",
            let store = StoreVisitContext.fromNotificationUserInfo(userInfo) {
             NotificationCenter.default.post(name: .openStoreMode, object: store)
@@ -460,31 +468,38 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     ) async throws {
         let retailer = context.retailer
         let content = UNMutableNotificationContent()
-        content.title = "Du er ved \(retailer) – start indkøbstur?"
-
-        if storeItems.isEmpty {
-            let noun = unassignedItems.count == 1 ? "vare" : "varer"
-            content.body = "Ingen varer er knyttet til \(retailer), men du har \(unassignedItems.count) \(noun) uden butik på listen."
+        if nearbyStores.count > 1 {
+            content.title = "\(nearbyStores.count) butikker i nærheden – vælg indkøbstur"
+            content.body = nearbyStores.map(\.retailer).joined(separator: " · ")
         } else {
-            let categorySummary = Self.categorySummary(for: storeItems)
-            let cacheSuffix = cached ? " · senest synkroniserede liste" : ""
-            let noun = storeItems.count == 1 ? "vare" : "varer"
-            let unassignedSuffix = unassignedItems.isEmpty ? "" : " · \(unassignedItems.count) uden butik"
-            content.body = "Du har \(storeItems.count) \(noun) her · \(categorySummary)\(unassignedSuffix)\(cacheSuffix)"
-        }
+            content.title = "Du er ved \(retailer) – start indkøbstur?"
 
-        if let metadata = loadMetadataCache(),
-           let reminder = MemberPriceGeofenceReminder.message(
-                retailer: retailer,
-                storeItems: storeItems,
-                metadata: metadata
-           ) {
-            content.body += "\n\(reminder)"
+            if storeItems.isEmpty {
+                let noun = unassignedItems.count == 1 ? "vare" : "varer"
+                content.body = "Ingen varer er knyttet til \(retailer), men du har \(unassignedItems.count) \(noun) uden butik på listen."
+            } else {
+                let categorySummary = Self.categorySummary(for: storeItems)
+                let cacheSuffix = cached ? " · senest synkroniserede liste" : ""
+                let noun = storeItems.count == 1 ? "vare" : "varer"
+                let unassignedSuffix = unassignedItems.isEmpty ? "" : " · \(unassignedItems.count) uden butik"
+                content.body = "Du har \(storeItems.count) \(noun) her · \(categorySummary)\(unassignedSuffix)\(cacheSuffix)"
+            }
+
+            if let metadata = loadMetadataCache(),
+               let reminder = MemberPriceGeofenceReminder.message(
+                    retailer: retailer,
+                    storeItems: storeItems,
+                    metadata: metadata
+               ) {
+                content.body += "\n\(reminder)"
+            }
         }
 
         content.sound = .default
         content.categoryIdentifier = Self.storeArrivalCategory
-        content.userInfo = context.notificationUserInfo
+        var userInfo = context.notificationUserInfo
+        userInfo["route"] = "store-mode-selection"
+        content.userInfo = userInfo
 
         try await UNUserNotificationCenter.current().add(
             UNNotificationRequest(
@@ -606,6 +621,27 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         }
 
         regionDiagnostics[index].state = state
+    }
+
+    private func setInside(_ inside: Bool, regionIdentifier: String) {
+        if inside {
+            insideRegionIdentifiers.insert(regionIdentifier)
+        } else {
+            insideRegionIdentifiers.remove(regionIdentifier)
+        }
+        updateNearbyStores()
+    }
+
+    private func updateNearbyStores() {
+        nearbyStores = StoreModeService.nearbyStores(
+            insideRegionIdentifiers: insideRegionIdentifiers,
+            contextsByIdentifier: storesByIdentifier
+        )
+
+        MemberPricePresence.clear()
+        for store in nearbyStores {
+            MemberPricePresence.setInside(true, storeName: store.retailer)
+        }
     }
 
     private func displayName(for identifier: String) -> String {

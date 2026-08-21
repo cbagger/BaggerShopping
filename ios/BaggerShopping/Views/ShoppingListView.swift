@@ -5,6 +5,69 @@ private struct ShoppingItemRenameTarget: Identifiable {
     let item: ShoppingItem
 }
 
+private struct NearbyStorePickerView: View {
+    let stores: [StoreVisitContext]
+    let onSelect: (StoreVisitContext) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(stores) { store in
+                        Button {
+                            onSelect(store)
+                        } label: {
+                            HStack(spacing: 13) {
+                                Image(systemName: "storefront.fill")
+                                    .font(.headline)
+                                    .foregroundStyle(.white)
+                                    .frame(width: 38, height: 38)
+                                    .background(Color.accentColor, in: Circle())
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(store.retailer)
+                                        .font(.headline)
+                                        .foregroundStyle(.primary)
+                                    if !store.address.isEmpty {
+                                        Text(store.address)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
+                                }
+
+                                Spacer(minLength: 6)
+
+                                Image(systemName: "arrow.right.circle.fill")
+                                    .font(.title3)
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                            .padding(.vertical, 5)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } header: {
+                    Text("Du er inden for flere butikkers område")
+                } footer: {
+                    Text("Kurv lærer rækkefølgen separat for den butik, du vælger.")
+                }
+            }
+            .navigationTitle("Vælg butik")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuller") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+}
+
 private struct ShoppingItemOfferTarget: Identifiable {
     let id = UUID()
     let item: ShoppingItem
@@ -40,6 +103,8 @@ struct ShoppingListView: View {
     @State private var offerPreviewTarget: ShoppingItemOfferPreviewTarget?
     @State private var showCheckedItems = false
     @State private var activeStoreMode: StoreVisitContext?
+    @State private var nearbyStores: [StoreVisitContext] = []
+    @State private var showNearbyStorePicker = false
     @AppStorage("shopping-list-sort-by-retailer") private var sortByRetailer = false
 
     private let retailerFilterOptions = RetailerCatalog.all
@@ -174,6 +239,12 @@ struct ShoppingListView: View {
             .sheet(item: $offerPreviewTarget) { target in
                 ShoppingItemOfferPreviewSheet(metadata: target.metadata)
             }
+            .sheet(isPresented: $showNearbyStorePicker) {
+                NearbyStorePickerView(stores: nearbyStores) { store in
+                    showNearbyStorePicker = false
+                    beginStoreMode(store)
+                }
+            }
             .task(id: offerMatchSignature) {
                 guard model.tokenConfigured,
                       model.shoppingList != nil,
@@ -184,9 +255,20 @@ struct ShoppingListView: View {
                 guard let route = navigation.shoppingListRoute else { return }
                 beginStoreMode(route.store)
             }
+            .onChange(of: navigation.storeSelectionRequest?.id) { _, _ in
+                guard let request = navigation.storeSelectionRequest else { return }
+                handleStoreSelectionRequest(request)
+            }
+            .onReceive(model.geofence.$nearbyStores) { stores in
+                nearbyStores = stores
+                if stores.isEmpty { showNearbyStorePicker = false }
+            }
             .onAppear {
+                nearbyStores = model.geofence.nearbyStores
                 if let store = navigation.shoppingListRoute?.store {
                     beginStoreMode(store)
+                } else if let request = navigation.storeSelectionRequest {
+                    handleStoreSelectionRequest(request)
                 }
             }
             .alert(
@@ -209,6 +291,9 @@ struct ShoppingListView: View {
             if let activeStoreMode {
                 storeModeBanner(activeStoreMode)
             } else {
+                if !nearbyStores.isEmpty {
+                    nearbyStoreModeLauncher
+                }
                 sortModeRow
                 if sortByRetailer {
                     retailerFiltersRow
@@ -285,8 +370,10 @@ struct ShoppingListView: View {
     }
 
     private func beginStoreMode(_ store: StoreVisitContext) {
+        showNearbyStorePicker = false
         activeStoreMode = store
         selectedRetailerFilters.removeAll()
+        navigation.resolveStoreSelection()
         model.storeLayouts.beginSession(for: store)
     }
 
@@ -295,6 +382,71 @@ struct ShoppingListView: View {
             activeStoreMode = nil
         }
         navigation.endStoreMode()
+    }
+
+    private func handleStoreSelectionRequest(_ request: StoreSelectionRequest) {
+        model.geofence.refreshPresence()
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(450))
+            nearbyStores = model.geofence.nearbyStores
+            if nearbyStores.count > 1 {
+                showNearbyStorePicker = true
+            } else if let store = nearbyStores.first ?? request.fallbackStore {
+                beginStoreMode(store)
+            }
+        }
+    }
+
+    private func startNearbyStoreMode() {
+        if nearbyStores.count == 1, let store = nearbyStores.first {
+            beginStoreMode(store)
+        } else if !nearbyStores.isEmpty {
+            showNearbyStorePicker = true
+        }
+    }
+
+    private var nearbyStoreModeLauncher: some View {
+        Button(action: startNearbyStoreMode) {
+            HStack(spacing: 13) {
+                Image(systemName: nearbyStores.count == 1 ? "location.fill" : "signpost.right.and.left.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 40, height: 40)
+                    .background(.white.opacity(0.18), in: Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(nearbyStores.count == 1
+                         ? "Du er ved \(nearbyStores[0].retailer)"
+                         : "\(nearbyStores.count) butikker i nærheden")
+                        .font(.headline)
+                    Text(nearbyStores.count == 1
+                         ? "Start indkøbstur"
+                         : "Vælg butik og start indkøbstur")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.82))
+                }
+
+                Spacer(minLength: 4)
+
+                Image(systemName: "chevron.right")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.86))
+            }
+            .foregroundStyle(.white)
+            .padding(14)
+            .background(
+                LinearGradient(
+                    colors: [Color.blue.opacity(0.94), Color.teal.opacity(0.90)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 5, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
     }
 
     private func storeModeBanner(_ store: StoreVisitContext) -> some View {
@@ -316,6 +468,13 @@ struct ShoppingListView: View {
                 }
 
                 Spacer(minLength: 4)
+
+                if nearbyStores.count > 1 {
+                    Button("Skift") { showNearbyStorePicker = true }
+                        .font(.caption.weight(.bold))
+                        .buttonStyle(.bordered)
+                        .tint(.white)
+                }
 
                 Button("Afslut") { endStoreMode() }
                     .font(.caption.weight(.bold))
