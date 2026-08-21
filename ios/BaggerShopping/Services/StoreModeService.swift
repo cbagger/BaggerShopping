@@ -96,6 +96,20 @@ enum StoreModeService {
     static func defaultRank(for category: ShoppingCategory) -> Double {
         Double(defaultCategoryOrder.firstIndex(of: category) ?? defaultCategoryOrder.count)
     }
+
+    static func nearbyStores(
+        insideRegionIdentifiers: Set<String>,
+        contextsByIdentifier: [String: StoreVisitContext]
+    ) -> [StoreVisitContext] {
+        let stores = insideRegionIdentifiers.compactMap { contextsByIdentifier[$0] }
+        return Dictionary(grouping: stores, by: \.id)
+            .compactMap { $0.value.first }
+            .sorted { lhs, rhs in
+                let retailerOrder = lhs.retailer.localizedCaseInsensitiveCompare(rhs.retailer)
+                if retailerOrder != .orderedSame { return retailerOrder == .orderedAscending }
+                return lhs.address.localizedCaseInsensitiveCompare(rhs.address) == .orderedAscending
+            }
+    }
 }
 
 @MainActor

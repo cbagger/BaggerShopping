@@ -49,6 +49,42 @@ final class StoreModeTests: XCTestCase {
         XCTAssertNotEqual(first.id, second.id)
     }
 
+    func testOverlappingGeofencesExposeEveryNearbyStoreForSelection() {
+        let netto = StoreVisitContext(
+            id: "saved:netto",
+            retailer: "Netto",
+            address: "Jyllandsgade 12, Skørping",
+            latitude: 56.836,
+            longitude: 9.891
+        )
+        let rema = StoreVisitContext(
+            id: "saved:rema",
+            retailer: "REMA 1000",
+            address: "Jyllandsgade 14, Skørping",
+            latitude: 56.8361,
+            longitude: 9.8912
+        )
+        let contexts = [
+            "store:netto": netto,
+            "store:rema": rema,
+        ]
+
+        XCTAssertEqual(
+            StoreModeService.nearbyStores(
+                insideRegionIdentifiers: ["store:netto", "store:rema"],
+                contextsByIdentifier: contexts
+            ),
+            [netto, rema]
+        )
+        XCTAssertEqual(
+            StoreModeService.nearbyStores(
+                insideRegionIdentifiers: ["store:rema"],
+                contextsByIdentifier: contexts
+            ),
+            [rema]
+        )
+    }
+
     @MainActor
     func testLayoutLearningIsScopedToExactPhysicalStore() {
         let suite = "StoreModeTests-\(UUID().uuidString)"
