@@ -9,6 +9,7 @@ enum ShoppingCategory: String, Codable, CaseIterable, Identifiable, Hashable {
     case frozen = "Frost"
     case pantry = "Kolonial"
     case beverages = "Drikkevarer"
+    case snacks = "Snacks"
     case household = "Husholdning"
     case personalCare = "Personlig pleje"
     case other = "Andet"
@@ -25,6 +26,7 @@ enum ShoppingCategory: String, Codable, CaseIterable, Identifiable, Hashable {
         case .frozen: return "snowflake"
         case .pantry: return "cabinet"
         case .beverages: return "cup.and.saucer"
+        case .snacks: return "popcorn"
         case .household: return "house"
         case .personalCare: return "cross.case"
         case .other: return "square.grid.2x2"
@@ -41,9 +43,10 @@ enum ShoppingCategory: String, Codable, CaseIterable, Identifiable, Hashable {
         case .frozen: return 5
         case .pantry: return 6
         case .beverages: return 7
-        case .personalCare: return 8
-        case .household: return 9
-        case .other: return 10
+        case .snacks: return 8
+        case .personalCare: return 9
+        case .household: return 10
+        case .other: return 11
         }
     }
 }

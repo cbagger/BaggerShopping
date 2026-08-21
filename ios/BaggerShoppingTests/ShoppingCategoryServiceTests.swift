@@ -10,6 +10,8 @@ final class ShoppingCategoryServiceTests: XCTestCase {
         XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Hakket oksekød")), .meat)
         XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Rugbrød")), .bakery)
         XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Pesto")), .pantry)
+        XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Chips")), .snacks)
+        XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Bland selv slik")), .snacks)
         XCTAssertEqual(ShoppingCategoryService.classify(ShoppingCategoryService.normalize("Shampoo")), .personalCare)
     }
 

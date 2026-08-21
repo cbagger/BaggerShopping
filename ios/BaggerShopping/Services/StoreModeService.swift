@@ -82,6 +82,7 @@ enum StoreModeService {
         .dairy,
         .frozen,
         .beverages,
+        .snacks,
         .household,
         .personalCare,
         .other,

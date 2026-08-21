@@ -16,6 +16,7 @@ Categories:
 - Frost
 - Kolonial
 - Drikkevarer
+- Snacks
 - Husholdning
 - Personlig pleje
 - Andet

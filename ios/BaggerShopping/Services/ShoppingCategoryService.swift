@@ -86,6 +86,9 @@ final class ShoppingCategoryService: ObservableObject {
             (.beverages, [
                 "cola", "sodavand", "danskvand", "juice", "saft", "kaffe", "te", "øl", "vin", "energidrik", "vand"
             ]),
+            (.snacks, [
+                "chips", "slik", "chokolade", "nødder", "popcorn", "snack", "dip", "vingummi", "lakrids", "kiks"
+            ]),
             (.household, [
                 "toiletpapir", "køkkenrulle", "opvasketabs", "opvask", "vaskemiddel", "skyllemiddel", "affaldsposer", "skraldeposer",
                 "stanniol", "sølvpapir", "bagepapir", "madpapir", "rengøring", "rengøringssvamp", "opvaskesvamp", "klude",
@@ -98,7 +101,7 @@ final class ShoppingCategoryService: ObservableObject {
             (.pantry, [
                 "pasta", "ris", "mel", "sukker", "salt", "peber", "olie", "eddike", "ketchup", "sennep", "mayonnaise", "remoulade",
                 "pesto", "tomatsauce", "hakkede tomater", "bouillon", "havregryn", "morgenmad", "cornflakes", "mysli", "müsli",
-                "nutella", "syltetøj", "honning", "kiks", "chips", "slik", "chokolade", "nødder", "dåse"
+                "nutella", "syltetøj", "honning", "dåse"
             ])
         ]
 
