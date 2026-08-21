@@ -85,6 +85,17 @@ final class StoreModeTests: XCTestCase {
         )
     }
 
+    func testStoreModeProgressTracksRemainingAndPurchasedItems() {
+        let underway = StoreModeService.progress(remaining: 4, purchased: 2)
+        XCTAssertEqual(underway.total, 6)
+        XCTAssertEqual(underway.completedFraction, 1.0 / 3.0, accuracy: 0.0001)
+        XCTAssertFalse(underway.isComplete)
+
+        let complete = StoreModeService.progress(remaining: 0, purchased: 6)
+        XCTAssertEqual(complete.completedFraction, 1)
+        XCTAssertTrue(complete.isComplete)
+    }
+
     @MainActor
     func testLayoutLearningIsScopedToExactPhysicalStore() {
         let suite = "StoreModeTests-\(UUID().uuidString)"

@@ -110,6 +110,25 @@ enum StoreModeService {
                 return lhs.address.localizedCaseInsensitiveCompare(rhs.address) == .orderedAscending
             }
     }
+
+    static func progress(remaining: Int, purchased: Int) -> StoreModeProgress {
+        StoreModeProgress(
+            remaining: max(remaining, 0),
+            purchased: max(purchased, 0)
+        )
+    }
+}
+
+struct StoreModeProgress: Equatable {
+    let remaining: Int
+    let purchased: Int
+
+    var total: Int { remaining + purchased }
+    var completedFraction: Double {
+        guard total > 0 else { return 0 }
+        return Double(purchased) / Double(total)
+    }
+    var isComplete: Bool { total > 0 && remaining == 0 }
 }
 
 @MainActor
