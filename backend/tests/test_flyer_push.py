@@ -187,10 +187,12 @@ def test_same_publication_id_new_validity_window_notifies_once(tmp_path, monkeyp
     }
     flyer_push._save(store)
 
+    next_valid_from = date.today() + timedelta(days=7)
+    next_valid_until = next_valid_from + timedelta(days=6)
     next_release = original.model_copy(update={
         "title": "Uge 35",
-        "valid_from": "21.08.2026",
-        "valid_until": "27.08.2026",
+        "valid_from": next_valid_from.strftime("%d.%m.%Y"),
+        "valid_until": next_valid_until.strftime("%d.%m.%Y"),
         "page_image_urls": ["https://example.test/week-35.jpg"],
     })
     sent = []
