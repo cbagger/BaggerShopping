@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel
@@ -17,6 +18,23 @@ MEMBER_PRESENTATION_FIELDS = {
 }
 
 
+def offer_is_upcoming(offer: Offer, *, today: date | None = None) -> bool:
+    """Return whether an offer-level start date is still in the future.
+
+    Publication validity is intentionally not used here. A flyer may already be
+    current while one campaign on a later page starts several days later.
+    """
+
+    value = (offer.valid_from or "").strip()
+    if not value:
+        return False
+    try:
+        start = datetime.strptime(value, "%d.%m.%Y").date()
+    except ValueError:
+        return False
+    return start > (today or date.today())
+
+
 def raw_offer_payload(offer: Offer, **model_dump_kwargs: Any) -> dict[str, Any]:
     """Serialize only provider/source fields from an Offer.
 
@@ -28,6 +46,21 @@ def raw_offer_payload(offer: Offer, **model_dump_kwargs: Any) -> dict[str, Any]:
     return BaseModel.model_dump(offer, **model_dump_kwargs)
 
 
+def _apply_offer_validity_guard(payload: dict[str, Any], offer: Offer) -> None:
+    """Fail closed for a campaign that has not started yet.
+
+    The API removes add/hotspot affordances as a server-side safety net, so an
+    older iPhone build cannot accidentally add a future-dated offer either.
+    """
+
+    if not offer_is_upcoming(offer):
+        return
+    payload["safe_to_add"] = False
+    payload["publication_status"] = "upcoming"
+    for key in ("hotspot_x", "hotspot_y", "hotspot_width", "hotspot_height"):
+        payload[key] = None
+
+
 def customer_offer_payload(offer: Offer, **model_dump_kwargs: Any) -> dict[str, Any]:
     """Serialize one Offer for the iPhone/customer API.
 
@@ -37,6 +70,8 @@ def customer_offer_payload(offer: Offer, **model_dump_kwargs: Any) -> dict[str, 
     """
 
     payload = raw_offer_payload(offer, **model_dump_kwargs)
+    _apply_offer_validity_guard(payload, offer)
+
     text = " ".join(filter(None, (offer.product_name, offer.raw_text)))
     pricing = detect_member_pricing(
         retailer=offer.retailer,
@@ -60,5 +95,6 @@ def customer_offer_payload(offer: Offer, **model_dump_kwargs: Any) -> dict[str, 
 __all__ = [
     "MEMBER_PRESENTATION_FIELDS",
     "customer_offer_payload",
+    "offer_is_upcoming",
     "raw_offer_payload",
 ]
