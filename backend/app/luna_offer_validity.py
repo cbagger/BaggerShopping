@@ -29,6 +29,19 @@ _PAGE_VALIDITY_MARKER_RE = re.compile(
     rf".{{0,120}}\b(?:til\s+og\s+med|t\.?\s*o\.?\s*m\.?|til)\b.{{0,70}}{_DATE_TOKEN}",
     re.IGNORECASE | re.DOTALL,
 )
+_VALIDITY_CONTEXT_INSTRUCTION = (
+    "For every target, inspect the page for an explicit campaign validity period that governs "
+    "that exact target. This may be printed inside the advert or in a clearly page-wide banner "
+    "such as 'Fra søndag d. 23. august til og med onsdag d. 26. august'. Return "
+    "offer_valid_from and offer_valid_until in DD.MM.YYYY only when the date range is visually "
+    "bound to the target or clearly governs all offers on that page. If the page prints "
+    "day/month without a year, use the year from publication_valid_from/publication_valid_until "
+    "only when that makes the year unambiguous. Do not merely copy the publication period. If "
+    "no separate offer/page validity is visible, return both fields null and "
+    "validity_confidence=0. validity_confidence measures confidence in the date-to-target "
+    "association. If a potentially relevant date is visible but cannot be safely bound or read, "
+    "lower validity_confidence and set needs_crop_verification=true rather than guessing."
+)
 
 
 def _page_text(publication: Publication, page_number: int) -> str:
@@ -82,25 +95,17 @@ def page_context(context: dict[str, Any], publication: Publication) -> dict[str,
     result = dict(context)
     result["publication_valid_from"] = publication.valid_from
     result["publication_valid_until"] = publication.valid_until
+    # Keep the stable developer prefix byte-identical so existing explicit
+    # prompt-cache hits remain reusable. The new contract lives in the dynamic
+    # page context while the strict JSON schema enforces its output fields.
+    result["offer_validity_contract"] = _VALIDITY_CONTEXT_INSTRUCTION
     return result
 
 
 def page_instructions(existing: str) -> str:
-    return existing + (
-        "\n\nIMPORTANT OFFER-VALIDITY CONTRACT: For every target, inspect the page for an "
-        "explicit campaign validity period that governs that exact target. This may be printed "
-        "inside the advert or in a clearly page-wide banner such as 'Fra søndag d. 23. august "
-        "til og med onsdag d. 26. august'. Return offer_valid_from and offer_valid_until in "
-        "DD.MM.YYYY only when the date range is visually bound to the target or clearly governs "
-        "all offers on that page. If the page prints day/month without a year, you may use the "
-        "year from publication_valid_from/publication_valid_until only when that makes the year "
-        "unambiguous. Do NOT merely copy the publication period into these fields. If no separate "
-        "offer/page validity is visible, return both fields null and validity_confidence=0. "
-        "validity_confidence measures confidence in the date-to-target association, not OCR "
-        "legibility alone. If a potentially relevant date is visible but cannot be safely bound "
-        "or read, lower validity_confidence and set needs_crop_verification=true rather than "
-        "guessing."
-    )
+    """Preserve the existing cached developer prompt verbatim."""
+
+    return existing
 
 
 def _normalized_date(value: object) -> str | None:
@@ -127,7 +132,9 @@ def validate_page_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]
         except ValueError:
             return None
 
-        confidence = row.get("validity_confidence")
+        # Compatibility for historical/mock semantic rows. Real Luna output is
+        # still required to include all three fields by the strict JSON schema.
+        confidence = row.get("validity_confidence", 0.0)
         if (
             isinstance(confidence, bool)
             or not isinstance(confidence, (int, float))
