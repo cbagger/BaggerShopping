@@ -16,6 +16,7 @@ from .flyer_readiness import (
     publication_is_ready,
 )
 from .luna_enrichment import load_config, load_store, offer_fingerprint
+from .luna_offer_validity import safe_offer_validity, starts_in_future
 from .luna_semantic_audit import offer_key
 from .meny_flyer import Offer, OfferVariant, Publication
 from .retailer_sources import is_active_retailer
@@ -267,6 +268,17 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
                     signals.append("luna-multiple-products")
                 if facts.get("package_size"):
                     signals.append("luna-package-size-known")
+
+                valid_from, valid_until = safe_offer_validity(facts, threshold)
+                if valid_from:
+                    updates["valid_from"] = valid_from
+                    signals.append("luna-offer-validity")
+                if valid_until:
+                    updates["valid_until"] = valid_until
+                    signals.append("luna-offer-validity")
+                if starts_in_future(valid_from):
+                    updates["safe_to_add"] = False
+                    signals.append("luna-future-offer")
 
             if (
                 not semantic_needs_crop

@@ -12,8 +12,70 @@ from .member_pricing_sources import (
     enrich_schwarz_publication,
     enrich_tjek_offers,
 )
-from .meny_flyer import Publication
+from .meny_flyer import Offer, Publication
 from .retailer_sources import RETAILER_ORDER, SOURCES
+
+
+def _tjek_offer_validity(rows: object) -> dict[str, tuple[str | None, str | None]]:
+    """Extract authoritative per-offer validity from Tjek's detailed offer feed.
+
+    A catalogue can be current while a campaign on one page starts later. Tjek
+    exposes those campaign dates on detailed offer rows; keeping them separate
+    from publication dates avoids presenting a Sunday-only offer on Saturday.
+    """
+
+    if not isinstance(rows, list):
+        return {}
+    result: dict[str, tuple[str | None, str | None]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("id"):
+            continue
+        valid_from = raw._iso_date(
+            row.get("run_from")
+            or row.get("valid_from")
+            or row.get("start_at")
+            or row.get("start_date")
+        )
+        valid_until = raw._iso_date(
+            row.get("run_till")
+            or row.get("valid_until")
+            or row.get("end_at")
+            or row.get("end_date")
+        )
+        if valid_from or valid_until:
+            result[str(row["id"])] = (valid_from, valid_until)
+    return result
+
+
+def _apply_tjek_offer_validity(offers: list[Offer], rows: object) -> list[Offer]:
+    validity = _tjek_offer_validity(rows)
+    if not validity:
+        return offers
+
+    result: list[Offer] = []
+    for offer in offers:
+        # Tjek hotspot ids are stored as "<offer-id>-<page>" in the common
+        # model. Split only the final numeric page suffix so ids containing
+        # dashes remain intact.
+        source_id, separator, page_suffix = offer.id.rpartition("-")
+        if not separator or not page_suffix.isdigit():
+            source_id = offer.id
+        valid_from, valid_until = validity.get(source_id, (None, None))
+        if not valid_from and not valid_until:
+            result.append(offer)
+            continue
+
+        updates: dict = {}
+        if valid_from:
+            updates["valid_from"] = valid_from
+        if valid_until:
+            updates["valid_until"] = valid_until
+        updates["quality_signals"] = list(dict.fromkeys([
+            *offer.quality_signals,
+            "provider-offer-validity",
+        ]))
+        result.append(offer.model_copy(update=updates))
+    return result
 
 
 def parse_tjek_hotspots(
@@ -23,6 +85,7 @@ def parse_tjek_hotspots(
 ):
     """Parse Tjek geometry and preserve provider-owned member-price context."""
     offers = raw.parse_tjek_hotspots(publication, rows, offer_rows)
+    offers = _apply_tjek_offer_validity(offers, offer_rows)
     return enrich_tjek_offers(offers, rows, offer_rows)
 
 
