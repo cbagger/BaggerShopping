@@ -16,6 +16,7 @@ from typing import Any, Iterable
 import httpx
 
 from . import luna_cost_policy as cost_policy
+from . import luna_offer_validity as offer_validity
 from . import luna_semantic_audit as base
 from . import luna_semantic_guards as guards
 from .luna_enrichment import (
@@ -41,7 +42,18 @@ def page_fingerprint(
     page_number: int,
     offers: Iterable[Offer],
 ) -> str:
-    return guards._versioned_page_fingerprint(publication, page_number, offers)
+    offers = tuple(offers)
+    base_fingerprint = guards._versioned_page_fingerprint(
+        publication,
+        page_number,
+        offers,
+    )
+    return offer_validity.page_fingerprint(
+        publication,
+        page_number,
+        offers,
+        base_fingerprint=base_fingerprint,
+    )
 
 
 def collect_page_audit_candidates(
@@ -101,9 +113,11 @@ def _page_schema(candidate: PageAuditCandidate) -> dict[str, Any]:
         "properties": {
             "offers": {
                 "type": "array",
-                "items": guards._strict_fact_schema(
-                    include_offer_id=True,
-                    offer_ids=ids,
+                "items": offer_validity.extend_fact_schema(
+                    guards._strict_fact_schema(
+                        include_offer_id=True,
+                        offer_ids=ids,
+                    )
                 ),
                 "minItems": count,
                 "maxItems": count,
@@ -117,17 +131,24 @@ def _page_request_body(
     candidate: PageAuditCandidate,
     config: dict[str, Any],
 ) -> dict[str, Any]:
+    context = offer_validity.page_context(
+        base._page_context(candidate),
+        candidate.publication,
+    )
+    instructions = offer_validity.page_instructions(
+        guards._strict_page_instructions()
+    )
     return {
         "model": str(config.get("model") or "gpt-5.6-luna"),
         "input": [
             {"role": "developer", "content": [{
                 "type": "input_text",
-                "text": guards._strict_page_instructions(),
+                "text": instructions,
                 "prompt_cache_breakpoint": {"mode": "explicit"},
             }]},
             {"role": "user", "content": [
                 {"type": "input_text", "text": json.dumps(
-                    base._page_context(candidate),
+                    context,
                     ensure_ascii=False,
                     separators=(",", ":"),
                 )},
@@ -197,9 +218,11 @@ async def analyze_page_audit(
         body = response.json()
         text = _output_text(body)
         parsed = json.loads(text) if text else None
-        facts_list = guards._strict_validate_page_output(
-            parsed,
-            {offer.id for offer in candidate.offers},
+        facts_list = offer_validity.validate_page_rows(
+            guards._strict_validate_page_output(
+                parsed,
+                {offer.id for offer in candidate.offers},
+            )
         )
 
         store = load_store()
