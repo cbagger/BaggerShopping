@@ -400,7 +400,7 @@ DATAFLOW: tuple[dict[str, str], ...] = (
 )
 
 
-IOS_RELEASE = {"version": "1.0.0", "build": "72"}
+IOS_RELEASE = {"version": "1.0.0", "build": "73"}
 
 
 def catalog() -> list[dict[str, Any]]:

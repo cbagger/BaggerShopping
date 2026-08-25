@@ -69,3 +69,4 @@ class ItemMutationResponse(BaseModel):
     quantity: float | None = None
     unit: str | None = None
     grpc_status: int | None = None
+    item_name: str | None = None

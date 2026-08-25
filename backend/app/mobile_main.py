@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from .mobile_offer_metadata import router as offer_metadata_router
 from .mobile_offers import router as offers_router
 from .product_identity import router as product_identity_router
+from .quick_add import record_purchase, router as quick_add_router
 from .samsung_login import router as samsung_login_router
 from .households import HouseholdContext, read_household, require_household, require_owner, router as households_router, update_household
 from .flyer_push import router as flyer_push_router
@@ -368,17 +369,25 @@ async def set_mobile_item_checked(
     context: HouseholdContext = Depends(household_context),
 ) -> dict[str, Any]:
     if context.list_backend == "local":
+        purchase: dict[str, Any] = {}
         def mutate(household):
             for item in household.setdefault("items", []):
                 if item.get("id") == item_id:
+                    purchase["name"] = item.get("name")
                     item["checked"] = request.checked
                     return {"ok": True, "item_id": item_id}
             raise HTTPException(status_code=404, detail="Varen findes ikke i familien")
-        return await update_household(context, mutate)
+        response = await update_household(context, mutate)
+        if request.checked and purchase.get("name"):
+            await record_purchase(context, item_id=item_id, item_name=purchase["name"])
+        return response
     family_client = await family_samsung_client(context)
     if family_client is not None:
         try:
-            return {"ok": True, **await family_client.set_item_checked(item_id, request.checked)}
+            result = await family_client.set_item_checked(item_id, request.checked)
+            if request.checked and result.get("item_name"):
+                await record_purchase(context, item_id=item_id, item_name=result["item_name"])
+            return {"ok": True, **result}
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
     try:
@@ -387,7 +396,10 @@ async def set_mobile_item_checked(
         raise HTTPException(status_code=502, detail=f"Core service unavailable: {exc}") from exc
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail=f"Core check-item request failed: {response.text[:500]}")
-    return response.json()
+    result = response.json()
+    if request.checked and result.get("item_name"):
+        await record_purchase(context, item_id=item_id, item_name=result["item_name"])
+    return result
 
 
 @app.patch("/api/mobile/v1/items/{item_id}/quantity")
@@ -588,5 +600,6 @@ app.include_router(offer_metadata_router, dependencies=[Depends(household_contex
 app.include_router(households_router)
 app.include_router(offers_router, dependencies=[Depends(household_context)])
 app.include_router(product_identity_router, dependencies=[Depends(household_context)])
+app.include_router(quick_add_router)
 app.include_router(samsung_login_router)
 app.include_router(flyer_push_router, dependencies=[Depends(household_context)])
