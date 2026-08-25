@@ -43,94 +43,110 @@ struct StructuredVariantPickerView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                if offer.imageURL != nil {
-                    OfferCropView(offer: offer)
-                        .frame(maxWidth: .infinity, minHeight: 130, maxHeight: 190)
-                        .listRowInsets(EdgeInsets())
-                }
-
-                Section {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(offer.conciseProductName).font(.headline)
-                        HStack(spacing: 6) {
-                            Text(offer.retailer).fontWeight(.semibold)
-                            if let price = offer.price {
-                                Text("·")
-                                Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
-                            }
+            Group {
+                if let title = offer.addAvailabilityTitle,
+                   let message = offer.addAvailabilityMessage {
+                    ContentUnavailableView(
+                        title,
+                        systemImage: offer.publicationStatus == "upcoming"
+                            ? "calendar.badge.clock"
+                            : "exclamationmark.shield",
+                        description: Text(message)
+                    )
+                    .padding()
+                } else {
+                    List {
+                        if offer.imageURL != nil {
+                            OfferCropView(offer: offer)
+                                .frame(maxWidth: .infinity, minHeight: 130, maxHeight: 190)
+                                .listRowInsets(EdgeInsets())
                         }
-                        .font(.subheadline).foregroundStyle(.secondary)
-                        if offer.memberPrice != nil {
-                            MemberPriceBadge(offer: offer, compact: true)
-                        }
-                        identityChips(offer.productIdentity)
-                    }
-                }
 
-                Section("Vælg variant") {
-                    if options.isEmpty {
-                        Text("Varianterne kan ikke opdeles sikkert. Du kan bruge kampagnens navn eller skrive din ønskede variant.")
-                            .font(.subheadline).foregroundStyle(.secondary)
-                    }
-                    ForEach(options) { option in
-                        Button { choose(option.name) } label: {
-                            VStack(alignment: .leading, spacing: 7) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text(option.name).font(.headline).foregroundStyle(.primary)
-                                    Spacer()
-                                    if option.variant?.matchesQuery == true {
-                                        Label("Bedste match", systemImage: "checkmark.circle.fill")
-                                            .font(.caption2.weight(.semibold)).foregroundStyle(.green)
+                        Section {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(offer.conciseProductName).font(.headline)
+                                HStack(spacing: 6) {
+                                    Text(offer.retailer).fontWeight(.semibold)
+                                    if let price = offer.price {
+                                        Text("·")
+                                        Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
                                     }
                                 }
-                                if let detail = variantPackDetail(option.variant),
-                                   option.name.range(of: detail, options: [.caseInsensitive, .diacriticInsensitive]) == nil {
-                                    Label(detail, systemImage: "shippingbox")
-                                        .font(.caption.weight(.medium))
-                                        .foregroundStyle(.secondary)
+                                .font(.subheadline).foregroundStyle(.secondary)
+                                if offer.memberPrice != nil {
+                                    MemberPriceBadge(offer: offer, compact: true)
                                 }
-                                identityChips(option.variant?.identity)
-                                unitPrice(option.variant?.identity)
+                                identityChips(offer.productIdentity)
                             }
-                            .padding(.vertical, 5)
                         }
-                    }
-                }
 
-                Section("Et andet valg") {
-                    Button("\(selectionVerb) uden bestemt variant") {
-                        choose(offer.shoppingItemName(variant: nil))
-                    }
-                    TextField("Skriv din ønskede variant", text: $customName)
-                    Button(selectionVerb) {
-                        choose(offer.shoppingItemName(customVariant: customName))
-                    }
-                    .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
+                        Section("Vælg variant") {
+                            if options.isEmpty {
+                                Text("Varianterne kan ikke opdeles sikkert. Du kan bruge kampagnens navn eller skrive din ønskede variant.")
+                                    .font(.subheadline).foregroundStyle(.secondary)
+                            }
+                            ForEach(options) { option in
+                                Button { choose(option.name) } label: {
+                                    VStack(alignment: .leading, spacing: 7) {
+                                        HStack(alignment: .firstTextBaseline) {
+                                            Text(option.name).font(.headline).foregroundStyle(.primary)
+                                            Spacer()
+                                            if option.variant?.matchesQuery == true {
+                                                Label("Bedste match", systemImage: "checkmark.circle.fill")
+                                                    .font(.caption2.weight(.semibold)).foregroundStyle(.green)
+                                            }
+                                        }
+                                        if let detail = variantPackDetail(option.variant),
+                                           option.name.range(of: detail, options: [.caseInsensitive, .diacriticInsensitive]) == nil {
+                                            Label(detail, systemImage: "shippingbox")
+                                                .font(.caption.weight(.medium))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        identityChips(option.variant?.identity)
+                                        unitPrice(option.variant?.identity)
+                                    }
+                                    .padding(.vertical, 5)
+                                }
+                            }
+                        }
 
-                Section("Familiens valg") {
-                    Toggle("Husk denne variant for familien", isOn: $rememberForFamily)
-                    if rememberForFamily {
-                        Toggle("Kræv præcis denne variant", isOn: $requireExactVariant)
-                        Text(requireExactVariant
-                             ? "Andre varianter skjules i automatiske forslag."
-                             : "Varianten prioriteres, men andre tydelige muligheder kan stadig vises.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Button("Alle varianter er acceptable") {
-                        saveAnyVariantAndSelect()
-                    }
-                    .disabled(saving)
-                    if let preferenceMessage {
-                        Text(preferenceMessage).font(.caption).foregroundStyle(.secondary)
+                        Section("Et andet valg") {
+                            Button("\(selectionVerb) uden bestemt variant") {
+                                choose(offer.shoppingItemName(variant: nil))
+                            }
+                            TextField("Skriv din ønskede variant", text: $customName)
+                            Button(selectionVerb) {
+                                choose(offer.shoppingItemName(customVariant: customName))
+                            }
+                            .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+
+                        Section("Familiens valg") {
+                            Toggle("Husk denne variant for familien", isOn: $rememberForFamily)
+                            if rememberForFamily {
+                                Toggle("Kræv præcis denne variant", isOn: $requireExactVariant)
+                                Text(requireExactVariant
+                                     ? "Andre varianter skjules i automatiske forslag."
+                                     : "Varianten prioriteres, men andre tydelige muligheder kan stadig vises.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Button("Alle varianter er acceptable") {
+                                saveAnyVariantAndSelect()
+                            }
+                            .disabled(saving)
+                            if let preferenceMessage {
+                                Text(preferenceMessage).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                     }
                 }
             }
-            .navigationTitle("Vælg vare")
+            .navigationTitle(offer.safeToAdd ? "Vælg vare" : "Tilbud")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuller") { dismiss() } } }
-            .task { await loadPreference() }
+            .task {
+                if offer.safeToAdd { await loadPreference() }
+            }
         }
     }
 
@@ -204,6 +220,7 @@ struct StructuredVariantPickerView: View {
     }
 
     private func choose(_ rawName: String) {
+        guard offer.safeToAdd else { return }
         let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
         let shoppingName = offer.samsungSafeShoppingItemName(name)
@@ -224,6 +241,7 @@ struct StructuredVariantPickerView: View {
     }
 
     private func saveAnyVariantAndSelect() {
+        guard offer.safeToAdd else { return }
         saving = true
         let base = offer.shoppingItemName(variant: nil)
         Task {
