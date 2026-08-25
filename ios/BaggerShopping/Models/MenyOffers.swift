@@ -151,9 +151,8 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         sourceURL = try values.decode(URL.self, forKey: .sourceURL)
         pageNumber = try values.decodeIfPresent(Int.self, forKey: .pageNumber)
 
-        // Upcoming offers intentionally keep the legacy hotspot fields null so
-        // older builds cannot expose an actionable plus. Build 72+ may draw the
-        // marker from display-only coordinates while still honoring safeToAdd.
+        // Upcoming offers intentionally keep the legacy hotspot fields null on
+        // the wire. Build 72 renders the separate display-only coordinates.
         hotspotX = try values.decodeIfPresent(Double.self, forKey: .hotspotX)
             ?? values.decodeIfPresent(Double.self, forKey: .displayHotspotX)
         hotspotY = try values.decodeIfPresent(Double.self, forKey: .hotspotY)
@@ -175,6 +174,60 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         qualitySource = try values.decodeIfPresent(String.self, forKey: .qualitySource) ?? "unknown"
         qualityIssues = try values.decodeIfPresent([String].self, forKey: .qualityIssues) ?? []
         qualitySignals = try values.decodeIfPresent([String].self, forKey: .qualitySignals) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(retailer, forKey: .retailer)
+        try values.encode(publicationID, forKey: .publicationID)
+        try values.encode(publicationTitle, forKey: .publicationTitle)
+        try values.encodeIfPresent(validFrom, forKey: .validFrom)
+        try values.encodeIfPresent(validUntil, forKey: .validUntil)
+        try values.encode(productName, forKey: .productName)
+        try values.encodeIfPresent(brand, forKey: .brand)
+        try values.encodeIfPresent(price, forKey: .price)
+        try values.encodeIfPresent(normalPrice, forKey: .normalPrice)
+        try values.encodeIfPresent(memberPrice, forKey: .memberPrice)
+        try values.encodeIfPresent(memberPriceLabel, forKey: .memberPriceLabel)
+        try values.encodeIfPresent(memberPriceApp, forKey: .memberPriceApp)
+        try values.encode(memberPriceRequiresActivation, forKey: .memberPriceRequiresActivation)
+        try values.encodeIfPresent(memberPriceSource, forKey: .memberPriceSource)
+        try values.encodeIfPresent(quantity, forKey: .quantity)
+        try values.encodeIfPresent(unit, forKey: .unit)
+        try values.encodeIfPresent(unitPrice, forKey: .unitPrice)
+        try values.encodeIfPresent(discountPercent, forKey: .discountPercent)
+        try values.encodeIfPresent(imageURL, forKey: .imageURL)
+        try values.encode(sourceURL, forKey: .sourceURL)
+        try values.encodeIfPresent(pageNumber, forKey: .pageNumber)
+
+        if !safeToAdd && publicationStatus == "upcoming" {
+            // Keep cached payloads fail-closed for a possible older client:
+            // legacy hotspot fields remain absent, display-only fields retain
+            // the visual marker for Build 72+.
+            try values.encodeIfPresent(hotspotX, forKey: .displayHotspotX)
+            try values.encodeIfPresent(hotspotY, forKey: .displayHotspotY)
+            try values.encodeIfPresent(hotspotWidth, forKey: .displayHotspotWidth)
+            try values.encodeIfPresent(hotspotHeight, forKey: .displayHotspotHeight)
+        } else {
+            try values.encodeIfPresent(hotspotX, forKey: .hotspotX)
+            try values.encodeIfPresent(hotspotY, forKey: .hotspotY)
+            try values.encodeIfPresent(hotspotWidth, forKey: .hotspotWidth)
+            try values.encodeIfPresent(hotspotHeight, forKey: .hotspotHeight)
+        }
+
+        try values.encode(rawText, forKey: .rawText)
+        try values.encode(safeToAdd, forKey: .safeToAdd)
+        try values.encode(variants, forKey: .variants)
+        try values.encodeIfPresent(identityMatch, forKey: .identityMatch)
+        try values.encodeIfPresent(productIdentity, forKey: .productIdentity)
+        try values.encodeIfPresent(publicationStatus, forKey: .publicationStatus)
+        try values.encode(hotspotConfidence, forKey: .hotspotConfidence)
+        try values.encode(variantConfidence, forKey: .variantConfidence)
+        try values.encode(qualityScore, forKey: .qualityScore)
+        try values.encode(qualitySource, forKey: .qualitySource)
+        try values.encode(qualityIssues, forKey: .qualityIssues)
+        try values.encode(qualitySignals, forKey: .qualitySignals)
     }
 
     var memberPriceDisplayLabel: String {
