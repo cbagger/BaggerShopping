@@ -181,3 +181,69 @@ def test_strong_deterministic_variants_are_never_replaced(monkeypatch, tmp_path)
     enriched = apply_cached_enrichment([publication])[0].structured_offers[0]
     assert enriched.variants == []
     assert enriched.variant_confidence == 0.95
+
+
+def test_luna_future_validity_preserves_existing_add_safety(monkeypatch, tmp_path):
+    _configure(monkeypatch, tmp_path, enabled=True)
+    publication = _publication()
+    original = publication.structured_offers[0]
+    offer = original.model_copy(update={"safe_to_add": True})
+    publication.structured_offers = [offer]
+
+    luna.save_store({
+        "records": {},
+        "semantic_facts": {
+            offer_key(offer): {
+                "source": "page-audit",
+                "needs_crop": False,
+                "facts": {
+                    "visible": True,
+                    "same_offer": True,
+                    "multiple_products": False,
+                    "variants": [],
+                    "variant_confidence": 0.0,
+                    "identity_confidence": 0.0,
+                    "pricing_confidence": 0.0,
+                    "offer_valid_from": "31.12.2099",
+                    "offer_valid_until": "02.01.2100",
+                    "validity_confidence": 1.0,
+                },
+            }
+        },
+        "pricing_index": {}, "usage": {}, "events": [],
+    })
+
+    enriched = apply_cached_enrichment([publication])[0].structured_offers[0]
+    assert enriched.valid_from == "31.12.2099"
+    assert enriched.valid_until == "02.01.2100"
+    assert enriched.safe_to_add is True
+    assert "luna-offer-validity" in enriched.quality_signals
+    assert "luna-future-offer" not in enriched.quality_signals
+
+    publication.structured_offers = [offer.model_copy(update={"safe_to_add": False})]
+    unsafe_offer = publication.structured_offers[0]
+    luna.save_store({
+        "records": {},
+        "semantic_facts": {
+            offer_key(unsafe_offer): {
+                "source": "page-audit",
+                "needs_crop": False,
+                "facts": {
+                    "visible": True,
+                    "same_offer": True,
+                    "multiple_products": False,
+                    "variants": [],
+                    "variant_confidence": 0.0,
+                    "identity_confidence": 0.0,
+                    "pricing_confidence": 0.0,
+                    "offer_valid_from": "31.12.2099",
+                    "offer_valid_until": "02.01.2100",
+                    "validity_confidence": 1.0,
+                },
+            }
+        },
+        "pricing_index": {}, "usage": {}, "events": [],
+    })
+
+    still_unsafe = apply_cached_enrichment([publication])[0].structured_offers[0]
+    assert still_unsafe.safe_to_add is False
