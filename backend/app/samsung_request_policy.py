@@ -29,31 +29,33 @@ class RequestOnlySamsungAuthManager(SamsungAuthManager):
 async def family_samsung_client(context: HouseholdContext) -> Any | None:
     """Return the request-safe Samsung client for one household.
 
-    Familien Bagger intentionally stays on the proven core connector. Other
-    families may use their isolated persisted Samsung token, but never browser
-    recovery during an ordinary mobile request.
+    A completed family-scoped broker login always takes precedence, including
+    for Familien Bagger. The historic core connector remains a compatibility
+    fallback only while the legacy household has not yet completed the isolated
+    Samsung login/list-selection flow.
     """
-
-    if context.household_id == LEGACY_HOUSEHOLD_ID:
-        return None
 
     household = await read_household(context)
     integration = household.get("integrations", {}).get("samsung_food", {})
     list_id = integration.get("list_id")
     auth_state = integration.get("auth_state_path")
     browser_profile = integration.get("browser_profile_path")
-    if not all(
+
+    if all(
         isinstance(value, str) and value
         for value in (list_id, auth_state, browser_profile)
     ):
+        auth = RequestOnlySamsungAuthManager(
+            state_file=Path(auth_state),
+            browser_user_data_dir=Path(browser_profile),
+            allow_credential_fallback=False,
+        )
+        return SamsungFoodClient(list_id=list_id, auth=auth)
+
+    if context.household_id == LEGACY_HOUSEHOLD_ID:
         return None
 
-    auth = RequestOnlySamsungAuthManager(
-        state_file=Path(auth_state),
-        browser_user_data_dir=Path(browser_profile),
-        allow_credential_fallback=False,
-    )
-    return SamsungFoodClient(list_id=list_id, auth=auth)
+    return None
 
 
 __all__ = ["RequestOnlySamsungAuthManager", "family_samsung_client"]
