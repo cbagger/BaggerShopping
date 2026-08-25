@@ -227,6 +227,24 @@ extension GroceryOffer {
         return samsungSafeShoppingItemName("\(base) – \(custom)")
     }
 
+    func familyFavoriteName(variant: OfferVariant? = nil) -> String {
+        let selected = variant.map { shoppingItemName(variant: $0.name) }
+            ?? samsungSafeShoppingItemName(conciseProductName)
+        let quantity = variant?.quantity ?? self.quantity
+        let unit = variant?.unit ?? self.unit
+        guard let quantity, quantity > 0,
+              let unit = unit?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !unit.isEmpty,
+              selected.range(
+                  of: #"\b\d+(?:[.,]\d+)?\s*(?:kg|g|ml|cl|l|stk\.?|pk\.?)\b"#,
+                  options: [.regularExpression, .caseInsensitive]
+              ) == nil else { return selected }
+        let amount = quantity.rounded() == quantity
+            ? String(Int(quantity))
+            : quantity.formatted(.number.precision(.fractionLength(0...2)))
+        return "\(selected) \(amount) \(unit)"
+    }
+
     private var manualVariantBaseName: String {
         let base = conciseProductName
         let folded = base.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "da_DK"))

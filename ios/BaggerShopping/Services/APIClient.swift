@@ -351,7 +351,10 @@ struct APIClient {
     }
 
     func removeFamilyProductPreference(itemName: String) async throws {
-        _ = try await perform(request(path: "/api/mobile/v1/product-identity/preferences/\(itemName)", method: "DELETE"))
+        var allowed = CharacterSet.urlPathAllowed
+        allowed.remove(charactersIn: "/")
+        let encoded = itemName.addingPercentEncoding(withAllowedCharacters: allowed) ?? itemName
+        _ = try await perform(request(path: "/api/mobile/v1/product-identity/preferences/\(encoded)", method: "DELETE"))
     }
 
     func fetchOffers(publicationID: String) async throws -> PublicationOffersResponse {

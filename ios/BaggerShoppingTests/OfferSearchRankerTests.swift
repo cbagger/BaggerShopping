@@ -89,12 +89,60 @@ final class OfferSearchRankerTests: XCTestCase {
         XCTAssertEqual(OfferSearchRanker.rank([expensive, cheap], for: "Smør").map(\.id), ["cheap", "expensive"])
     }
 
+    func testFamilyFavoriteAlwaysRanksBeforeOtherRelevantOffers() throws {
+        let cheapOther = try makeOffer(
+            id: "heinz",
+            retailer: "MENY",
+            productName: "Heinz ketchup",
+            price: 10,
+            variants: ["Heinz ketchup"]
+        )
+        let favorite = try makeOffer(
+            id: "beauvais",
+            retailer: "Bilka",
+            productName: "Beauvais ketchup 500 ml",
+            price: 20,
+            variants: ["Beauvais ketchup 500 ml"],
+            familyFavoriteScore: 340
+        )
+
+        XCTAssertEqual(
+            OfferSearchRanker.rank([cheapOther, favorite], for: "ketchup").map(\.id),
+            ["beauvais", "heinz"]
+        )
+    }
+
+    func testExactFavoritePackageOnlyBreaksTieInsideFavoriteGroup() throws {
+        let relatedSize = try makeOffer(
+            id: "beauvais-500",
+            retailer: "MENY",
+            productName: "Beauvais ketchup 500 ml",
+            price: 10,
+            variants: ["Beauvais ketchup 500 ml"],
+            familyFavoriteScore: 340
+        )
+        let exactSize = try makeOffer(
+            id: "beauvais-1000",
+            retailer: "Bilka",
+            productName: "Beauvais ketchup 1 kg",
+            price: 20,
+            variants: ["Beauvais ketchup 1 kg"],
+            familyFavoriteScore: 365
+        )
+
+        XCTAssertEqual(
+            OfferSearchRanker.rank([relatedSize, exactSize], for: "ketchup").map(\.id),
+            ["beauvais-1000", "beauvais-500"]
+        )
+    }
+
     private func makeOffer(
         id: String,
         retailer: String,
         productName: String,
         price: Double,
-        variants: [String]
+        variants: [String],
+        familyFavoriteScore: Int = 0
     ) throws -> GroceryOffer {
         let payload: [String: Any] = [
             "id": id,
@@ -106,6 +154,7 @@ final class OfferSearchRankerTests: XCTestCase {
             "source_url": "https://example.com/offer",
             "raw_text": "",
             "safe_to_add": true,
+            "family_favorite_score": familyFavoriteScore,
             "variants": variants.enumerated().map { index, name in
                 [
                     "id": "\(id)-\(index)",

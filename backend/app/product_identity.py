@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import unicodedata
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Literal
 
@@ -20,6 +21,9 @@ from .flyer_intelligence import extract_variants
 
 router = APIRouter(prefix="/api/mobile/v1/product-identity", tags=["product-identity"])
 LOCK = asyncio.Lock()
+_FAMILY_PREFERENCES_SNAPSHOT: ContextVar[
+    tuple[HouseholdContext, list[FamilyProductPreference]] | None
+] = ContextVar("family_product_preferences_snapshot", default=None)
 
 _STORE_CACHE_LOCK = threading.RLock()
 _STORE_CACHE: dict[str, Any] | None = None
@@ -145,11 +149,20 @@ class FeedbackRequest(CompareRequest):
 class FamilyProductPreference(BaseModel):
     item_name: str = Field(min_length=1, max_length=200)
     preferred_name: str = Field(min_length=1, max_length=300)
-    mode: Literal["preferred", "required", "any_variant"] = "preferred"
+    # The legacy values remain readable so a family never loses preferences
+    # saved by an older iOS build. Build 74 writes ``favorite`` and treats all
+    # older preferred/required values as non-filtering favorites.
+    mode: Literal["favorite", "preferred", "required", "any_variant"] = "favorite"
 
 
 class FamilyPreferencesResponse(BaseModel):
     preferences: list[FamilyProductPreference]
+
+
+class FamilyFavoriteMatch(BaseModel):
+    item_name: str
+    preferred_name: str
+    score: int
 
 
 class ImageTextObservation(BaseModel):
@@ -299,6 +312,108 @@ def normalize(value: str) -> str:
     return " ".join(TOKEN_RE.findall(_fold(value)))
 
 
+FAVORITE_AMOUNT_TOKENS = {
+    "cl", "g", "gram", "kg", "kilo", "l", "liter", "ml", "pak", "pakke",
+    "pakker", "pk", "stk", "styk", "stykker", "x",
+}
+FAVORITE_PACKAGING_TOKENS = {
+    "bakke", "bakker", "dåse", "dåser", "flaske", "flasker", "glas",
+    "kasse", "kasser", "pose", "poser",
+}
+
+
+def _favorite_tokens(value: str, *, include_packaging: bool = False) -> set[str]:
+    ignored = FAVORITE_AMOUNT_TOKENS | (set() if include_packaging else FAVORITE_PACKAGING_TOKENS)
+    return {
+        token for token in normalize(value).split()
+        if token not in ignored and not token.replace(",", "").replace(".", "").isdigit()
+    }
+
+
+def _token_is_supported(token: str, candidates: set[str]) -> bool:
+    if token in candidates:
+        return True
+    if len(token) < 4:
+        return False
+    return any(
+        len(candidate) >= 4 and (candidate.endswith(token) or token.endswith(candidate))
+        for candidate in candidates
+    )
+
+
+def _family_preferences() -> list[FamilyProductPreference]:
+    try:
+        context = current_household()
+    except HTTPException:
+        return []
+    snapshot = _FAMILY_PREFERENCES_SNAPSHOT.get()
+    if snapshot is not None and snapshot[0] is context:
+        return snapshot[1]
+    household = load_household_store().get("households", {}).get(context.household_id, {})
+    preferences: list[FamilyProductPreference] = []
+    for value in household.get("product_preferences", {}).values():
+        try:
+            preference = FamilyProductPreference.model_validate(value)
+        except Exception:
+            continue
+        if preference.mode != "any_variant":
+            preferences.append(preference)
+    _FAMILY_PREFERENCES_SNAPSHOT.set((context, preferences))
+    return preferences
+
+
+def _favorite_preference_score(preference: FamilyProductPreference, candidate: str) -> int:
+    """Score a favorite without letting size or package count decide the match."""
+    base_terms = _favorite_tokens(preference.item_name)
+    preferred_terms = _favorite_tokens(preference.preferred_name)
+    candidate_terms = _favorite_tokens(candidate)
+    if not preferred_terms or not candidate_terms:
+        return 0
+
+    # The terms added by the selected product are the family's actual choice:
+    # ketchup -> Beauvais ketchup, Pepsi -> Pepsi Max. Package words remain a
+    # tie-breaker, never a requirement.
+    distinguishing = preferred_terms - base_terms
+    required = distinguishing or preferred_terms
+    if not all(_token_is_supported(term, candidate_terms) for term in required):
+        return 0
+
+    supported = sum(_token_is_supported(term, candidate_terms) for term in preferred_terms)
+    coverage = supported / len(preferred_terms)
+    if coverage < 0.60:
+        return 0
+
+    score = 300 + int(round(coverage * 30))
+    if preferred_terms == candidate_terms:
+        score += 20
+    elif preferred_terms.issubset(candidate_terms) or candidate_terms.issubset(preferred_terms):
+        score += 10
+
+    preferred_packaging = _favorite_tokens(preference.preferred_name, include_packaging=True) - preferred_terms
+    candidate_packaging = _favorite_tokens(candidate, include_packaging=True) - candidate_terms
+    score += min(15, len(preferred_packaging & candidate_packaging) * 5)
+
+    # The exact marked size/package wins only inside the favorite group.
+    if normalize(preference.preferred_name) == normalize(candidate):
+        score += 25
+    return score
+
+
+def family_favorite_match(candidates: str | list[str]) -> FamilyFavoriteMatch | None:
+    values = [candidates] if isinstance(candidates, str) else candidates
+    best: FamilyFavoriteMatch | None = None
+    for preference in _family_preferences():
+        for candidate in values:
+            score = _favorite_preference_score(preference, candidate)
+            if score > 0 and (best is None or score > best.score):
+                best = FamilyFavoriteMatch(
+                    item_name=preference.item_name,
+                    preferred_name=preference.preferred_name,
+                    score=score,
+                )
+    return best
+
+
 def _canonical_family(normalized: str) -> str | None:
     return next(
         (family for family, pattern in CANONICAL_FAMILY_PATTERNS if pattern.search(normalized)),
@@ -321,27 +436,14 @@ def family_preference(item_name: str) -> FamilyProductPreference | None:
 
 
 def apply_family_preference(item_name: str, candidate: str, score: int, result: MatchResult) -> tuple[int, MatchResult]:
-    preference = family_preference(item_name)
-    if not preference:
+    del item_name
+    favorite = family_favorite_match(candidate)
+    if not favorite:
         return score, result
-    if preference.mode == "any_variant":
-        return score, result
-    preferred_match = compare(preference.preferred_name, candidate)
-    accepted = preferred_match.level in {"same_item", "probably_same"}
-    if preference.mode == "required" and not accepted:
-        rejected = result.model_copy(update={
-            "level": "not_same",
-            "confidence": .99,
-            "explanation": "Matcher ikke familiens krævede varevariant.",
-            "direct_price_comparison": False,
-        })
-        return 0, rejected
-    if accepted:
-        boosted = result.model_copy(update={
-            "explanation": f"{result.explanation} Matcher familiens foretrukne variant.",
-        })
-        return score + 14, boosted
-    return score, result
+    boosted = result.model_copy(update={
+        "explanation": f"{result.explanation} Familiens foretrukne vare vises først.",
+    })
+    return score + 1_000 + favorite.score, boosted
 
 
 def _external_amount(quantity: float | None, unit: str | None) -> tuple[float | None, str | None]:
@@ -762,8 +864,12 @@ async def list_family_preferences(
     store = load_household_store()
     household = store.get("households", {}).get(context.household_id, {})
     values = household.get("product_preferences", {}).values()
+    preferences = [FamilyProductPreference.model_validate(value) for value in values]
     return FamilyPreferencesResponse(
-        preferences=[FamilyProductPreference.model_validate(value) for value in values]
+        preferences=[
+            preference.model_copy(update={"mode": "favorite"})
+            for preference in preferences if preference.mode != "any_variant"
+        ]
     )
 
 
