@@ -105,6 +105,10 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         case hotspotY = "hotspot_y"
         case hotspotWidth = "hotspot_width"
         case hotspotHeight = "hotspot_height"
+        case displayHotspotX = "display_hotspot_x"
+        case displayHotspotY = "display_hotspot_y"
+        case displayHotspotWidth = "display_hotspot_width"
+        case displayHotspotHeight = "display_hotspot_height"
         case rawText = "raw_text"
         case safeToAdd = "safe_to_add"
         case variants
@@ -146,10 +150,19 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         imageURL = try values.decodeIfPresent(URL.self, forKey: .imageURL)
         sourceURL = try values.decode(URL.self, forKey: .sourceURL)
         pageNumber = try values.decodeIfPresent(Int.self, forKey: .pageNumber)
+
+        // Upcoming offers intentionally keep the legacy hotspot fields null so
+        // older builds cannot expose an actionable plus. Build 72+ may draw the
+        // marker from display-only coordinates while still honoring safeToAdd.
         hotspotX = try values.decodeIfPresent(Double.self, forKey: .hotspotX)
+            ?? values.decodeIfPresent(Double.self, forKey: .displayHotspotX)
         hotspotY = try values.decodeIfPresent(Double.self, forKey: .hotspotY)
+            ?? values.decodeIfPresent(Double.self, forKey: .displayHotspotY)
         hotspotWidth = try values.decodeIfPresent(Double.self, forKey: .hotspotWidth)
+            ?? values.decodeIfPresent(Double.self, forKey: .displayHotspotWidth)
         hotspotHeight = try values.decodeIfPresent(Double.self, forKey: .hotspotHeight)
+            ?? values.decodeIfPresent(Double.self, forKey: .displayHotspotHeight)
+
         rawText = try values.decodeIfPresent(String.self, forKey: .rawText) ?? ""
         safeToAdd = try values.decodeIfPresent(Bool.self, forKey: .safeToAdd) ?? false
         variants = try values.decodeIfPresent([OfferVariant].self, forKey: .variants) ?? []
