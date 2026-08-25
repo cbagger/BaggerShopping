@@ -6,6 +6,8 @@ import pytest
 from fastapi import HTTPException
 
 from app import mobile_offers
+from app import households
+from app.households import HouseholdContext, set_current
 from app.meny_flyer import Offer, OfferVariant, parse_enrichment_chunks, parse_meny_flyer_html
 from app.product_identity import compare
 
@@ -59,6 +61,58 @@ def test_search_accepts_comma_separated_retailer_filter(monkeypatch):
     asyncio.run(mobile_offers.search_offers(q="mælk", retailer="Bilka,Lidl"))
 
     assert searched == ["Bilka", "Lidl"]
+
+
+def test_family_favorite_ranks_first_without_hiding_other_ketchup_sizes(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOUSEHOLD_STORE_PATH", str(tmp_path / "households.json"))
+    context = HouseholdContext(
+        household_id="family-a", household_name="Familie A",
+        member_name="A", role="owner", list_backend="local",
+    )
+    set_current(context)
+    households.save_store({
+        "households": {
+            context.household_id: {
+                "id": context.household_id,
+                "name": context.household_name,
+                "list_backend": "local",
+                "product_preferences": {
+                    "ketchup": {
+                        "item_name": "Ketchup",
+                        "preferred_name": "Beauvais ketchup 1 kg",
+                        "mode": "favorite",
+                    }
+                },
+            }
+        }
+    })
+    publication = parse_meny_flyer_html("<p>MENY uge 3426</p>")
+    publication.status = "current"
+    publication.structured_offers = [
+        Offer(
+            id="heinz", retailer="MENY", publication_id="week", publication_title="Uge",
+            product_name="Heinz ketchup 1 kg", price=10,
+            source_url="https://example.test/heinz", raw_text="",
+            variants=[OfferVariant(id="heinz-1", name="Heinz ketchup 1 kg")],
+        ),
+        Offer(
+            id="beauvais", retailer="MENY", publication_id="week", publication_title="Uge",
+            product_name="Beauvais ketchup 500 ml", price=20,
+            source_url="https://example.test/beauvais", raw_text="",
+            variants=[OfferVariant(id="beauvais-1", name="Beauvais ketchup 500 ml")],
+        ),
+    ]
+
+    async def all_publications():
+        return [publication]
+
+    monkeypatch.setattr(mobile_offers, "_publications", all_publications)
+    response = asyncio.run(mobile_offers.search_offers(q="ketchup", retailer=None))
+
+    assert [offer["id"] for offer in response["offers"]] == ["beauvais", "heinz"]
+    assert response["offers"][0]["family_favorite_name"] == "Beauvais ketchup 1 kg"
+    assert response["offers"][0]["family_favorite_score"] > 0
+    assert response["offers"][1]["family_favorite_score"] == 0
 
 
 def test_search_includes_upcoming_schulstad_and_keeps_all_flyer_variants(monkeypatch):

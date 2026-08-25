@@ -75,6 +75,9 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
     let variants: [OfferVariant]
     let identityMatch: ProductIdentityMatch?
     let productIdentity: ProductIdentityAnalysis?
+    let familyFavoriteScore: Int
+    let familyFavoriteName: String?
+    let familyFavoriteItemName: String?
     let publicationStatus: String?
     let hotspotConfidence: Double
     let variantConfidence: Double
@@ -114,6 +117,9 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         case variants
         case identityMatch = "identity_match"
         case productIdentity = "product_identity"
+        case familyFavoriteScore = "family_favorite_score"
+        case familyFavoriteName = "family_favorite_name"
+        case familyFavoriteItemName = "family_favorite_item_name"
         case publicationStatus = "publication_status"
         case hotspotConfidence = "hotspot_confidence"
         case variantConfidence = "variant_confidence"
@@ -167,6 +173,9 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         variants = try values.decodeIfPresent([OfferVariant].self, forKey: .variants) ?? []
         identityMatch = try values.decodeIfPresent(ProductIdentityMatch.self, forKey: .identityMatch)
         productIdentity = try values.decodeIfPresent(ProductIdentityAnalysis.self, forKey: .productIdentity)
+        familyFavoriteScore = try values.decodeIfPresent(Int.self, forKey: .familyFavoriteScore) ?? 0
+        familyFavoriteName = try values.decodeIfPresent(String.self, forKey: .familyFavoriteName)
+        familyFavoriteItemName = try values.decodeIfPresent(String.self, forKey: .familyFavoriteItemName)
         publicationStatus = try values.decodeIfPresent(String.self, forKey: .publicationStatus)
         hotspotConfidence = try values.decodeIfPresent(Double.self, forKey: .hotspotConfidence) ?? 0
         variantConfidence = try values.decodeIfPresent(Double.self, forKey: .variantConfidence) ?? 0
@@ -221,6 +230,9 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         try values.encode(variants, forKey: .variants)
         try values.encodeIfPresent(identityMatch, forKey: .identityMatch)
         try values.encodeIfPresent(productIdentity, forKey: .productIdentity)
+        try values.encode(familyFavoriteScore, forKey: .familyFavoriteScore)
+        try values.encodeIfPresent(familyFavoriteName, forKey: .familyFavoriteName)
+        try values.encodeIfPresent(familyFavoriteItemName, forKey: .familyFavoriteItemName)
         try values.encodeIfPresent(publicationStatus, forKey: .publicationStatus)
         try values.encode(hotspotConfidence, forKey: .hotspotConfidence)
         try values.encode(variantConfidence, forKey: .variantConfidence)

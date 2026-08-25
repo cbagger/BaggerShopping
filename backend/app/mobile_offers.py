@@ -24,7 +24,7 @@ from .meny_flyer import (
     _query_terms, search_publication,
 )
 from .offer_serialization import customer_offer_payload
-from .product_identity import MatchResult, analyze, apply_family_preference, compare
+from .product_identity import MatchResult, analyze, compare, family_favorite_match
 
 
 router = APIRouter(prefix="/api/mobile/v1/offers", tags=["offers"])
@@ -285,6 +285,29 @@ def _text_match_score(item_name: str, candidate: str) -> int:
     return _identity_score(compare(item_name, candidate))
 
 
+def _favorite_candidate_name(name: str, quantity: float | None, unit: str | None) -> str:
+    if quantity is None or quantity <= 0 or not unit:
+        return name
+    if analyze(name).amount_text:
+        return name
+    amount = str(int(quantity)) if quantity.is_integer() else f"{quantity:g}"
+    return f"{name} {amount} {unit}"
+
+
+def _offer_favorite_candidates(offer: Offer) -> list[str]:
+    return [
+        _favorite_candidate_name(offer.product_name, offer.quantity, offer.unit),
+        *(
+            _favorite_candidate_name(
+                variant.name,
+                variant.quantity if variant.quantity is not None else offer.quantity,
+                variant.unit or offer.unit,
+            )
+            for variant in offer.variants
+        ),
+    ]
+
+
 def _offer_match_result(item_name: str, offer: Offer) -> tuple[int, MatchResult]:
     query_domain = _product_domain(item_name)
     if _is_pet_offer(offer) and query_domain != "pet":
@@ -301,7 +324,14 @@ def _offer_match_result(item_name: str, offer: Offer) -> tuple[int, MatchResult]
 
     results = [(compare(item_name, candidate), candidate) for candidate in candidates]
     best, candidate = max(results, key=lambda value: _identity_score(value[0]))
-    return apply_family_preference(item_name, candidate, _identity_score(best), best)
+    score = _identity_score(best)
+    favorite = family_favorite_match(_offer_favorite_candidates(offer))
+    if favorite:
+        score += 1_000 + favorite.score
+        best = best.model_copy(update={
+            "explanation": f"{best.explanation} Familiens foretrukne vare vises først.",
+        })
+    return score, best
 
 
 def _offer_payload(
@@ -349,6 +379,10 @@ def _offer_payload(
         payload["identity_match"] = identity.model_dump()
     if publication_status is not None:
         payload["publication_status"] = publication_status
+    favorite = family_favorite_match(_offer_favorite_candidates(offer))
+    payload["family_favorite_score"] = favorite.score if favorite else 0
+    payload["family_favorite_name"] = favorite.preferred_name if favorite else None
+    payload["family_favorite_item_name"] = favorite.item_name if favorite else None
     return payload
 
 
@@ -450,9 +484,12 @@ def _search_match_result(item_name: str, offer: Offer) -> tuple[int, Offer, Matc
                 "explanation": "Direkte tekstmatch i tilbuddet eller en af dets varianter.",
             })
         score = 150 if matching_ids else 145 if trusted_product_match or brand_match else 125
-        score, identity = apply_family_preference(item_name, offer.product_name, score, identity)
-        if score <= 0:
-            return None
+        favorite = family_favorite_match(_offer_favorite_candidates(offer))
+        if favorite:
+            score += 1_000 + favorite.score
+            identity = identity.model_copy(update={
+                "explanation": f"{identity.explanation} Familiens foretrukne vare vises først.",
+            })
         return score, matched, identity
 
     return _matched_offer(item_name, offer, preserve_variants=True)
@@ -590,7 +627,7 @@ async def search_offers(
     ordered = sorted(
         ranked.values(),
         key=lambda value: (
-            value[3] != "current", -value[0],
+            value[0] < 1_000, value[3] != "current", -value[0],
             value[1].price if value[1].price is not None else float("inf"),
             value[1].retailer.casefold(),
         ),

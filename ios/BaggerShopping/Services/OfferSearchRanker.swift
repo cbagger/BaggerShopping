@@ -16,6 +16,18 @@ enum OfferSearchRanker {
     static func rank(_ offers: [GroceryOffer], for query: String) -> [GroceryOffer] {
         offers.enumerated()
             .sorted { lhs, rhs in
+                let leftFavorite = lhs.element.familyFavoriteScore > 0
+                let rightFavorite = rhs.element.familyFavoriteScore > 0
+                if leftFavorite != rightFavorite { return leftFavorite }
+                if leftFavorite,
+                   lhs.element.familyFavoriteScore != rhs.element.familyFavoriteScore {
+                    return lhs.element.familyFavoriteScore > rhs.element.familyFavoriteScore
+                }
+
+                let leftCurrent = lhs.element.publicationStatus != "upcoming"
+                let rightCurrent = rhs.element.publicationStatus != "upcoming"
+                if leftCurrent != rightCurrent { return leftCurrent }
+
                 let leftScore = confidence(for: lhs.element, query: query)
                 let rightScore = confidence(for: rhs.element, query: query)
                 if leftScore != rightScore { return leftScore > rightScore }

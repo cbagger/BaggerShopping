@@ -120,7 +120,7 @@ private struct SettingsContent: View {
                     NavigationLink("Familiens foretrukne varer") {
                         FamilyProductPreferencesView(model: model)
                     }
-                    Text("Disse valg gælder kun familien. Den fælles, anonyme produktviden nulstilles ikke herfra.")
+                    Text("Foretrukne varer vises først i relevante tilbudssøgninger. Andre tilbud bliver aldrig skjult.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -376,15 +376,22 @@ private struct FamilyProductPreferencesView: View {
                 ProgressView("Henter præferencer …")
             } else if preferences.isEmpty {
                 ContentUnavailableView(
-                    "Ingen varepræferencer endnu",
-                    systemImage: "slider.horizontal.3",
-                    description: Text("Kurv kan huske familiens valg direkte fra variantvælgeren.")
+                    "Ingen foretrukne varer endnu",
+                    systemImage: "heart",
+                    description: Text("Tryk på hjertet ved en vare i tilbudssøgningen. Valget deles med hele familien.")
                 )
             } else {
                 ForEach(preferences) { preference in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(preference.itemName).font(.headline)
-                        Text(preferenceText(preference)).font(.subheadline).foregroundStyle(.secondary)
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "heart.fill")
+                            .foregroundStyle(.pink)
+                            .padding(.top, 2)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(preference.preferredName).font(.headline)
+                            Text("Vises først ved søgninger som \"\(preference.itemName)\"")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .swipeActions {
                         Button("Fjern", role: .destructive) { Task { await remove(preference) } }
@@ -392,14 +399,19 @@ private struct FamilyProductPreferencesView: View {
                 }
             }
         }
-        .navigationTitle("Varepræferencer")
+        .navigationTitle("Foretrukne varer")
         .task { await reload() }
         .refreshable { await reload() }
     }
 
     @MainActor private func reload() async {
         loading = true
-        do { preferences = try await api.fetchFamilyProductPreferences() }
+        do {
+            let loaded = try await api.fetchFamilyProductPreferences()
+            preferences = loaded.sorted {
+                $0.preferredName.localizedCaseInsensitiveCompare($1.preferredName) == .orderedAscending
+            }
+        }
         catch { model.errorMessage = error.localizedDescription }
         loading = false
     }
@@ -409,14 +421,6 @@ private struct FamilyProductPreferencesView: View {
             try await api.removeFamilyProductPreference(itemName: preference.itemName)
             preferences.removeAll { $0.id == preference.id }
         } catch { model.errorMessage = error.localizedDescription }
-    }
-
-    private func preferenceText(_ preference: FamilyProductPreference) -> String {
-        switch preference.mode {
-        case "required": "Kræver: \(preference.preferredName)"
-        case "any_variant": "Alle varianter accepteres"
-        default: "Foretrækker: \(preference.preferredName)"
-        }
     }
 }
 
