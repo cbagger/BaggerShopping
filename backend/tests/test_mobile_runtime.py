@@ -35,11 +35,17 @@ def test_mobile_main_uses_first_class_samsung_request_policy():
     assert mobile_main.family_samsung_client is samsung_request_policy.family_samsung_client
 
 
-def test_legacy_family_never_uses_isolated_samsung_client(monkeypatch):
-    async def should_not_read_household(_):
-        raise AssertionError("legacy family must fall back to core Samsung connector")
+def test_legacy_family_without_complete_isolated_binding_falls_back_to_core(monkeypatch):
+    async def fake_read_household(_):
+        return {
+            "integrations": {
+                "samsung_food": {
+                    "list_id": "legacy-list-only",
+                }
+            }
+        }
 
-    monkeypatch.setattr(samsung_request_policy, "read_household", should_not_read_household)
+    monkeypatch.setattr(samsung_request_policy, "read_household", fake_read_household)
 
     assert asyncio.run(samsung_request_policy.family_samsung_client(legacy_context())) is None
 
