@@ -1,8 +1,12 @@
 from app.samsung import SamsungFoodClient
 
 
+class DummyAuth:
+    pass
+
+
 def test_missing_checked_state_is_normalized_to_false():
-    client = SamsungFoodClient(list_id="list-123")
+    client = SamsungFoodClient(list_id="list-123", auth=DummyAuth())
     payload = {
         "list": {"name": "Indkøbsliste"},
         "content": {
