@@ -47,23 +47,17 @@ def raw_offer_payload(offer: Offer, **model_dump_kwargs: Any) -> dict[str, Any]:
 
 
 def _apply_offer_validity_guard(payload: dict[str, Any], offer: Offer) -> None:
-    """Fail closed for a campaign that has not started yet.
+    """Mark a future campaign without making it non-actionable.
 
-    Legacy iPhone builds must keep seeing the normal hotspot fields as ``null``
-    so they cannot expose an add button for a future offer. Newer builds can use
-    the separate display-only hotspot fields to draw the marker while still
-    respecting ``safe_to_add = false``.
+    Kurv supports planning ahead from upcoming flyers. A future start date must
+    therefore be preserved as presentation metadata, while ``safe_to_add`` and
+    hotspot coordinates continue to describe whether the parsed offer itself is
+    technically safe to use. The iPhone stores ``valid_from`` with the shopping
+    item and presents it as a "Kommende tilbud" badge until the start date.
     """
 
-    if not offer_is_upcoming(offer):
-        return
-    payload["safe_to_add"] = False
-    payload["publication_status"] = "upcoming"
-    for key in ("hotspot_x", "hotspot_y", "hotspot_width", "hotspot_height"):
-        value = payload.get(key)
-        if value is not None:
-            payload[f"display_{key}"] = value
-        payload[key] = None
+    if offer_is_upcoming(offer):
+        payload["publication_status"] = "upcoming"
 
 
 def customer_offer_payload(offer: Offer, **model_dump_kwargs: Any) -> dict[str, Any]:
