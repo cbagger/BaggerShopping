@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
 import asyncio
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
 
 from fastapi import FastAPI, HTTPException
 
@@ -19,6 +21,61 @@ from .samsung import SamsungFoodClient, SamsungFoodError
 
 
 _auth_refresh_lock = asyncio.Lock()
+_T = TypeVar("_T")
+_LIST_NOT_FOUND_MARKERS = (
+    "shoppinglist.notfound",
+    "list_error_not_found",
+    "shopping list not found",
+)
+
+
+def _is_samsung_list_not_found(exc: BaseException) -> bool:
+    detail = str(exc).casefold()
+    return any(marker in detail for marker in _LIST_NOT_FOUND_MARKERS)
+
+
+async def _run_samsung_operation(
+    client: SamsungFoodClient,
+    operation: Callable[[], Awaitable[_T]],
+) -> _T:
+    """Retry one Samsung operation after a list-not-found auth recovery.
+
+    Samsung can return LIST_ERROR_NOT_FOUND while the cached bearer token is
+    still valid for GetMe. That previously bypassed our automatic auth recovery
+    because only HTTP 401 forced a refresh. A list-not-found response now gets
+    one controlled refresh/retry before we ask the user to reconnect.
+    """
+
+    state_before = client.auth.load_state()
+    try:
+        return await operation()
+    except SamsungFoodError as exc:
+        if not _is_samsung_list_not_found(exc):
+            raise
+
+    async with _auth_refresh_lock:
+        # Another request may already have refreshed the shared persisted auth
+        # state while this request waited for the lock. In that case, retry with
+        # the newer token before launching another browser/credential refresh.
+        state_now = client.auth.load_state()
+        if state_now.updated_at != state_before.updated_at:
+            try:
+                return await operation()
+            except SamsungFoodError as exc:
+                if not _is_samsung_list_not_found(exc):
+                    raise
+
+        try:
+            await client.auth.get_token(force_refresh=True)
+        except AuthInteractionRequired as exc:
+            raise SamsungFoodError(
+                "Samsung Food skal forbindes igen via Kurvs integrationsflow. "
+                f"{exc}"
+            ) from exc
+        except Exception as exc:
+            raise SamsungFoodError(f"Samsung Food auth refresh failed: {exc}") from exc
+
+        return await operation()
 
 
 @asynccontextmanager
@@ -105,16 +162,18 @@ async def auth_refresh() -> AuthStatusResponse:
 
 @app.get("/api/shopping", response_model=ShoppingListResponse)
 async def get_shopping() -> ShoppingListResponse:
+    client = SamsungFoodClient()
     try:
-        return await SamsungFoodClient().get_list()
+        return await _run_samsung_operation(client, client.get_list)
     except SamsungFoodError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/home-assistant/shopping", response_model=HomeAssistantShoppingResponse)
 async def home_assistant_shopping() -> HomeAssistantShoppingResponse:
+    client = SamsungFoodClient()
     try:
-        current = await SamsungFoodClient().get_list()
+        current = await _run_samsung_operation(client, client.get_list)
     except SamsungFoodError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -136,7 +195,7 @@ async def add_shopping_item(request: AddItemRequest) -> AddItemResponse:
 
     client = SamsungFoodClient()
     try:
-        result = await client.add_item(name)
+        result = await _run_samsung_operation(client, lambda: client.add_item(name))
         # Samsung's SyncItems endpoint is eventually consistent. Returning after
         # a successful gRPC mutation keeps the mobile UI responsive; later reads
         # reconcile with Samsung instead of blocking this request on read-back.
@@ -156,8 +215,12 @@ async def set_shopping_item_checked(
     item_id: str,
     request: SetCheckedRequest,
 ) -> ItemMutationResponse:
+    client = SamsungFoodClient()
     try:
-        result = await SamsungFoodClient().set_item_checked(item_id, request.checked)
+        result = await _run_samsung_operation(
+            client,
+            lambda: client.set_item_checked(item_id, request.checked),
+        )
         return ItemMutationResponse(
             ok=True,
             item_id=item_id,
@@ -174,11 +237,11 @@ async def set_shopping_item_quantity(
     request: SetQuantityRequest,
 ) -> ItemMutationResponse:
     unit = request.unit.strip() or "stk"
+    client = SamsungFoodClient()
     try:
-        result = await SamsungFoodClient().set_item_quantity(
-            item_id,
-            request.quantity,
-            unit,
+        result = await _run_samsung_operation(
+            client,
+            lambda: client.set_item_quantity(item_id, request.quantity, unit),
         )
         return ItemMutationResponse(
             ok=True,
@@ -193,8 +256,12 @@ async def set_shopping_item_quantity(
 
 @app.delete("/api/shopping/items/{item_id}", response_model=ItemMutationResponse)
 async def delete_shopping_item(item_id: str) -> ItemMutationResponse:
+    client = SamsungFoodClient()
     try:
-        result = await SamsungFoodClient().delete_item(item_id)
+        result = await _run_samsung_operation(
+            client,
+            lambda: client.delete_item(item_id),
+        )
         return ItemMutationResponse(
             ok=True,
             item_id=item_id,
@@ -208,13 +275,16 @@ async def delete_shopping_item(item_id: str) -> ItemMutationResponse:
 async def delete_all_checked_shopping_items() -> dict[str, object]:
     client = SamsungFoodClient()
     try:
-        current = await client.get_list()
+        current = await _run_samsung_operation(client, client.get_list)
         checked = [item for item in current.items if item.checked is True and item.id]
         deleted: list[str] = []
         failures: list[dict[str, str]] = []
         for item in checked:
             try:
-                await client.delete_item(item.id)
+                await _run_samsung_operation(
+                    client,
+                    lambda item_id=item.id: client.delete_item(item_id),
+                )
                 deleted.append(item.id)
             except SamsungFoodError as exc:
                 failures.append({"item_id": item.id, "detail": str(exc)})
