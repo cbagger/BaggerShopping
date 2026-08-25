@@ -39,5 +39,20 @@ final class UpcomingFlyerHotspotTests: XCTestCase {
         XCTAssertEqual(offer.choiceState, .unspecified)
         XCTAssertEqual(offer.addAvailabilityTitle, "Tilbuddet er ikke aktivt endnu")
         XCTAssertTrue(offer.addAvailabilityMessage?.contains("27.08.2026") == true)
+
+        // Local flyer/search caches must keep the same server safety boundary:
+        // an older client must not see the visual coordinates as actionable
+        // legacy hotspot fields after a Build 72 cache round-trip.
+        let cachedData = try JSONEncoder().encode(offer)
+        let cachedPayload = try XCTUnwrap(JSONSerialization.jsonObject(with: cachedData) as? [String: Any])
+        XCTAssertNil(cachedPayload["hotspot_x"])
+        XCTAssertNil(cachedPayload["hotspot_y"])
+        XCTAssertEqual(cachedPayload["display_hotspot_x"] as? Double, 0.10)
+        XCTAssertEqual(cachedPayload["display_hotspot_y"] as? Double, 0.20)
+
+        let roundTripped = try JSONDecoder().decode(GroceryOffer.self, from: cachedData)
+        XCTAssertEqual(roundTripped.hotspotX, 0.10)
+        XCTAssertFalse(roundTripped.safeToAdd)
+        XCTAssertEqual(roundTripped.choiceState, .unspecified)
     }
 }
