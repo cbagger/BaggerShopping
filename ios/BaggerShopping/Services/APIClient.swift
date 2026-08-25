@@ -423,6 +423,11 @@ struct APIClient {
         return try JSONDecoder().decode(HouseholdMembersResponse.self, from: data).members
     }
 
+    func fetchFamilyQuickAddItems() async throws -> [FamilyQuickAddItem] {
+        let data = try await perform(request(path: "/api/mobile/v1/quick-add"))
+        return try JSONDecoder().decode(FamilyQuickAddResponse.self, from: data).items
+    }
+
     func updateHouseholdMember(id: String, name: String) async throws {
         let body = try JSONEncoder().encode(["name": name])
         _ = try await perform(request(path: "/api/mobile/v1/households/members/\(id)", method: "PATCH", body: body))

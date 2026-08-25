@@ -329,7 +329,7 @@ class SamsungFoodClient:
         # A successful gRPC write is the acknowledgement. Samsung's read side is
         # eventually consistent, so an immediate second list read adds latency
         # and can time out even though the checkbox was already saved.
-        return result
+        return {**result, "item_name": item.name}
 
     async def set_item_quantity(
         self,

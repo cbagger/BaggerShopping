@@ -68,6 +68,29 @@ struct HouseholdMembersResponse: Codable {
     let members: [HouseholdMember]
 }
 
+struct FamilyQuickAddItem: Codable, Identifiable, Hashable {
+    var id: String { FamilyQuickAddService.normalize(name) }
+    let name: String
+    let purchaseCount: Int
+    let rank: Int
+    let eligible: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case name, rank, eligible
+        case purchaseCount = "purchase_count"
+    }
+}
+
+struct FamilyQuickAddResponse: Codable {
+    let minimumPurchases: Int
+    let items: [FamilyQuickAddItem]
+
+    enum CodingKeys: String, CodingKey {
+        case items
+        case minimumPurchases = "minimum_purchases"
+    }
+}
+
 struct SamsungIntegrationStatus: Codable {
     let provider: String
     let status: String

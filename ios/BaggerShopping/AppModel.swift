@@ -14,6 +14,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var checkedSyncRetryItemIDs: Set<String> = []
     @Published var householdProfile: HouseholdProfile?
     @Published var latestRecoveryCode: String?
+    @Published private(set) var familyQuickAddItems: [FamilyQuickAddItem] = []
+    @Published private(set) var isLoadingFamilyQuickAddItems = false
 
     let stores = StoreRepository()
     let geofence = GeofenceManager()
@@ -89,6 +91,7 @@ final class AppModel: ObservableObject {
             mutatingItemIDs.formIntersection(visibleIDs)
             ShoppingListCache.save(visibleList)
             await syncSharedOfferMetadata()
+            await syncFamilyQuickAddItems()
             errorMessage = nil
         } catch {
             // A cached list is fully usable while the connection wakes up.
@@ -109,6 +112,26 @@ final class AppModel: ObservableObject {
             // Category sharing is additive. Keep the local cache usable if the
             // backend is temporarily unavailable or has not yet been upgraded.
         }
+    }
+
+    func syncFamilyQuickAddItems(reportError: Bool = false) async {
+        guard tokenConfigured else { return }
+        isLoadingFamilyQuickAddItems = true
+        defer { isLoadingFamilyQuickAddItems = false }
+        do {
+            familyQuickAddItems = try await api.fetchFamilyQuickAddItems()
+        } catch {
+            // Keep the last confirmed family ranking usable during a transient
+            // outage. Settings can opt into surfacing the error explicitly.
+            if reportError { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func quickAddSuggestions() -> [FamilyQuickAddItem] {
+        FamilyQuickAddService.suggestions(
+            from: familyQuickAddItems,
+            excluding: shoppingList?.items ?? []
+        )
     }
 
     func syncSharedOfferMetadata() async {
@@ -359,6 +382,9 @@ final class AppModel: ObservableObject {
                 checkedMutationStore.markAcknowledgedIfCurrent(mutation)
                 pendingCheckedItemIDs = checkedMutationStore.unacknowledgedItemIDs
                 checkedSyncRetryItemIDs.formIntersection(pendingCheckedItemIDs)
+                if mutation.checked {
+                    await syncFamilyQuickAddItems()
+                }
             } catch {
                 // The exact desired value remains durable and is retried on the
                 // next app activation. A transient timeout must never show a

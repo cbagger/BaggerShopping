@@ -226,6 +226,7 @@ async def set_shopping_item_checked(
             item_id=item_id,
             checked=request.checked,
             grpc_status=result.get("grpc_status"),
+            item_name=result.get("item_name"),
         )
     except SamsungFoodError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

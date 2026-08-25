@@ -325,8 +325,14 @@ struct ShoppingListView: View {
             if let activeStoreMode {
                 storeModeBanner(activeStoreMode)
                 storeModeAddItemRow
+                if addItemFieldFocused, !model.quickAddSuggestions().isEmpty {
+                    quickAddChipsRow
+                }
             } else {
                 addItemRow
+                if addItemFieldFocused, !model.quickAddSuggestions().isEmpty {
+                    quickAddChipsRow
+                }
                 if !nearbyStores.isEmpty {
                     nearbyStoreModeLauncher
                 }
@@ -796,6 +802,38 @@ struct ShoppingListView: View {
         )
     }
 
+    private var quickAddChipsRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(model.quickAddSuggestions()) { item in
+                    Button {
+                        addQuickItem(item)
+                    } label: {
+                        Label(item.name, systemImage: "plus")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .padding(.horizontal, 11)
+                            .frame(height: 32)
+                            .background(Color.accentColor.opacity(0.10), in: Capsule())
+                            .overlay {
+                                Capsule()
+                                    .stroke(Color.accentColor.opacity(0.18), lineWidth: 0.75)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.isAddingItem)
+                    .accessibilityLabel("Tilføj \(item.name)")
+                    .accessibilityHint("Købt \(item.purchaseCount) gange af familien")
+                }
+            }
+            .padding(.horizontal, 1)
+        }
+        .listRowInsets(EdgeInsets(top: 1, leading: 16, bottom: 4, trailing: 16))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+
     private var sortModeRow: some View {
         HStack(spacing: 4) {
             sortModeButton(
@@ -1036,6 +1074,16 @@ struct ShoppingListView: View {
                 storeModeAddItemExpanded = activeStoreMode != nil
                 addItemFieldFocused = true
             }
+        }
+    }
+
+    private func addQuickItem(_ item: FamilyQuickAddItem) {
+        guard !model.isAddingItem else { return }
+        addItemFieldFocused = true
+        if activeStoreMode != nil { storeModeAddItemExpanded = true }
+        Task {
+            _ = await model.addManualItemResponsive(item.name)
+            addItemFieldFocused = true
         }
     }
 

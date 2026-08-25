@@ -53,6 +53,9 @@ private struct SettingsContent: View {
                         Button("Invitér familiemedlem") {
                             Task { inviteCode = await model.createInvite() }
                         }
+                        NavigationLink("Hurtig tilføj vare") {
+                            FamilyQuickAddSettingsView(model: model)
+                        }
                         if profile.role == "owner" {
                             NavigationLink("Administrér familiemedlemmer") {
                                 HouseholdMembersView(model: model)
@@ -207,6 +210,63 @@ private struct SettingsContent: View {
                 HouseholdSetupView(model: model)
             }
         }
+    }
+}
+
+private struct FamilyQuickAddSettingsView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        List {
+            if model.isLoadingFamilyQuickAddItems && model.familyQuickAddItems.isEmpty {
+                ProgressView("Henter familiens køb …")
+            } else if model.familyQuickAddItems.isEmpty {
+                ContentUnavailableView(
+                    "Ingen køb registreret endnu",
+                    systemImage: "cart.badge.plus",
+                    description: Text("En vare tæller først, når den både er tilføjet og markeret som købt.")
+                )
+            } else {
+                Section {
+                    ForEach(model.familyQuickAddItems.prefix(FamilyQuickAddService.maximumItems)) { item in
+                        HStack(spacing: 12) {
+                            Text("\(item.rank)")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                                .frame(width: 22, height: 22)
+                                .background(Color.primary.opacity(0.06), in: Circle())
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.name).font(.headline)
+                                Text(statusText(for: item))
+                                    .font(.caption)
+                                    .foregroundStyle(item.eligible ? Color.green : Color.secondary)
+                            }
+
+                            Spacer()
+
+                            Text("\(item.purchaseCount) køb")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 3)
+                    }
+                } header: {
+                    Text("Familiens top 10")
+                } footer: {
+                    Text("Kun varer med mindst 3 køb vises som chips, og kun mens tilføj-feltet på indkøbslisten er aktivt.")
+                }
+            }
+        }
+        .navigationTitle("Hurtig tilføj vare")
+        .task { await model.syncFamilyQuickAddItems(reportError: true) }
+        .refreshable { await model.syncFamilyQuickAddItems(reportError: true) }
+    }
+
+    private func statusText(for item: FamilyQuickAddItem) -> String {
+        if item.eligible { return "Klar til hurtig tilføjelse" }
+        let remaining = max(FamilyQuickAddService.minimumPurchases - item.purchaseCount, 0)
+        return remaining == 1 ? "1 køb fra at blive vist" : "\(remaining) køb fra at blive vist"
     }
 }
 

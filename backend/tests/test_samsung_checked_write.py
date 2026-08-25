@@ -27,7 +27,7 @@ def test_checked_write_uses_one_read_and_does_not_wait_for_eventual_consistency(
 
     result = asyncio.run(client.set_item_checked("item-123", True))
 
-    assert result == {"grpc_status": 0}
+    assert result == {"grpc_status": 0, "item_name": "Mælk"}
     assert reads == ["item-123"]
     assert len(writes) == 1
 
@@ -59,7 +59,7 @@ def test_checked_write_uses_recent_server_snapshot_without_another_read(monkeypa
 
     result = asyncio.run(client.set_item_checked("item-123", True))
 
-    assert result == {"grpc_status": 0}
+    assert result == {"grpc_status": 0, "item_name": "Mælk"}
     assert len(writes) == 1
     assert client._cached_item("item-123").checked is True
 
