@@ -16,7 +16,7 @@ from .flyer_readiness import (
     publication_is_ready,
 )
 from .luna_enrichment import load_config, load_store, offer_fingerprint
-from .luna_offer_validity import safe_offer_validity, starts_in_future
+from .luna_offer_validity import safe_offer_validity
 from .luna_semantic_audit import offer_key
 from .meny_flyer import Offer, OfferVariant, Publication
 from .retailer_sources import is_active_retailer
@@ -276,9 +276,10 @@ def apply_cached_enrichment(publications: list[Publication]) -> list[Publication
                 if valid_until:
                     updates["valid_until"] = valid_until
                     signals.append("luna-offer-validity")
-                if starts_in_future(valid_from):
-                    updates["safe_to_add"] = False
-                    signals.append("luna-future-offer")
+                # A future start date is planning metadata, not a safety error.
+                # Preserve the offer's existing safe_to_add value so genuinely
+                # unsafe parsing remains blocked while upcoming offers can still
+                # be added and carry their start date to the shopping-list badge.
 
             if (
                 not semantic_needs_crop
