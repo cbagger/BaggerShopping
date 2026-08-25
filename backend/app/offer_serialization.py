@@ -49,8 +49,10 @@ def raw_offer_payload(offer: Offer, **model_dump_kwargs: Any) -> dict[str, Any]:
 def _apply_offer_validity_guard(payload: dict[str, Any], offer: Offer) -> None:
     """Fail closed for a campaign that has not started yet.
 
-    The API removes add/hotspot affordances as a server-side safety net, so an
-    older iPhone build cannot accidentally add a future-dated offer either.
+    Legacy iPhone builds must keep seeing the normal hotspot fields as ``null``
+    so they cannot expose an add button for a future offer. Newer builds can use
+    the separate display-only hotspot fields to draw the marker while still
+    respecting ``safe_to_add = false``.
     """
 
     if not offer_is_upcoming(offer):
@@ -58,6 +60,9 @@ def _apply_offer_validity_guard(payload: dict[str, Any], offer: Offer) -> None:
     payload["safe_to_add"] = False
     payload["publication_status"] = "upcoming"
     for key in ("hotspot_x", "hotspot_y", "hotspot_width", "hotspot_height"):
+        value = payload.get(key)
+        if value is not None:
+            payload[f"display_{key}"] = value
         payload[key] = None
 
 

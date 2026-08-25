@@ -82,10 +82,19 @@ def test_future_offer_is_fail_closed_at_customer_api_boundary():
     payload = customer_offer_payload(offer)
     assert payload["safe_to_add"] is False
     assert payload["publication_status"] == "upcoming"
+
+    # Legacy builds still see no actionable hotspot fields.
     assert payload["hotspot_x"] is None
     assert payload["hotspot_y"] is None
     assert payload["hotspot_width"] is None
     assert payload["hotspot_height"] is None
+
+    # New builds can draw the marker from display-only coordinates without
+    # weakening the add guard.
+    assert payload["display_hotspot_x"] == 0.5
+    assert payload["display_hotspot_y"] == 0.5
+    assert payload["display_hotspot_width"] == 0.2
+    assert payload["display_hotspot_height"] == 0.2
 
 
 def test_luna_validity_schema_is_required_without_changing_existing_fields():

@@ -19,7 +19,29 @@ extension GroceryOffer {
         return value
     }
 
+    var addAvailabilityTitle: String? {
+        guard !safeToAdd else { return nil }
+        return publicationStatus == "upcoming"
+            ? "Tilbuddet er ikke aktivt endnu"
+            : "Tilbuddet kan ikke tilføjes sikkert"
+    }
+
+    var addAvailabilityMessage: String? {
+        guard !safeToAdd else { return nil }
+        if publicationStatus == "upcoming" {
+            if let validFrom, !validFrom.isEmpty {
+                return "Tilbuddet gælder først fra \(validFrom). Du kan se det i avisen nu, men Kurv tilføjer det ikke før startdatoen."
+            }
+            return "Tilbuddet starter senere. Du kan se det i avisen nu, men Kurv tilføjer det ikke før det er aktivt."
+        }
+        return "Kurv mangler sikre oplysninger til at tilføje dette tilbud automatisk."
+    }
+
     var choiceState: OfferChoiceState {
+        // Flyer hotspots may stay visible for upcoming campaigns. Never let a
+        // visible marker become an add action while the server says fail-closed.
+        guard safeToAdd else { return .unspecified }
+
         let names = resolvedVariantNames
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
