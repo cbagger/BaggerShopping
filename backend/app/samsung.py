@@ -162,7 +162,10 @@ class SamsungFoodClient:
                 ShoppingItem(
                     id=raw.get("id"),
                     name=normalized_name,
-                    checked=checked if isinstance(checked, bool) else None,
+                    # Samsung omits checkbox state for ordinary unchecked items
+                    # in some list payloads. Mobile clients require a concrete
+                    # Bool, so absence is semantically the same as unchecked.
+                    checked=checked if isinstance(checked, bool) else False,
                     quantity=quantity,
                     unit=unit,
                     raw=raw,
