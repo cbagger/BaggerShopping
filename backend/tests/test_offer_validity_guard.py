@@ -71,7 +71,7 @@ def test_tjek_per_offer_dates_override_publication_period():
     assert "provider-offer-validity" in updated.quality_signals
 
 
-def test_future_offer_is_fail_closed_at_customer_api_boundary():
+def test_future_offer_stays_addable_but_is_marked_upcoming():
     offer = _offer(
         valid_from="31.12.2099",
         valid_until="02.01.2100",
@@ -80,21 +80,27 @@ def test_future_offer_is_fail_closed_at_customer_api_boundary():
     assert offer_is_upcoming(offer, today=date(2099, 12, 30)) is True
 
     payload = customer_offer_payload(offer)
+
+    # A future date is presentation metadata, not a technical add-safety error.
+    # Families can plan ahead, while the iPhone keeps the start date with the
+    # shopping-list metadata and renders the existing "Kommende tilbud" badge.
+    assert payload["safe_to_add"] is True
+    assert payload["publication_status"] == "upcoming"
+    assert payload["valid_from"] == "31.12.2099"
+    assert payload["valid_until"] == "02.01.2100"
+
+    # The hotspot remains actionable in upcoming flyers.
+    assert payload["hotspot_x"] == 0.5
+    assert payload["hotspot_y"] == 0.5
+    assert payload["hotspot_width"] == 0.2
+    assert payload["hotspot_height"] == 0.2
+
+
+def test_future_date_does_not_override_an_existing_technical_safety_block():
+    offer = _offer(valid_from="31.12.2099", safe_to_add=False)
+    payload = customer_offer_payload(offer)
     assert payload["safe_to_add"] is False
     assert payload["publication_status"] == "upcoming"
-
-    # Legacy builds still see no actionable hotspot fields.
-    assert payload["hotspot_x"] is None
-    assert payload["hotspot_y"] is None
-    assert payload["hotspot_width"] is None
-    assert payload["hotspot_height"] is None
-
-    # New builds can draw the marker from display-only coordinates without
-    # weakening the add guard.
-    assert payload["display_hotspot_x"] == 0.5
-    assert payload["display_hotspot_y"] == 0.5
-    assert payload["display_hotspot_width"] == 0.2
-    assert payload["display_hotspot_height"] == 0.2
 
 
 def test_luna_validity_schema_is_required_without_changing_existing_fields():
