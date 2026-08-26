@@ -74,6 +74,20 @@ struct PendingCheckedMutationStore {
         save(pending)
     }
 
+    @discardableResult
+    func remove(itemID: String) -> PendingCheckedMutation? {
+        var pending = load()
+        let removed = pending.removeValue(forKey: itemID)
+        save(pending)
+        return removed
+    }
+
+    func restore(_ mutation: PendingCheckedMutation) {
+        var pending = load()
+        pending[mutation.itemID] = mutation
+        save(pending)
+    }
+
     func markAcknowledgedIfCurrent(_ mutation: PendingCheckedMutation, at date: Date = Date()) {
         var pending = load()
         guard pending[mutation.itemID]?.operationID == mutation.operationID else { return }

@@ -428,6 +428,7 @@ final class AppModel: ObservableObject {
         cancelReconciliation(for: item.name)
         listMutationRevision &+= 1
         let key = item.stableID
+        let suspendedCheck = suspendPendingCheck(for: item)
         pendingDeletionIDs.insert(key)
 
         if let list = shoppingList {
@@ -445,11 +446,14 @@ final class AppModel: ObservableObject {
                 await previousTail.value
             }
             guard let self else { return }
-            await self.commitDeletion(item)
+            await self.commitDeletion(item, suspendedCheck: suspendedCheck)
         }
     }
 
-    private func commitDeletion(_ item: ShoppingItem) async {
+    private func commitDeletion(
+        _ item: ShoppingItem,
+        suspendedCheck: PendingCheckedMutation?
+    ) async {
         let key = item.stableID
         do {
             try await api.deleteItem(item)
@@ -464,6 +468,7 @@ final class AppModel: ObservableObject {
             }
             scheduleDeletionTombstoneRelease(key)
         } catch {
+            restorePendingCheck(suspendedCheck)
             pendingDeletionIDs.remove(key)
             if let list = shoppingList,
                !list.items.contains(where: { $0.stableID == key }) {
@@ -479,6 +484,7 @@ final class AppModel: ObservableObject {
         guard let checked = shoppingList?.items.filter(\.checked), !checked.isEmpty else { return }
         let previous = shoppingList
         checked.forEach { cancelReconciliation(for: $0.name) }
+        let suspendedChecks = checked.compactMap { suspendPendingCheck(for: $0) }
         let deletionIDs = Set(checked.map(\.stableID))
         pendingDeletionIDs.formUnion(deletionIDs)
         listMutationRevision &+= 1
@@ -488,8 +494,12 @@ final class AppModel: ObservableObject {
             ShoppingListCache.save(updated)
         }
         do {
-            try await api.deleteAllCheckedItems()
             for item in checked {
+                // Delete the exact rows the user sees as purchased. Samsung's
+                // read side is eventually consistent, so a server-side query
+                // for "currently checked" can otherwise miss a newly checked
+                // row and report success without deleting it.
+                try await api.deleteItem(item)
                 offerMetadata.removeValue(forKey: offerRetailerNameKey(item.name))
                 try? await api.removeOfferMetadata(itemName: item.name)
             }
@@ -497,10 +507,28 @@ final class AppModel: ObservableObject {
             errorMessage = nil
             deletionIDs.forEach(scheduleDeletionTombstoneRelease)
         } catch {
+            suspendedChecks.forEach { restorePendingCheck($0) }
             pendingDeletionIDs.subtract(deletionIDs)
             shoppingList = previous
             if let previous { ShoppingListCache.save(previous) }
             errorMessage = Self.userFacingMutationError(error)
+        }
+    }
+
+    private func suspendPendingCheck(for item: ShoppingItem) -> PendingCheckedMutation? {
+        guard let itemID = item.id else { return nil }
+        let removed = checkedMutationStore.remove(itemID: itemID)
+        pendingCheckedItemIDs = checkedMutationStore.unacknowledgedItemIDs
+        checkedSyncRetryItemIDs.formIntersection(pendingCheckedItemIDs)
+        return removed
+    }
+
+    private func restorePendingCheck(_ mutation: PendingCheckedMutation?) {
+        guard let mutation else { return }
+        checkedMutationStore.restore(mutation)
+        pendingCheckedItemIDs = checkedMutationStore.unacknowledgedItemIDs
+        Task { [weak self] in
+            await self?.flushPendingCheckedMutations()
         }
     }
 

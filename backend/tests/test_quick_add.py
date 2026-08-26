@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 os.environ.setdefault("MOBILE_API_TOKEN", "test-token")
@@ -5,7 +6,9 @@ os.environ.setdefault("MOBILE_API_TOKEN", "test-token")
 from fastapi.testclient import TestClient
 
 from app import households
-from app.mobile_main import app
+from app import mobile_main
+from app.households import HouseholdContext
+from app.mobile_main import SetCheckedRequest, app
 from app.quick_add import MAX_RANKED_ITEMS, MINIMUM_PURCHASES, ranked_items
 
 
@@ -104,3 +107,48 @@ def test_ranking_returns_only_dynamic_top_ten():
     assert len(result) == MAX_RANKED_ITEMS
     assert [item.purchase_count for item in result] == list(range(11, 1, -1))
     assert [item.eligible for item in result] == [True] * 9 + [False]
+
+
+def test_samsung_acknowledgement_does_not_wait_for_purchase_learning(monkeypatch):
+    learning_started = asyncio.Event()
+    release_learning = asyncio.Event()
+
+    class FakeSamsungClient:
+        async def set_item_checked(self, item_id, checked):
+            return {"grpc_status": 0, "item_name": "Mælk", "checked": checked}
+
+    async def fake_family_client(_context):
+        return FakeSamsungClient()
+
+    async def blocked_record_purchase(_context, *, item_id, item_name):
+        learning_started.set()
+        await release_learning.wait()
+
+    monkeypatch.setattr(mobile_main, "family_samsung_client", fake_family_client)
+    monkeypatch.setattr(mobile_main, "record_purchase", blocked_record_purchase)
+
+    context = HouseholdContext(
+        household_id="family-bagger",
+        household_name="Familien Bagger",
+        member_name="Christoffer",
+        role="owner",
+        list_backend="samsung",
+    )
+
+    async def scenario():
+        response = await asyncio.wait_for(
+            mobile_main.set_mobile_item_checked(
+                "item-123",
+                SetCheckedRequest(checked=True),
+                context,
+            ),
+            timeout=0.2,
+        )
+        await asyncio.wait_for(learning_started.wait(), timeout=0.2)
+        assert response["ok"] is True
+        assert response["item_name"] == "Mælk"
+        assert mobile_main.purchase_recording_tasks
+        release_learning.set()
+        await asyncio.gather(*tuple(mobile_main.purchase_recording_tasks))
+
+    asyncio.run(scenario())

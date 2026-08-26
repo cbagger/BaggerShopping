@@ -39,6 +39,7 @@ class MobileSettings(BaseSettings):
 
 settings = MobileSettings()
 category_store_lock = asyncio.Lock()
+purchase_recording_tasks: set[asyncio.Task[None]] = set()
 
 app = FastAPI(
     title="Bagger Shopping Mobile API",
@@ -159,6 +160,41 @@ async def require_mobile_token(
 
 async def household_context(authorization: str | None = Header(default=None)) -> HouseholdContext:
     return await require_mobile_token(authorization)
+
+
+async def _record_purchase_after_acknowledgement(
+    context: HouseholdContext,
+    *,
+    item_id: str,
+    item_name: str,
+) -> None:
+    """Persist learning without delaying an already successful list mutation."""
+    try:
+        await record_purchase(context, item_id=item_id, item_name=item_name)
+    except Exception as exc:
+        # Purchase learning is secondary to the shopping-list write. A storage
+        # problem must never turn Samsung's successful acknowledgement into a
+        # mobile timeout that remains stuck in the durable iOS outbox.
+        print({
+            "quick_add_recording_error": str(exc),
+            "household_id": context.household_id,
+            "item_id": item_id,
+        }, flush=True)
+
+
+def schedule_purchase_recording(
+    context: HouseholdContext,
+    *,
+    item_id: str,
+    item_name: str,
+) -> None:
+    task = asyncio.create_task(_record_purchase_after_acknowledgement(
+        context,
+        item_id=item_id,
+        item_name=item_name,
+    ))
+    purchase_recording_tasks.add(task)
+    task.add_done_callback(purchase_recording_tasks.discard)
 
 
 def category_key(item_name: str) -> str:
@@ -379,14 +415,14 @@ async def set_mobile_item_checked(
             raise HTTPException(status_code=404, detail="Varen findes ikke i familien")
         response = await update_household(context, mutate)
         if request.checked and purchase.get("name"):
-            await record_purchase(context, item_id=item_id, item_name=purchase["name"])
+            schedule_purchase_recording(context, item_id=item_id, item_name=purchase["name"])
         return response
     family_client = await family_samsung_client(context)
     if family_client is not None:
         try:
             result = await family_client.set_item_checked(item_id, request.checked)
             if request.checked and result.get("item_name"):
-                await record_purchase(context, item_id=item_id, item_name=result["item_name"])
+                schedule_purchase_recording(context, item_id=item_id, item_name=result["item_name"])
             return {"ok": True, **result}
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -398,7 +434,7 @@ async def set_mobile_item_checked(
         raise HTTPException(status_code=502, detail=f"Core check-item request failed: {response.text[:500]}")
     result = response.json()
     if request.checked and result.get("item_name"):
-        await record_purchase(context, item_id=item_id, item_name=result["item_name"])
+        schedule_purchase_recording(context, item_id=item_id, item_name=result["item_name"])
     return result
 
 
