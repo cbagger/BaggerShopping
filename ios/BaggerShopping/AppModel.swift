@@ -33,6 +33,7 @@ final class AppModel: ObservableObject {
     private var deletionTail: Task<Void, Never>?
     private var checkedMutationFlushTask: Task<Void, Never>?
     private var checkedMutationRetryTask: Task<Void, Never>?
+    private var familyQuickAddRefreshTask: Task<Void, Never>?
 
     init() {
         if let data = UserDefaults.standard.data(forKey: offerMetadataKey),
@@ -348,14 +349,37 @@ final class AppModel: ObservableObject {
     private func performCheckedMutationFlush() async {
         while let mutation = checkedMutationStore.ordered().first {
             do {
-                try await api.setChecked(item: mutation.item, checked: mutation.checked)
-                checkedMutationStore.markAcknowledgedIfCurrent(mutation)
+                let acknowledgement = try await api.setChecked(
+                    item: mutation.item,
+                    checked: mutation.checked
+                )
+                if let resolvedID = acknowledgement.itemID,
+                   resolvedID != mutation.itemID {
+                    // The server safely rebound a stale Samsung ID to the
+                    // unique replacement row created by delete-then-add.
+                    checkedMutationStore.removeIfCurrent(mutation)
+                } else {
+                    checkedMutationStore.markAcknowledgedIfCurrent(mutation)
+                }
                 pendingCheckedItemIDs = checkedMutationStore.unacknowledgedItemIDs
                 checkedSyncRetryItemIDs.formIntersection(pendingCheckedItemIDs)
                 if mutation.checked {
                     await syncFamilyQuickAddItems()
+                    scheduleFamilyQuickAddRefresh()
+                }
+                if acknowledgement.rebound == true {
+                    await refresh()
                 }
             } catch {
+                if APIClient.isStaleShoppingItem(error) {
+                    // No safe same-name replacement exists. The row is gone
+                    // remotely, so remove the orphaned intent and refresh.
+                    checkedMutationStore.removeIfCurrent(mutation)
+                    pendingCheckedItemIDs = checkedMutationStore.unacknowledgedItemIDs
+                    checkedSyncRetryItemIDs.remove(mutation.itemID)
+                    await refresh()
+                    continue
+                }
                 // The exact desired value remains durable and is retried on the
                 // next app activation. A transient timeout must never show a
                 // blocking alert or reverse the local checkbox.
@@ -364,6 +388,25 @@ final class AppModel: ObservableObject {
                 scheduleCheckedMutationRetry()
                 return
             }
+        }
+    }
+
+    /// Purchase learning is intentionally persisted after the Samsung write
+    /// acknowledgement so it cannot delay the checkbox response. Refresh the
+    /// ranking again shortly afterwards to close that harmless async race.
+    private func scheduleFamilyQuickAddRefresh() {
+        familyQuickAddRefreshTask?.cancel()
+        familyQuickAddRefreshTask = Task { @MainActor [weak self] in
+            for delay in [1, 3] {
+                do {
+                    try await Task.sleep(for: .seconds(delay))
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                await self.syncFamilyQuickAddItems()
+            }
+            self?.familyQuickAddRefreshTask = nil
         }
     }
 
