@@ -328,6 +328,17 @@ class SamsungFoodClient:
     def _same_item_name(left: str, right: str) -> bool:
         return " ".join(left.casefold().split()) == " ".join(right.casefold().split())
 
+    @staticmethod
+    def _is_missing_item_write_error(error: Exception) -> bool:
+        """Recognize Samsung's permanent stale-row write response.
+
+        The gRPC-web endpoint currently surfaces this as a generic
+        ``SamsungFoodError``. Keep the translation here so callers can recover
+        from a stale cache entry without treating every Samsung write failure
+        as safe to retry against another row.
+        """
+        return "shopping item not found" in str(error).casefold()
+
     async def _find_checked_write_item(
         self,
         item_id: str,
@@ -336,6 +347,7 @@ class SamsungFoodClient:
         fallback_name: str | None,
         fallback_quantity: float | None,
         fallback_unit: str | None,
+        rejected_item_id: str | None = None,
     ) -> ShoppingItem:
         """Resolve a stale Samsung ID after delete-then-add of the same name.
 
@@ -344,20 +356,33 @@ class SamsungFoodClient:
         ambiguous duplicates remain fail-closed.
         """
         wanted = _normalized_item_id(item_id)
+        rejected = (
+            _normalized_item_id(rejected_item_id)
+            if rejected_item_id
+            else None
+        )
         delays = (0.0, 0.5, 1.0, 2.0)
         for delay in delays:
             if delay:
                 await asyncio.sleep(delay)
             current = await self.get_list()
             for item in current.items:
-                if item.id and _normalized_item_id(item.id) == wanted:
+                if (
+                    item.id
+                    and _normalized_item_id(item.id) == wanted
+                    and _normalized_item_id(item.id) != rejected
+                ):
                     return item
 
             if not fallback_name:
                 continue
             matches = [
                 item for item in current.items
-                if item.id and self._same_item_name(item.name, fallback_name)
+                if (
+                    item.id
+                    and _normalized_item_id(item.id) != rejected
+                    and self._same_item_name(item.name, fallback_name)
+                )
             ]
             state_matches = [item for item in matches if bool(item.checked) != checked]
             candidates = state_matches or matches
@@ -397,17 +422,50 @@ class SamsungFoodClient:
                 fallback_quantity=fallback_quantity,
                 fallback_unit=fallback_unit,
             )
+
+        async def write(resolved_item: ShoppingItem) -> dict[str, Any]:
+            resolved_id = resolved_item.id or item_id
+            body = build_sync_items_checked_request(
+                self.list_id,
+                resolved_id,
+                resolved_item.name,
+                checked,
+                int(time.time() * 1000),
+                quantity=resolved_item.quantity,
+                unit=resolved_item.unit,
+            )
+            return await self._post_sync_items(body)
+
         resolved_item_id = item.id or item_id
-        body = build_sync_items_checked_request(
-            self.list_id,
-            resolved_item_id,
-            item.name,
-            checked,
-            int(time.time() * 1000),
-            quantity=item.quantity,
-            unit=item.unit,
-        )
-        result = await self._post_sync_items(body)
+        try:
+            result = await write(item)
+        except SamsungFoodError as exc:
+            if not self._is_missing_item_write_error(exc):
+                raise
+
+            # A recent list snapshot may still contain an ID which Samsung's
+            # write side has already deleted. Discard that snapshot row and
+            # force a fresh same-name lookup, explicitly excluding the ID the
+            # write endpoint just rejected.
+            self._remove_cached_item(resolved_item_id)
+            item = await self._find_checked_write_item(
+                item_id,
+                checked=checked,
+                fallback_name=fallback_name or item.name,
+                fallback_quantity=fallback_quantity,
+                fallback_unit=fallback_unit,
+                rejected_item_id=resolved_item_id,
+            )
+            resolved_item_id = item.id or item_id
+            try:
+                result = await write(item)
+            except SamsungFoodError as retry_exc:
+                if self._is_missing_item_write_error(retry_exc):
+                    raise SamsungItemNotFoundError(
+                        f"Shopping item not found: {item_id}"
+                    ) from retry_exc
+                raise
+
         self._update_cached_item(resolved_item_id, checked=checked)
         # A successful gRPC write is the acknowledgement. Samsung's read side is
         # eventually consistent, so an immediate second list read adds latency

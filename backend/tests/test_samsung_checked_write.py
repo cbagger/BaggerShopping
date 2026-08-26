@@ -3,7 +3,11 @@ import time
 
 import app.samsung as samsung
 from app.models import ShoppingItem
-from app.samsung import SamsungFoodClient, reset_item_snapshot_cache_for_tests
+from app.samsung import (
+    SamsungFoodClient,
+    SamsungFoodError,
+    reset_item_snapshot_cache_for_tests,
+)
 
 
 def test_checked_write_uses_one_read_and_does_not_wait_for_eventual_consistency(monkeypatch):
@@ -132,3 +136,50 @@ def test_checked_write_rebinds_stale_id_to_unique_same_name_item(monkeypatch):
         "rebound": True,
     }
     assert len(writes) == 1
+
+
+def test_checked_write_rebinds_when_recent_snapshot_contains_rejected_stale_id(monkeypatch):
+    reset_item_snapshot_cache_for_tests()
+    writes = []
+    reads = []
+
+    async def fake_get_list(self):
+        reads.append(True)
+        current = samsung.ShoppingListResponse(
+            list_id=self.list_id,
+            name="Indkøbsliste",
+            items=[ShoppingItem(id="new-item", name="coca cola", checked=False)],
+        )
+        self._remember_item_snapshot(current.items)
+        return current
+
+    async def fake_post_sync_items(self, body):
+        writes.append(body)
+        if len(writes) == 1:
+            raise SamsungFoodError("Shopping item not found: stale-item")
+        return {"grpc_status": 0}
+
+    monkeypatch.setattr(SamsungFoodClient, "get_list", fake_get_list)
+    monkeypatch.setattr(SamsungFoodClient, "_post_sync_items", fake_post_sync_items)
+    client = object.__new__(SamsungFoodClient)
+    client.list_id = "family-list"
+    client._remember_item_snapshot([
+        ShoppingItem(id="stale-item", name="coca cola", checked=False)
+    ])
+
+    result = asyncio.run(client.set_item_checked(
+        "stale-item",
+        True,
+        fallback_name="coca cola",
+    ))
+
+    assert result == {
+        "grpc_status": 0,
+        "item_id": "new-item",
+        "item_name": "coca cola",
+        "rebound": True,
+    }
+    assert len(reads) == 1
+    assert len(writes) == 2
+    assert client._cached_item("stale-item") is None
+    assert client._cached_item("new-item").checked is True
