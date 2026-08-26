@@ -93,10 +93,22 @@ struct APIClient {
         _ = try await perform(request(path: "/api/mobile/v1/items", method: "POST", body: body))
     }
 
-    func setChecked(item: ShoppingItem, checked: Bool) async throws {
+    func setChecked(item: ShoppingItem, checked: Bool) async throws -> CheckedMutationResponse {
         guard let id = item.id else { throw APIError.missingItemID }
-        let body = try JSONEncoder().encode(["checked": checked])
-        _ = try await perform(request(path: "/api/mobile/v1/items/\(id)/checked", method: "PATCH", body: body))
+        var payload: [String: Any] = [
+            "checked": checked,
+            "item_name": item.name,
+        ]
+        if let quantity = item.quantity { payload["quantity"] = quantity }
+        if let unit = item.unit { payload["unit"] = unit }
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        let data = try await perform(request(path: "/api/mobile/v1/items/\(id)/checked", method: "PATCH", body: body))
+        return try JSONDecoder().decode(CheckedMutationResponse.self, from: data)
+    }
+
+    static func isStaleShoppingItem(_ error: Error) -> Bool {
+        guard case let APIError.server(code, _) = error else { return false }
+        return code == 409
     }
 
     func setQuantity(item: ShoppingItem, quantity: Double, unit: String = "stk") async throws {
