@@ -32,6 +32,7 @@ final class AppModel: ObservableObject {
     private var pendingDeletionIDs: Set<String> = []
     private var deletionTail: Task<Void, Never>?
     private var checkedMutationFlushTask: Task<Void, Never>?
+    private var checkedMutationRetryTask: Task<Void, Never>?
 
     init() {
         if let data = UserDefaults.standard.data(forKey: offerMetadataKey),
@@ -360,7 +361,29 @@ final class AppModel: ObservableObject {
                 // blocking alert or reverse the local checkbox.
                 pendingCheckedItemIDs = checkedMutationStore.unacknowledgedItemIDs
                 checkedSyncRetryItemIDs.insert(mutation.itemID)
+                scheduleCheckedMutationRetry()
                 return
+            }
+        }
+    }
+
+    /// Keep retrying briefly while the app remains available. The durable
+    /// outbox is still the final safety net across suspension or termination.
+    /// Only one retry loop may exist, even if several callers request a flush.
+    private func scheduleCheckedMutationRetry() {
+        guard checkedMutationRetryTask == nil else { return }
+        checkedMutationRetryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.checkedMutationRetryTask = nil }
+
+            for delay in CheckedMutationRetryPolicy.delays {
+                do {
+                    try await Task.sleep(for: .seconds(delay))
+                } catch {
+                    return
+                }
+                guard !self.pendingCheckedItemIDs.isEmpty else { return }
+                await self.flushPendingCheckedMutations()
             }
         }
     }
