@@ -120,6 +120,14 @@ class SamsungFoodClient:
             items[key] = item.model_copy(update=changes, deep=True)
             _item_snapshots[self.list_id] = (created_at, items)
 
+    def _remove_cached_item(self, item_id: str) -> None:
+        snapshot = _item_snapshots.get(self.list_id)
+        if snapshot is None:
+            return
+        created_at, items = snapshot
+        items.pop(_normalized_item_id(item_id), None)
+        _item_snapshots[self.list_id] = (created_at, items)
+
     def _normalize_list(self, payload: dict[str, Any]) -> ShoppingListResponse:
         list_meta = payload.get("list") or {}
         content = payload.get("content") or {}
@@ -360,17 +368,11 @@ class SamsungFoodClient:
             int(time.time() * 1000),
         )
         result = await self._post_sync_items(body)
-
-        current = await self.get_list()
-        wanted = item_id.replace("-", "").casefold()
-        if any(
-            item.id and item.id.replace("-", "").casefold() == wanted
-            for item in current.items
-        ):
-            raise SamsungFoodError(
-                "Samsung accepted the delete SyncItems operation, but the item "
-                "was still present on read-back"
-            )
+        # A successful gRPC write is the acknowledgement. Samsung's list read
+        # is eventually consistent and may still contain the deleted item for
+        # a short period; treating that stale read as a failed delete makes the
+        # iPhone restore the row and makes midnight cleanup retry forever.
+        self._remove_cached_item(item_id)
         return result
 
     def _write_headers(self, token: str) -> dict[str, str]:

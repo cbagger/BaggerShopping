@@ -116,4 +116,29 @@ final class ShoppingListCacheRecoveryTests: XCTestCase {
 
         XCTAssertTrue(store.load().isEmpty)
     }
+
+    func testDeletingItemSuspendsPendingCheckSoItCannotRestoreTheRow() throws {
+        let suite = "PendingCheckedMutationTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = PendingCheckedMutationStore(defaults: defaults, storageKey: "pending")
+        let item = ShoppingItem(id: "milk-1", name: "Mælk", checked: false)
+        let stale = ShoppingListResponse(
+            ok: true,
+            name: "Familieliste",
+            count: 1,
+            hasItems: true,
+            items: [item]
+        )
+        _ = store.enqueue(item: item, checked: true)
+
+        let suspended = try XCTUnwrap(store.remove(itemID: "milk-1"))
+
+        XCTAssertTrue(store.load().isEmpty)
+        XCTAssertFalse(try XCTUnwrap(store.applying(to: stale).items.first).checked)
+
+        store.restore(suspended)
+        XCTAssertTrue(try XCTUnwrap(store.applying(to: stale).items.first).checked)
+    }
 }
