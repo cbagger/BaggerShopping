@@ -28,7 +28,6 @@ struct BaggerShoppingApp: App {
             switch phase {
             case .background:
                 navigation.didEnterBackground()
-                appModel.continuePendingChecksInBackground()
             case .active:
                 _ = navigation.resetAfterLongInactivityIfNeeded()
                 Task {

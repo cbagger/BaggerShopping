@@ -2,7 +2,6 @@ import Foundation
 import CoreLocation
 import MapKit
 import UserNotifications
-import UIKit
 
 struct GeofenceRegionDiagnostic: Identifiable, Hashable {
     let id: String
@@ -372,22 +371,10 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
             return
         }
 
-        var backgroundTask = UIBackgroundTaskIdentifier.invalid
-        backgroundTask = UIApplication.shared.beginBackgroundTask(
-            withName: "BaggerShopping-Geofence-\(storeName)"
-        ) {
-            if backgroundTask != .invalid {
-                UIApplication.shared.endBackgroundTask(backgroundTask)
-                backgroundTask = .invalid
-            }
-        }
-
-        defer {
-            if backgroundTask != .invalid {
-                UIApplication.shared.endBackgroundTask(backgroundTask)
-                backgroundTask = .invalid
-            }
-        }
+        let backgroundLease = UIKitBackgroundTaskLease.start(
+            name: "Kurv-Geofence-\(storeName)"
+        )
+        defer { backgroundLease.finish() }
 
         do {
             let list = try await api.fetchList()
