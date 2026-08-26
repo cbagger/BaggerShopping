@@ -51,6 +51,19 @@ struct AddItemResponse: Codable {
     let name: String
 }
 
+struct CheckedMutationResponse: Codable {
+    let ok: Bool
+    let itemID: String?
+    let itemName: String?
+    let rebound: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, rebound
+        case itemID = "item_id"
+        case itemName = "item_name"
+    }
+}
+
 struct CategoryOverrideDTO: Codable {
     let itemName: String
     let category: String

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import Any
@@ -36,6 +37,10 @@ def reset_item_snapshot_cache_for_tests() -> None:
 
 
 class SamsungFoodError(RuntimeError):
+    pass
+
+
+class SamsungItemNotFoundError(SamsungFoodError):
     pass
 
 
@@ -317,15 +322,85 @@ class SamsungFoodClient:
         for item in current.items:
             if item.id and _normalized_item_id(item.id) == wanted:
                 return item
-        raise SamsungFoodError(f"Shopping item not found: {item_id}")
+        raise SamsungItemNotFoundError(f"Shopping item not found: {item_id}")
 
-    async def set_item_checked(self, item_id: str, checked: bool) -> dict[str, Any]:
+    @staticmethod
+    def _same_item_name(left: str, right: str) -> bool:
+        return " ".join(left.casefold().split()) == " ".join(right.casefold().split())
+
+    async def _find_checked_write_item(
+        self,
+        item_id: str,
+        *,
+        checked: bool,
+        fallback_name: str | None,
+        fallback_quantity: float | None,
+        fallback_unit: str | None,
+    ) -> ShoppingItem:
+        """Resolve a stale Samsung ID after delete-then-add of the same name.
+
+        Samsung's read side can briefly expose an ID which its SyncItems write
+        side no longer accepts. A unique same-name row is safe to rebind to;
+        ambiguous duplicates remain fail-closed.
+        """
+        wanted = _normalized_item_id(item_id)
+        delays = (0.0, 0.5, 1.0, 2.0)
+        for delay in delays:
+            if delay:
+                await asyncio.sleep(delay)
+            current = await self.get_list()
+            for item in current.items:
+                if item.id and _normalized_item_id(item.id) == wanted:
+                    return item
+
+            if not fallback_name:
+                continue
+            matches = [
+                item for item in current.items
+                if item.id and self._same_item_name(item.name, fallback_name)
+            ]
+            state_matches = [item for item in matches if bool(item.checked) != checked]
+            candidates = state_matches or matches
+
+            if fallback_quantity is not None:
+                quantity_matches = [item for item in candidates if item.quantity == fallback_quantity]
+                if quantity_matches:
+                    candidates = quantity_matches
+            if fallback_unit:
+                unit_matches = [
+                    item for item in candidates
+                    if (item.unit or "").casefold() == fallback_unit.casefold()
+                ]
+                if unit_matches:
+                    candidates = unit_matches
+
+            if len(candidates) == 1:
+                return candidates[0]
+
+        raise SamsungItemNotFoundError(f"Shopping item not found: {item_id}")
+
+    async def set_item_checked(
+        self,
+        item_id: str,
+        checked: bool,
+        *,
+        fallback_name: str | None = None,
+        fallback_quantity: float | None = None,
+        fallback_unit: str | None = None,
+    ) -> dict[str, Any]:
         item = self._cached_item(item_id)
         if item is None:
-            item = await self._find_item(item_id)
+            item = await self._find_checked_write_item(
+                item_id,
+                checked=checked,
+                fallback_name=fallback_name,
+                fallback_quantity=fallback_quantity,
+                fallback_unit=fallback_unit,
+            )
+        resolved_item_id = item.id or item_id
         body = build_sync_items_checked_request(
             self.list_id,
-            item_id,
+            resolved_item_id,
             item.name,
             checked,
             int(time.time() * 1000),
@@ -333,11 +408,16 @@ class SamsungFoodClient:
             unit=item.unit,
         )
         result = await self._post_sync_items(body)
-        self._update_cached_item(item_id, checked=checked)
+        self._update_cached_item(resolved_item_id, checked=checked)
         # A successful gRPC write is the acknowledgement. Samsung's read side is
         # eventually consistent, so an immediate second list read adds latency
         # and can time out even though the checkbox was already saved.
-        return {**result, "item_name": item.name}
+        return {
+            **result,
+            "item_id": resolved_item_id,
+            "item_name": item.name,
+            "rebound": _normalized_item_id(resolved_item_id) != _normalized_item_id(item_id),
+        }
 
     async def set_item_quantity(
         self,

@@ -22,6 +22,7 @@ from .samsung_login import router as samsung_login_router
 from .households import HouseholdContext, read_household, require_household, require_owner, router as households_router, update_household
 from .flyer_push import router as flyer_push_router
 from .samsung_request_policy import family_samsung_client
+from .samsung import SamsungItemNotFoundError
 
 
 class MobileSettings(BaseSettings):
@@ -78,6 +79,9 @@ class AddItemResponse(BaseModel):
 
 class SetCheckedRequest(BaseModel):
     checked: bool
+    item_name: str | None = Field(default=None, min_length=1, max_length=200)
+    quantity: float | None = Field(default=None, gt=0, le=999)
+    unit: str | None = Field(default=None, min_length=1, max_length=20)
 
 
 class SetQuantityRequest(BaseModel):
@@ -420,10 +424,25 @@ async def set_mobile_item_checked(
     family_client = await family_samsung_client(context)
     if family_client is not None:
         try:
-            result = await family_client.set_item_checked(item_id, request.checked)
+            result = await family_client.set_item_checked(
+                item_id,
+                request.checked,
+                fallback_name=request.item_name,
+                fallback_quantity=request.quantity,
+                fallback_unit=request.unit,
+            )
             if request.checked and result.get("item_name"):
-                schedule_purchase_recording(context, item_id=item_id, item_name=result["item_name"])
+                schedule_purchase_recording(
+                    context,
+                    item_id=result.get("item_id") or item_id,
+                    item_name=result["item_name"],
+                )
             return {"ok": True, **result}
+        except SamsungItemNotFoundError as exc:
+            # 409 tells iOS that this durable mutation targets a row which no
+            # longer exists. It must refresh/discard it instead of retrying a
+            # permanent 502 forever.
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
             print({
                 "mobile_checked_write_error": str(exc),
