@@ -425,6 +425,12 @@ async def set_mobile_item_checked(
                 schedule_purchase_recording(context, item_id=item_id, item_name=result["item_name"])
             return {"ok": True, **result}
         except Exception as exc:
+            print({
+                "mobile_checked_write_error": str(exc),
+                "household_id": context.household_id,
+                "item_id": item_id,
+                "checked": request.checked,
+            }, flush=True)
             raise HTTPException(status_code=502, detail=str(exc)) from exc
     try:
         response = await core_patch(f"/api/shopping/items/{item_id}/checked", {"checked": request.checked})

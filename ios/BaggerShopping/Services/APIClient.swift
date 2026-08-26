@@ -44,8 +44,7 @@ struct APIClient {
 
     private func perform(_ request: URLRequest) async throws -> Data {
         var lastError: Error?
-        let retryableMethods = ["GET", "PUT"]
-        let attempts = retryableMethods.contains(request.httpMethod ?? "") ? 3 : 1
+        let attempts = Self.maximumAttempts(for: request.httpMethod)
         for attempt in 1...attempts {
             do {
                 let (data, response) = try await URLSession.shared.data(for: request)
@@ -58,6 +57,19 @@ struct APIClient {
             }
         }
         throw lastError ?? APIError.invalidResponse
+    }
+
+    /// PATCH is used for checkbox/quantity writes whose desired value is
+    /// idempotent. Retrying a transient transport or gateway failure is safe
+    /// and prevents a single dropped iPhone request from leaving the durable
+    /// checkbox outbox waiting until the next app activation.
+    static func maximumAttempts(for method: String?) -> Int {
+        switch method?.uppercased() {
+        case "GET", "PUT", "PATCH":
+            return 3
+        default:
+            return 1
+        }
     }
 
     private func isTransient(_ error: Error) -> Bool {
