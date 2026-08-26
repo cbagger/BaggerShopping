@@ -10,6 +10,7 @@ from app import mobile_main
 from app.households import HouseholdContext
 from app.mobile_main import SetCheckedRequest, app
 from app.quick_add import MAX_RANKED_ITEMS, MINIMUM_PURCHASES, ranked_items
+from app.samsung import SamsungItemNotFoundError
 
 
 client = TestClient(app)
@@ -114,8 +115,13 @@ def test_samsung_acknowledgement_does_not_wait_for_purchase_learning(monkeypatch
     release_learning = asyncio.Event()
 
     class FakeSamsungClient:
-        async def set_item_checked(self, item_id, checked):
-            return {"grpc_status": 0, "item_name": "Mælk", "checked": checked}
+        async def set_item_checked(self, item_id, checked, **kwargs):
+            return {
+                "grpc_status": 0,
+                "item_id": item_id,
+                "item_name": "Mælk",
+                "checked": checked,
+            }
 
     async def fake_family_client(_context):
         return FakeSamsungClient()
@@ -150,5 +156,80 @@ def test_samsung_acknowledgement_does_not_wait_for_purchase_learning(monkeypatch
         assert mobile_main.purchase_recording_tasks
         release_learning.set()
         await asyncio.gather(*tuple(mobile_main.purchase_recording_tasks))
+
+    asyncio.run(scenario())
+
+
+def test_rebound_samsung_id_is_used_for_purchase_idempotency(monkeypatch):
+    recorded = []
+
+    class FakeSamsungClient:
+        async def set_item_checked(self, item_id, checked, **kwargs):
+            assert kwargs["fallback_name"] == "coca cola"
+            return {
+                "grpc_status": 0,
+                "item_id": "new-samsung-id",
+                "item_name": "coca cola",
+                "rebound": True,
+            }
+
+    async def fake_family_client(_context):
+        return FakeSamsungClient()
+
+    async def fake_record_purchase(_context, *, item_id, item_name):
+        recorded.append((item_id, item_name))
+
+    monkeypatch.setattr(mobile_main, "family_samsung_client", fake_family_client)
+    monkeypatch.setattr(mobile_main, "record_purchase", fake_record_purchase)
+    context = HouseholdContext(
+        household_id="family-bagger",
+        household_name="Familien Bagger",
+        member_name="Christoffer",
+        role="owner",
+        list_backend="samsung",
+    )
+
+    async def scenario():
+        response = await mobile_main.set_mobile_item_checked(
+            "stale-samsung-id",
+            SetCheckedRequest(checked=True, item_name="coca cola"),
+            context,
+        )
+        await asyncio.gather(*tuple(mobile_main.purchase_recording_tasks))
+        assert response["item_id"] == "new-samsung-id"
+        assert response["rebound"] is True
+
+    asyncio.run(scenario())
+    assert recorded == [("new-samsung-id", "coca cola")]
+
+
+def test_missing_samsung_item_is_a_non_transient_conflict(monkeypatch):
+    class MissingSamsungClient:
+        async def set_item_checked(self, item_id, checked, **kwargs):
+            raise SamsungItemNotFoundError(f"Shopping item not found: {item_id}")
+
+    async def fake_family_client(_context):
+        return MissingSamsungClient()
+
+    monkeypatch.setattr(mobile_main, "family_samsung_client", fake_family_client)
+    context = HouseholdContext(
+        household_id="family-bagger",
+        household_name="Familien Bagger",
+        member_name="Christoffer",
+        role="owner",
+        list_backend="samsung",
+    )
+
+    async def scenario():
+        try:
+            await mobile_main.set_mobile_item_checked(
+                "gone-item",
+                SetCheckedRequest(checked=True, item_name="coca cola"),
+                context,
+            )
+        except mobile_main.HTTPException as exc:
+            assert exc.status_code == 409
+        else:
+            raise AssertionError("Expected stale Samsung item conflict")
 
     asyncio.run(scenario())
