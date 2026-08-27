@@ -88,7 +88,9 @@ struct CachedOfferSearch: Codable {
 }
 
 enum OfferSearchCache {
-    private static let prefix = "kurv-cached-offer-search-v5-"
+    // v6 drops build 78 search payloads where an unrelated family favorite
+    // could have been cached as a valid result.
+    private static let prefix = "kurv-cached-offer-search-v6-"
 
     static func save(_ offers: [GroceryOffer], query: String, retailers: Set<String>) {
         guard !offers.isEmpty else { return }
