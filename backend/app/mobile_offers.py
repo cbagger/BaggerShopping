@@ -325,6 +325,14 @@ def _offer_match_result(item_name: str, offer: Offer) -> tuple[int, MatchResult]
     results = [(compare(item_name, candidate), candidate) for candidate in candidates]
     best, candidate = max(results, key=lambda value: _identity_score(value[0]))
     score = _identity_score(best)
+
+    # A family preference is a ranking signal only after the offer has proved
+    # that it belongs in this search.  Applying the large favorite bonus before
+    # the threshold check made unrelated favorites (for example Lurpak during
+    # a search for shoes) appear as valid results.
+    if score < _MATCH_THRESHOLD:
+        return score, best
+
     favorite = family_favorite_match(_offer_favorite_candidates(offer))
     if favorite:
         score += 1_000 + favorite.score

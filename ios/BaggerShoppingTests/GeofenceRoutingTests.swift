@@ -2,6 +2,20 @@ import XCTest
 @testable import BaggerShopping
 
 final class GeofenceRoutingTests: XCTestCase {
+    func testOnlyEnabledStoresSavedOnButikkerTabAreEligibleForMonitoring() {
+        let savedAndEnabled = StoreLocation(
+            name: "MENY Skørping", latitude: 56.836, longitude: 9.892
+        )
+        let savedButDisabled = StoreLocation(
+            name: "REMA 1000 Støvring", latitude: 56.888, longitude: 9.838, enabled: false
+        )
+
+        XCTAssertEqual(
+            GeofenceManager.monitoredStores(from: [savedAndEnabled, savedButDisabled]),
+            [savedAndEnabled]
+        )
+    }
+
     func testStoreNotificationCountsOnlyUncheckedItemsAssignedToStore() {
         let list = ShoppingListResponse(
             ok: true,

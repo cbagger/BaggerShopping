@@ -115,6 +115,52 @@ def test_family_favorite_ranks_first_without_hiding_other_ketchup_sizes(monkeypa
     assert response["offers"][1]["family_favorite_score"] == 0
 
 
+@pytest.mark.parametrize("query", ["cheddar ost", "sko", "appelsiner"])
+def test_family_favorite_cannot_make_an_unrelated_offer_a_search_result(monkeypatch, tmp_path, query):
+    monkeypatch.setenv("HOUSEHOLD_STORE_PATH", str(tmp_path / "households.json"))
+    context = HouseholdContext(
+        household_id="family-a", household_name="Familie A",
+        member_name="A", role="owner", list_backend="local",
+    )
+    set_current(context)
+    households.save_store({
+        "households": {
+            context.household_id: {
+                "id": context.household_id,
+                "name": context.household_name,
+                "list_backend": "local",
+                "product_preferences": {
+                    "smør": {
+                        "item_name": "Smør",
+                        "preferred_name": "Lurpak smør",
+                        "mode": "favorite",
+                    }
+                },
+            }
+        }
+    })
+    publication = parse_meny_flyer_html("<p>Lidl uge 3526</p>")
+    publication.retailer = "Lidl"
+    publication.status = "current"
+    publication.structured_offers = [
+        Offer(
+            id="lurpak", retailer="Lidl", publication_id="week", publication_title="Uge",
+            product_name="Lurpak smør eller smørbar", price=19.95,
+            source_url="https://example.test/lurpak", raw_text="",
+            variants=[OfferVariant(id="lurpak-1", name="Lurpak smør")],
+        ),
+    ]
+
+    async def all_publications():
+        return [publication]
+
+    monkeypatch.setattr(mobile_offers, "_publications", all_publications)
+    response = asyncio.run(mobile_offers.search_offers(q=query, retailer=None))
+
+    assert response["offer_count"] == 0
+    assert response["offers"] == []
+
+
 def test_search_includes_upcoming_schulstad_and_keeps_all_flyer_variants(monkeypatch):
     publication = parse_meny_flyer_html("<p>REMA 1000 uge 34</p>")
     publication.retailer = "REMA 1000"

@@ -1,6 +1,5 @@
 import Foundation
 import CoreLocation
-import MapKit
 import UserNotifications
 
 struct GeofenceRegionDiagnostic: Identifiable, Hashable {
@@ -38,8 +37,6 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     private var storesByIdentifier: [String: StoreVisitContext] = [:]
     private var insideRegionIdentifiers: Set<String> = []
     private var latestLocation: CLLocation?
-    private var lastAutomaticLookupAt: Date?
-    private var lastAutomaticLookupLocation: CLLocation?
 
     override init() {
         super.init()
@@ -60,6 +57,7 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         // Never trust a persisted INSIDE value across a cold launch. sync(stores:)
         // immediately asks Core Location for the current state of enabled stores.
         MemberPricePresence.clear()
+        stopAutomaticStoreDetection()
         refreshRegionDiagnostics()
         Task {
             await configureNotificationActions()
@@ -71,7 +69,6 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
         await refreshNotificationAuthorization()
         manager.requestAlwaysAuthorization()
-        startAutomaticStoreDetectionIfAuthorized()
     }
 
     func refreshNotificationAuthorization() async {
@@ -80,8 +77,11 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     func sync(stores: [StoreLocation]) {
+        let monitoredStores = Self.monitoredStores(from: stores)
         storesByIdentifier = Dictionary(
-            uniqueKeysWithValues: stores.map { ("store:\($0.id.uuidString)", StoreVisitContext(store: $0)) }
+            uniqueKeysWithValues: monitoredStores.map {
+                ("store:\($0.id.uuidString)", StoreVisitContext(store: $0))
+            }
         )
 
         // Presence must be re-proven by Core Location after every monitoring
@@ -93,7 +93,7 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
             manager.stopMonitoring(for: region)
         }
 
-        for store in stores.filter(\.enabled).prefix(20) {
+        for store in monitoredStores {
             let radius = min(max(store.radius, 100), manager.maximumRegionMonitoringDistance)
             let region = CLCircularRegion(
                 center: store.coordinate,
@@ -107,7 +107,11 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
 
         refreshRegionDiagnostics()
         refreshPresence()
-        startAutomaticStoreDetectionIfAuthorized()
+        stopAutomaticStoreDetection()
+    }
+
+    nonisolated static func monitoredStores(from stores: [StoreLocation]) -> [StoreLocation] {
+        Array(stores.filter(\.enabled).prefix(20))
     }
 
     func refreshPresence() {
@@ -190,13 +194,11 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
             self.authorizationStatus = manager.authorizationStatus
             if manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse {
                 self.refreshPresence()
-                self.startAutomaticStoreDetectionIfAuthorized()
             } else {
                 self.insideRegionIdentifiers.removeAll()
                 self.updateNearbyStores()
-                self.manager.stopMonitoringVisits()
-                self.manager.stopMonitoringSignificantLocationChanges()
             }
+            self.stopAutomaticStoreDetection()
         }
     }
 
@@ -229,7 +231,10 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         guard region.identifier.hasPrefix("store:") else { return }
 
         Task { @MainActor in
-            let context = self.context(for: region.identifier)
+            // Core Location can deliver a queued event after a region was
+            // removed.  Never turn such a stale or unknown region into a store
+            // notification.
+            guard let context = self.storesByIdentifier[region.identifier] else { return }
             let storeName = context.retailer
             let message = "\(storeName) – \(Self.timestamp())"
             self.lastEnterEvent = message
@@ -290,20 +295,6 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
                 max(location.horizontalAccuracy, 0)
             )
             self.refreshRegionDiagnostics()
-            await self.detectAutomaticStore(near: location)
-        }
-    }
-
-    nonisolated func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
-        let location = CLLocation(
-            coordinate: visit.coordinate,
-            altitude: 0,
-            horizontalAccuracy: visit.horizontalAccuracy,
-            verticalAccuracy: -1,
-            timestamp: visit.arrivalDate == .distantPast ? Date() : visit.arrivalDate
-        )
-        Task { @MainActor in
-            await self.detectAutomaticStore(near: location, force: true)
         }
     }
 
@@ -662,68 +653,12 @@ final class GeofenceManager: NSObject, ObservableObject, CLLocationManagerDelega
         center.setNotificationCategories(categories)
     }
 
-    private func startAutomaticStoreDetectionIfAuthorized() {
-        guard authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse else { return }
-        guard CLLocationManager.significantLocationChangeMonitoringAvailable() else { return }
-        manager.startMonitoringVisits()
-        manager.startMonitoringSignificantLocationChanges()
-    }
-
-    private func detectAutomaticStore(near location: CLLocation, force: Bool = false) async {
-        guard location.horizontalAccuracy >= 0, location.horizontalAccuracy <= 200 else { return }
-
-        if !force,
-           let lastAutomaticLookupAt,
-           Date().timeIntervalSince(lastAutomaticLookupAt) < 10 * 60,
-           let lastAutomaticLookupLocation,
-           location.distance(from: lastAutomaticLookupLocation) < 100 {
-            return
-        }
-        lastAutomaticLookupAt = Date()
-        lastAutomaticLookupLocation = location
-
-        // A manually monitored store is more precise and didEnterRegion owns
-        // its notification. Automatic discovery only fills the no-store gap.
-        let overlapsSavedStore = storesByIdentifier.values.contains { store in
-            CLLocation(latitude: store.latitude, longitude: store.longitude).distance(from: location) <= 180
-        }
-        guard !overlapsSavedStore else { return }
-
-        let request = MKLocalSearch.Request()
-        request.region = MKCoordinateRegion(
-            center: location.coordinate,
-            latitudinalMeters: 500,
-            longitudinalMeters: 500
-        )
-        request.resultTypes = .pointOfInterest
-        request.pointOfInterestFilter = MKPointOfInterestFilter(including: [.foodMarket])
-
-        guard let response = try? await MKLocalSearch(request: request).start() else { return }
-        let nearby = response.mapItems.compactMap { item -> (StoreVisitContext, CLLocationDistance)? in
-            guard let name = item.name,
-                  let retailer = RetailerCatalog.canonicalRetailer(name) else { return nil }
-            let placemark = item.placemark
-            let storeLocation = CLLocation(
-                latitude: placemark.coordinate.latitude,
-                longitude: placemark.coordinate.longitude
-            )
-            let distance = storeLocation.distance(from: location)
-            guard distance <= 160 else { return nil }
-            return (
-                StoreVisitContext.automaticallyDetected(
-                    retailer: retailer,
-                    address: placemark.title ?? "",
-                    latitude: placemark.coordinate.latitude,
-                    longitude: placemark.coordinate.longitude
-                ),
-                distance
-            )
-        }
-        .sorted { $0.1 < $1.1 }
-        .first
-
-        guard let context = nearby?.0 else { return }
-        await handleStoreArrival(context)
+    private func stopAutomaticStoreDetection() {
+        // Store-arrival notifications are opt-in per physical location on the
+        // Butikker tab.  Builds up to 78 also searched Apple Maps around every
+        // significant location change, which could notify for unsaved stores.
+        manager.stopMonitoringVisits()
+        manager.stopMonitoringSignificantLocationChanges()
     }
 
     private static func notificationStatusText(_ status: UNAuthorizationStatus) -> String {
