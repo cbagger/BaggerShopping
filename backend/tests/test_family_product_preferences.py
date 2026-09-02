@@ -6,7 +6,12 @@ from fastapi.testclient import TestClient
 
 from app.households import HouseholdContext, set_current
 from app.mobile_main import app
-from app.product_identity import apply_family_preference, compare, family_favorite_match
+from app.product_identity import (
+    active_family_favorite_match,
+    apply_family_preference,
+    compare,
+    family_favorite_match,
+)
 
 
 client = TestClient(app)
@@ -16,7 +21,7 @@ def auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_favorites_are_private_per_family_and_never_filter_other_offers(monkeypatch, tmp_path):
+def test_favorites_are_retained_privately_but_have_no_active_influence(monkeypatch, tmp_path):
     monkeypatch.setenv("HOUSEHOLD_STORE_PATH", str(tmp_path / "households.json"))
     first = client.post("/api/mobile/v1/households/create", json={"household_name": "Familie A", "member_name": "A"}).json()
     second = client.post("/api/mobile/v1/households/create", json={"household_name": "Familie B", "member_name": "B"}).json()
@@ -36,9 +41,10 @@ def test_favorites_are_private_per_family_and_never_filter_other_offers(monkeypa
     ))
     favorite = compare("Arla letmælk 1 l", "Arla letmælk 500 ml")
     score, result = apply_family_preference("Mælk", "Arla letmælk 500 ml", 65, favorite)
-    assert score > 1_000
-    assert result.level != "not_same"
-    assert "foretrukne vare" in result.explanation
+    assert score == 65
+    assert result == favorite
+    assert family_favorite_match("Arla letmælk 500 ml") is not None
+    assert active_family_favorite_match("Arla letmælk 500 ml") is None
 
     other = compare("Mælk", "Coop sødmælk")
     other_score, other_result = apply_family_preference("Mælk", "Coop sødmælk", 65, other)

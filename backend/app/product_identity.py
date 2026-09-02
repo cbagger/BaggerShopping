@@ -33,6 +33,12 @@ _STORE_CACHE_CHECKED_AT = 0.0
 _ANALYSIS_GENERATION = 0
 _STORE_STAT_INTERVAL_SECONDS = 1.0
 
+# Family preferences are intentionally retained in household storage, but they
+# must not influence offers, matching, ranking, or variant selection. Keeping
+# this as one explicit switch makes the feature reversible without migrating or
+# deleting any family's saved choices.
+FAMILY_FAVORITE_INFLUENCE_ENABLED = False
+
 STOPWORDS = {
     "af", "den", "det", "eller", "fra", "i", "med", "og", "pak", "pk",
     "pr", "på", "stk", "til", "uge", "x",
@@ -414,6 +420,12 @@ def family_favorite_match(candidates: str | list[str]) -> FamilyFavoriteMatch | 
     return best
 
 
+def active_family_favorite_match(candidates: str | list[str]) -> FamilyFavoriteMatch | None:
+    if not FAMILY_FAVORITE_INFLUENCE_ENABLED:
+        return None
+    return family_favorite_match(candidates)
+
+
 def _canonical_family(normalized: str) -> str | None:
     return next(
         (family for family, pattern in CANONICAL_FAMILY_PATTERNS if pattern.search(normalized)),
@@ -437,7 +449,7 @@ def family_preference(item_name: str) -> FamilyProductPreference | None:
 
 def apply_family_preference(item_name: str, candidate: str, score: int, result: MatchResult) -> tuple[int, MatchResult]:
     del item_name
-    favorite = family_favorite_match(candidate)
+    favorite = active_family_favorite_match(candidate)
     if not favorite:
         return score, result
     boosted = result.model_copy(update={

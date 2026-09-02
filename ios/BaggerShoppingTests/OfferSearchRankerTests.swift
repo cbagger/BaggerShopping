@@ -89,7 +89,7 @@ final class OfferSearchRankerTests: XCTestCase {
         XCTAssertEqual(OfferSearchRanker.rank([expensive, cheap], for: "Smør").map(\.id), ["cheap", "expensive"])
     }
 
-    func testFamilyFavoriteAlwaysRanksBeforeOtherRelevantOffers() throws {
+    func testFamilyFavoriteMetadataDoesNotOverridePriceForEqualMatches() throws {
         let cheapOther = try makeOffer(
             id: "heinz",
             retailer: "MENY",
@@ -108,11 +108,11 @@ final class OfferSearchRankerTests: XCTestCase {
 
         XCTAssertEqual(
             OfferSearchRanker.rank([cheapOther, favorite], for: "ketchup").map(\.id),
-            ["beauvais", "heinz"]
+            ["heinz", "beauvais"]
         )
     }
 
-    func testExactFavoritePackageOnlyBreaksTieInsideFavoriteGroup() throws {
+    func testFamilyFavoriteScoreDoesNotBreakRankingTie() throws {
         let relatedSize = try makeOffer(
             id: "beauvais-500",
             retailer: "MENY",
@@ -132,7 +132,7 @@ final class OfferSearchRankerTests: XCTestCase {
 
         XCTAssertEqual(
             OfferSearchRanker.rank([relatedSize, exactSize], for: "ketchup").map(\.id),
-            ["beauvais-1000", "beauvais-500"]
+            ["beauvais-500", "beauvais-1000"]
         )
     }
 

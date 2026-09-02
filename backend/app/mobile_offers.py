@@ -24,7 +24,7 @@ from .meny_flyer import (
     _query_terms, search_publication,
 )
 from .offer_serialization import customer_offer_payload
-from .product_identity import MatchResult, analyze, compare, family_favorite_match
+from .product_identity import MatchResult, active_family_favorite_match, analyze, compare
 
 
 router = APIRouter(prefix="/api/mobile/v1/offers", tags=["offers"])
@@ -326,14 +326,10 @@ def _offer_match_result(item_name: str, offer: Offer) -> tuple[int, MatchResult]
     best, candidate = max(results, key=lambda value: _identity_score(value[0]))
     score = _identity_score(best)
 
-    # A family preference is a ranking signal only after the offer has proved
-    # that it belongs in this search.  Applying the large favorite bonus before
-    # the threshold check made unrelated favorites (for example Lurpak during
-    # a search for shoes) appear as valid results.
     if score < _MATCH_THRESHOLD:
         return score, best
 
-    favorite = family_favorite_match(_offer_favorite_candidates(offer))
+    favorite = active_family_favorite_match(_offer_favorite_candidates(offer))
     if favorite:
         score += 1_000 + favorite.score
         best = best.model_copy(update={
@@ -387,7 +383,7 @@ def _offer_payload(
         payload["identity_match"] = identity.model_dump()
     if publication_status is not None:
         payload["publication_status"] = publication_status
-    favorite = family_favorite_match(_offer_favorite_candidates(offer))
+    favorite = active_family_favorite_match(_offer_favorite_candidates(offer))
     payload["family_favorite_score"] = favorite.score if favorite else 0
     payload["family_favorite_name"] = favorite.preferred_name if favorite else None
     payload["family_favorite_item_name"] = favorite.item_name if favorite else None
@@ -492,7 +488,7 @@ def _search_match_result(item_name: str, offer: Offer) -> tuple[int, Offer, Matc
                 "explanation": "Direkte tekstmatch i tilbuddet eller en af dets varianter.",
             })
         score = 150 if matching_ids else 145 if trusted_product_match or brand_match else 125
-        favorite = family_favorite_match(_offer_favorite_candidates(offer))
+        favorite = active_family_favorite_match(_offer_favorite_candidates(offer))
         if favorite:
             score += 1_000 + favorite.score
             identity = identity.model_copy(update={
