@@ -63,7 +63,7 @@ def test_search_accepts_comma_separated_retailer_filter(monkeypatch):
     assert searched == ["Bilka", "Lidl"]
 
 
-def test_family_favorite_ranks_first_without_hiding_other_ketchup_sizes(monkeypatch, tmp_path):
+def test_family_favorite_does_not_change_offer_ranking_or_payload(monkeypatch, tmp_path):
     monkeypatch.setenv("HOUSEHOLD_STORE_PATH", str(tmp_path / "households.json"))
     context = HouseholdContext(
         household_id="family-a", household_name="Familie A",
@@ -109,10 +109,10 @@ def test_family_favorite_ranks_first_without_hiding_other_ketchup_sizes(monkeypa
     monkeypatch.setattr(mobile_offers, "_publications", all_publications)
     response = asyncio.run(mobile_offers.search_offers(q="ketchup", retailer=None))
 
-    assert [offer["id"] for offer in response["offers"]] == ["beauvais", "heinz"]
-    assert response["offers"][0]["family_favorite_name"] == "Beauvais ketchup 1 kg"
-    assert response["offers"][0]["family_favorite_score"] > 0
-    assert response["offers"][1]["family_favorite_score"] == 0
+    assert [offer["id"] for offer in response["offers"]] == ["heinz", "beauvais"]
+    assert all(offer["family_favorite_score"] == 0 for offer in response["offers"])
+    assert all(offer["family_favorite_name"] is None for offer in response["offers"])
+    assert all(offer["family_favorite_item_name"] is None for offer in response["offers"])
 
 
 @pytest.mark.parametrize("query", ["cheddar ost", "sko", "appelsiner"])
