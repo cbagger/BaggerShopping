@@ -14,7 +14,6 @@ struct OffersView: View {
     @State private var previewOffer: GroceryOffer?
     @State private var pendingCheaperAddition: PendingOfferAddition?
     @State private var filterSearchTask: Task<Void, Never>?
-    @State private var favoriteWorkingOfferID: String?
     @FocusState private var searchIsFocused: Bool
 
     private let api = APIClient()
@@ -102,9 +101,7 @@ struct OffersView: View {
                                     publicationID: offer.publicationID
                                 ),
                                 additionDisabled: model.isAddingItem || OfferAddActivity.shared.phase.blocksNewAdditions,
-                                favoriteWorking: favoriteWorkingOfferID == offer.id,
-                                preview: { previewOffer = offer },
-                                toggleFavorite: { toggleFavorite(for: offer) }
+                                preview: { previewOffer = offer }
                             ) {
                                 switch offer.choiceState {
                                 case .direct(let variant):
@@ -123,9 +120,7 @@ struct OffersView: View {
             .sheet(item: $pendingOffer) { offer in
                 StructuredVariantPickerView(
                     offer: offer,
-                    selectionVerb: "Tilføj",
-                    favoriteItemName: offer.familyFavoriteItemName ?? query,
-                    onFavoriteChanged: { Task { await search(useCache: false) } }
+                    selectionVerb: "Tilføj"
                 ) { name in
                     add(name, from: offer)
                     pendingOffer = nil
@@ -251,50 +246,6 @@ struct OffersView: View {
         }
     }
 
-    private func favoriteCandidate(for offer: GroceryOffer) -> String? {
-        let matching = offer.variants.filter(\.matchesQuery)
-        if matching.count == 1 {
-            return offer.familyFavoriteName(variant: matching[0])
-        }
-        if case .direct(let name) = offer.choiceState {
-            let variant = offer.variants.first {
-                $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
-            }
-            return offer.familyFavoriteName(variant: variant)
-        }
-        if offer.variants.isEmpty {
-            return offer.familyFavoriteName()
-        }
-        return nil
-    }
-
-    private func toggleFavorite(for offer: GroceryOffer) {
-        if offer.familyFavoriteScore == 0, favoriteCandidate(for: offer) == nil {
-            pendingOffer = offer
-            return
-        }
-        guard favoriteWorkingOfferID == nil else { return }
-        favoriteWorkingOfferID = offer.id
-        Task {
-            do {
-                if offer.familyFavoriteScore > 0,
-                   let itemName = offer.familyFavoriteItemName {
-                    try await api.removeFamilyProductPreference(itemName: itemName)
-                } else if let name = favoriteCandidate(for: offer) {
-                    let context = query.trimmingCharacters(in: .whitespacesAndNewlines)
-                    try await api.saveFamilyProductPreference(
-                        itemName: context.isEmpty ? offer.conciseProductName : context,
-                        preferredName: name,
-                        mode: "favorite"
-                    )
-                }
-                await search(useCache: false)
-            } catch {
-                errorMessage = error.localizedDescription
-            }
-            favoriteWorkingOfferID = nil
-        }
-    }
 }
 
 struct FlowLayout: Layout {
@@ -325,9 +276,7 @@ private struct OfferCard: View {
     let offer: GroceryOffer
     let wasAdded: Bool
     let additionDisabled: Bool
-    let favoriteWorking: Bool
     let preview: () -> Void
-    let toggleFavorite: () -> Void
     let add: () -> Void
 
     var body: some View {
@@ -357,18 +306,6 @@ private struct OfferCard: View {
                             .font(.headline)
                             .lineLimit(3)
                         Spacer(minLength: 8)
-                        Button(action: toggleFavorite) {
-                            Image(systemName: offer.familyFavoriteScore > 0 ? "heart.fill" : "heart")
-                                .font(.title3)
-                                .foregroundStyle(offer.familyFavoriteScore > 0 ? .pink : .secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(favoriteWorking)
-                        .accessibilityLabel(
-                            offer.familyFavoriteScore > 0
-                                ? "Fjern fra familiens foretrukne varer"
-                                : "Føj til familiens foretrukne varer"
-                        )
                         if let price = offer.price {
                             Text(price, format: .currency(code: "DKK").precision(.fractionLength(price.rounded() == price ? 0 : 2)))
                                 .font(.headline.bold())
@@ -385,12 +322,6 @@ private struct OfferCard: View {
 
                     if offer.memberPrice != nil {
                         MemberPriceBadge(offer: offer, compact: true)
-                    }
-
-                    if offer.familyFavoriteScore > 0 {
-                        Label("Familiens foretrukne", systemImage: "heart.fill")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.pink)
                     }
 
                     if let from = offer.validFrom, let until = offer.validUntil {
