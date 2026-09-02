@@ -120,7 +120,7 @@ private struct SettingsContent: View {
                     NavigationLink("Familiens foretrukne varer") {
                         FamilyProductPreferencesView(model: model)
                     }
-                    Text("Foretrukne varer vises først i relevante tilbudssøgninger. Andre tilbud bliver aldrig skjult.")
+                    Text("Funktionen er deaktiveret. Familiens gemte valg bevares, men påvirker ikke tilbudssøgning, rangering eller variantvalg.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
