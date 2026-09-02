@@ -3,16 +3,10 @@ import SwiftUI
 struct StructuredVariantPickerView: View {
     let offer: GroceryOffer
     var selectionVerb = "Tilføj"
-    var favoriteItemName: String? = nil
-    var onFavoriteChanged: () -> Void = {}
     let select: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var customName = ""
-    @State private var familyFavorite: FamilyProductPreference?
-    @State private var favoriteWorking = false
-    @State private var favoriteError: String?
-    private let api = APIClient()
 
     private struct Option: Identifiable {
         let name: String
@@ -87,65 +81,35 @@ struct StructuredVariantPickerView: View {
                                     .font(.subheadline).foregroundStyle(.secondary)
                             }
                             ForEach(options) { option in
-                                HStack(spacing: 12) {
-                                    Button { choose(option.name) } label: {
-                                        VStack(alignment: .leading, spacing: 7) {
-                                            HStack(alignment: .firstTextBaseline) {
-                                                Text(option.name).font(.headline).foregroundStyle(.primary)
-                                                Spacer()
-                                                if option.variant?.matchesQuery == true {
-                                                    Label("Bedste match", systemImage: "checkmark.circle.fill")
-                                                        .font(.caption2.weight(.semibold)).foregroundStyle(.green)
-                                                }
+                                Button { choose(option.name) } label: {
+                                    VStack(alignment: .leading, spacing: 7) {
+                                        HStack(alignment: .firstTextBaseline) {
+                                            Text(option.name).font(.headline).foregroundStyle(.primary)
+                                            Spacer()
+                                            if option.variant?.matchesQuery == true {
+                                                Label("Bedste match", systemImage: "checkmark.circle.fill")
+                                                    .font(.caption2.weight(.semibold)).foregroundStyle(.green)
                                             }
-                                            if let detail = variantPackDetail(option.variant),
-                                               option.name.range(of: detail, options: [.caseInsensitive, .diacriticInsensitive]) == nil {
-                                                Label(detail, systemImage: "shippingbox")
-                                                    .font(.caption.weight(.medium))
-                                                    .foregroundStyle(.secondary)
-                                            }
-                                            identityChips(option.variant?.identity)
-                                            unitPrice(option.variant?.identity)
                                         }
-                                        .padding(.vertical, 5)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        if let detail = variantPackDetail(option.variant),
+                                           option.name.range(of: detail, options: [.caseInsensitive, .diacriticInsensitive]) == nil {
+                                            Label(detail, systemImage: "shippingbox")
+                                                .font(.caption.weight(.medium))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        identityChips(option.variant?.identity)
+                                        unitPrice(option.variant?.identity)
                                     }
-                                    .buttonStyle(.plain)
-
-                                    Button {
-                                        toggleFavorite(variant: option.variant)
-                                    } label: {
-                                        Image(systemName: isFavorite(variant: option.variant) ? "heart.fill" : "heart")
-                                            .font(.title3)
-                                            .foregroundStyle(isFavorite(variant: option.variant) ? .pink : .secondary)
-                                            .frame(width: 36, height: 36)
-                                            .contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                    .disabled(favoriteWorking)
-                                    .accessibilityLabel(
-                                        isFavorite(variant: option.variant)
-                                            ? "Fjern fra familiens foretrukne varer"
-                                            : "Føj til familiens foretrukne varer"
-                                    )
+                                    .padding(.vertical, 5)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
 
                         Section("Et andet valg") {
-                            HStack {
-                                Button("\(selectionVerb) uden bestemt variant") {
-                                    choose(offer.shoppingItemName(variant: nil))
-                                }
-                                Spacer()
-                                Button {
-                                    toggleFavorite(variant: nil)
-                                } label: {
-                                    Image(systemName: isFavorite(variant: nil) ? "heart.fill" : "heart")
-                                        .foregroundStyle(isFavorite(variant: nil) ? .pink : .secondary)
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(favoriteWorking)
+                            Button("\(selectionVerb) uden bestemt variant") {
+                                choose(offer.shoppingItemName(variant: nil))
                             }
                             TextField("Skriv din ønskede variant", text: $customName)
                             Button(selectionVerb) {
@@ -154,30 +118,12 @@ struct StructuredVariantPickerView: View {
                             .disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
 
-                        Section("Familiens foretrukne") {
-                            Text("Tryk på hjertet ved familiens favorit. Favoritten vises først i relevante søgninger, men Kurv skjuler aldrig andre tilbud. Størrelse og pakkemængde er kun en ekstra sortering.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            if let familyFavorite {
-                                Label(familyFavorite.preferredName, systemImage: "heart.fill")
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(.pink)
-                            }
-                            if let favoriteError {
-                                Text(favoriteError)
-                                    .font(.caption)
-                                    .foregroundStyle(.red)
-                            }
-                        }
                     }
                 }
             }
             .navigationTitle(offer.safeToAdd ? "Vælg vare" : "Tilbud")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Annuller") { dismiss() } } }
-            .task {
-                if offer.safeToAdd { await loadPreference() }
-            }
         }
     }
 
@@ -258,59 +204,4 @@ struct StructuredVariantPickerView: View {
         select(shoppingName)
     }
 
-    private var preferenceContext: String {
-        let value = favoriteItemName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return value.isEmpty ? offer.conciseProductName : value
-    }
-
-    private func favoriteName(variant: OfferVariant?) -> String {
-        offer.familyFavoriteName(variant: variant)
-    }
-
-    private func isFavorite(variant: OfferVariant?) -> Bool {
-        guard let familyFavorite else { return false }
-        return familyFavorite.preferredName.compare(
-            favoriteName(variant: variant),
-            options: [.caseInsensitive, .diacriticInsensitive]
-        ) == .orderedSame
-    }
-
-    private func toggleFavorite(variant: OfferVariant?) {
-        guard !favoriteWorking else { return }
-        favoriteWorking = true
-        favoriteError = nil
-        let name = favoriteName(variant: variant)
-        Task {
-            do {
-                if isFavorite(variant: variant), let familyFavorite {
-                    try await api.removeFamilyProductPreference(itemName: familyFavorite.itemName)
-                    await MainActor.run { self.familyFavorite = nil }
-                } else {
-                    try await api.saveFamilyProductPreference(
-                        itemName: preferenceContext,
-                        preferredName: name,
-                        mode: "favorite"
-                    )
-                    await MainActor.run {
-                        familyFavorite = FamilyProductPreference(
-                            itemName: preferenceContext,
-                            preferredName: name,
-                            mode: "favorite"
-                        )
-                    }
-                }
-                await MainActor.run { onFavoriteChanged() }
-            } catch {
-                await MainActor.run { favoriteError = error.localizedDescription }
-            }
-            await MainActor.run { favoriteWorking = false }
-        }
-    }
-
-    @MainActor private func loadPreference() async {
-        guard let preferences = try? await api.fetchFamilyProductPreferences() else { return }
-        familyFavorite = preferences.first(where: {
-            $0.itemName.localizedCaseInsensitiveCompare(preferenceContext) == .orderedSame
-        })
-    }
 }
