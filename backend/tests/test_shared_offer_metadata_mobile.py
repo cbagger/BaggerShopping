@@ -7,6 +7,7 @@ os.environ.setdefault("SAMSUNG_LIST_ID", "test-list")
 from fastapi.testclient import TestClient
 
 import app.mobile_main as mobile
+import app.mobile_offer_metadata as metadata_module
 from app.samsung import SamsungFoodClient
 
 
@@ -187,5 +188,73 @@ def test_item_rename_updates_samsung_payload_and_moves_offer_metadata(monkeypatc
             item_id="item-123",
             item_name="Ny mælk",
             matched_item_name="Ny mælk",
+        )
+    ]
+
+
+def test_item_rename_uses_the_households_selected_samsung_list(monkeypatch, tmp_path):
+    use_store(monkeypatch, tmp_path)
+    original = {
+        "item_name": "smoothies",
+        "item_id": None,
+        "retailer": "365discount",
+        "price": 20.0,
+        "valid_from": None,
+        "valid_until": "09.09.2026",
+        "offer_id": "smoothie-offer",
+        "publication_id": "365-current",
+        "matched_item_name": "kids smoothies",
+        "offer_snapshot": None,
+        "pinned": True,
+    }
+    assert client.put("/api/mobile/v1/offer-metadata", headers=AUTH, json=original).status_code == 200
+
+    class FamilyClient:
+        list_id = "family-selected-list"
+
+        async def _find_item(self, item_id):
+            assert item_id == "smoothie-123"
+            return SimpleNamespace(
+                name="smoothies",
+                checked=False,
+                quantity=None,
+                unit=None,
+            )
+
+        async def _post_sync_items(self, body):
+            assert b"family-selected-list" in body
+            assert "kids smoothies".encode("utf-8") in body
+            return {"grpc_status": 0}
+
+    family_client = FamilyClient()
+
+    async def selected_family_client(context):
+        assert context.household_id == "family-bagger"
+        return family_client
+
+    monkeypatch.setattr(metadata_module, "family_samsung_client", selected_family_client)
+
+    def reject_legacy_client(*args, **kwargs):
+        raise AssertionError("The global Samsung client must not be used for a family-bound list")
+
+    monkeypatch.setattr(metadata_module, "SamsungFoodClient", reject_legacy_client)
+
+    response = client.patch(
+        "/api/mobile/v1/items/smoothie-123/name",
+        headers=AUTH,
+        json={"name": "kids smoothies"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "kids smoothies"
+    assert response.json()["offer_metadata_migrated"] is True
+
+    records = client.get("/api/mobile/v1/offer-metadata", headers=AUTH).json()["metadata"]
+    assert records == [
+        dict(
+            original,
+            item_id="smoothie-123",
+            item_name="kids smoothies",
+            matched_item_name="kids smoothies",
         )
     ]
