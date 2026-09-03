@@ -93,8 +93,15 @@ def test_customer_meny_week_validity_is_inferred_without_changing_source_id():
     assert publication.structured_offers[0].valid_until == "10.09.2026"
 
 
-def test_customer_status_is_recomputed_from_dates_instead_of_stale_snapshot_state():
-    publication = _rema_publication()
+def test_meny_stale_snapshot_status_is_recomputed_from_dates():
+    publication = _meny_publication(
+        publication_id="meny-week-36",
+        title="MENY uge 3626",
+        week=36,
+        valid_from="28.08.2026",
+        valid_until="03.09.2026",
+        status="upcoming",
+    )
 
     result = flyer_publications._customer_ready_publications(
         [publication],
@@ -103,6 +110,18 @@ def test_customer_status_is_recomputed_from_dates_instead_of_stale_snapshot_stat
     )
 
     assert result[0].status == "current"
+
+
+def test_non_meny_status_is_preserved_by_customer_layer():
+    publication = _rema_publication()
+
+    result = flyer_publications._customer_ready_publications(
+        [publication],
+        [publication],
+        today=date(2026, 9, 3),
+    )
+
+    assert result == [publication]
 
 
 def test_superseded_meny_release_is_never_bridged_after_live_reader_rotates():
