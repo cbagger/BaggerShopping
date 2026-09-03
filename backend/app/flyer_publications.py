@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import date, datetime, timedelta
 
 import httpx
 
@@ -297,14 +298,117 @@ async def fetch_raw_publications(*, client: httpx.AsyncClient | None = None) -> 
             await client.aclose()
 
 
+def _parse_publication_date(value: str | None) -> date | None:
+    try:
+        return datetime.strptime(value or "", "%d.%m.%Y").date()
+    except ValueError:
+        return None
+
+
+def _meny_week_validity(publication: Publication) -> tuple[str | None, str | None]:
+    """Infer MENY's Friday-through-Thursday window from its ISO week label.
+
+    iPaper occasionally rotates to the next MENY release before the visible
+    validity sentence is present in the reader HTML. The source publication ID
+    and Luna/readiness fingerprint stay untouched; this is customer-serving
+    metadata only and therefore cannot create duplicate paid Luna work.
+    """
+    if publication.retailer.casefold() != "meny" or not publication.week or not publication.year:
+        return publication.valid_from, publication.valid_until
+    try:
+        monday = date.fromisocalendar(int(publication.year), int(publication.week), 1)
+    except (TypeError, ValueError):
+        return publication.valid_from, publication.valid_until
+    inferred_from = (monday - timedelta(days=3)).strftime("%d.%m.%Y")
+    inferred_until = (monday + timedelta(days=3)).strftime("%d.%m.%Y")
+    return publication.valid_from or inferred_from, publication.valid_until or inferred_until
+
+
+def _normalize_customer_publication(
+    publication: Publication,
+    *,
+    today: date | None = None,
+) -> Publication:
+    """Repair serving-only validity/status without changing source identity."""
+    today = today or date.today()
+    valid_from, valid_until = _meny_week_validity(publication)
+    start = _parse_publication_date(valid_from)
+    end = _parse_publication_date(valid_until)
+
+    status = publication.status
+    if start is not None and today < start:
+        status = "upcoming"
+    elif end is not None and today > end:
+        status = "expired"
+    elif start is not None or end is not None:
+        status = "current"
+
+    updates: dict = {}
+    if valid_from != publication.valid_from:
+        updates["valid_from"] = valid_from
+    if valid_until != publication.valid_until:
+        updates["valid_until"] = valid_until
+    if status != publication.status:
+        updates["status"] = status
+
+    if publication.retailer.casefold() == "meny" and (valid_from or valid_until):
+        offers: list[Offer] = []
+        offers_changed = False
+        for offer in publication.structured_offers:
+            offer_updates: dict = {}
+            if valid_from and not offer.valid_from:
+                offer_updates["valid_from"] = valid_from
+            if valid_until and not offer.valid_until:
+                offer_updates["valid_until"] = valid_until
+            if offer_updates:
+                offer = offer.model_copy(update=offer_updates)
+                offers_changed = True
+            offers.append(offer)
+        if offers_changed:
+            updates["structured_offers"] = offers
+
+    return publication.model_copy(update=updates) if updates else publication
+
+
+def _customer_ready_publications(
+    publications: list[Publication],
+    source_publications: list[Publication],
+    *,
+    today: date | None = None,
+) -> list[Publication]:
+    """Drop superseded MENY snapshots and normalize customer-visible dates.
+
+    MENY/iPaper invalidates the previous release's signed CDN URLs as soon as
+    the reader rotates. A verified serving-cache row for that old release is
+    therefore not a safe stale-while-revalidate bridge. Only the MENY release
+    that is still present in the live deterministic source may reach Mobile API.
+    Other retailers keep the existing stable-cache behavior.
+    """
+    live_meny_ids = {
+        publication.id
+        for publication in source_publications
+        if publication.retailer.casefold() == "meny"
+    }
+    result: list[Publication] = []
+    for publication in publications:
+        if publication.retailer.casefold() == "meny":
+            if not live_meny_ids or publication.id not in live_meny_ids:
+                continue
+        normalized = _normalize_customer_publication(publication, today=today)
+        if normalized.status != "expired":
+            result.append(normalized)
+    return result
+
+
 async def fetch_all_publications(*, client: httpx.AsyncClient | None = None) -> list[Publication]:
     """Return customer-ready publications with verified cached Luna enrichment."""
-    publications = await fetch_raw_publications(client=client)
+    source_publications = await fetch_raw_publications(client=client)
     try:
-        return apply_cached_enrichment(publications)
+        publications = apply_cached_enrichment(source_publications)
     except Exception:
         # AI cache/telemetry must never make deterministic flyer data unavailable.
-        return publications
+        publications = source_publications
+    return _customer_ready_publications(publications, source_publications)
 
 
 __all__ = [
