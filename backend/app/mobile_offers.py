@@ -5,6 +5,7 @@ import os
 import time
 from datetime import date, datetime
 
+import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -20,8 +21,9 @@ from .flyer_intelligence import (
 from .flyer_readiness import readiness_revision
 from .flyer_serving_reader import load_verified_publications
 from .meny_flyer import (
+    MENY_FLYER_URL,
     Offer, Publication, _contains_query_term, _is_pet_offer, _product_domain,
-    _query_terms, search_publication,
+    _query_terms, parse_meny_flyer_html, search_publication,
 )
 from .offer_serialization import customer_offer_payload
 from .product_identity import MatchResult, active_family_favorite_match, analyze, compare
@@ -125,6 +127,110 @@ def _stale_publication_fallback() -> list[Publication]:
     ]
 
 
+def _has_transient_reader_urls(publication: Publication) -> bool:
+    """Return True for MENY/iPaper page URLs whose signed query can expire.
+
+    Readiness fingerprints intentionally ignore query strings so expiring CDN
+    signatures do not create paid Luna work. The serving cache therefore needs
+    to refresh only the reader URLs before it is returned after a cold/stale
+    cache hit.
+    """
+    return bool(
+        publication.retailer.casefold() == "meny"
+        and publication.reader_kind == "embedded-viewer"
+        and any("?" in value for value in publication.page_image_urls)
+    )
+
+
+def _needs_transient_reader_refresh(publications: list[Publication]) -> bool:
+    return any(_has_transient_reader_urls(publication) for publication in publications)
+
+
+def _same_meny_release(cached: Publication, fresh: Publication) -> bool:
+    if cached.retailer.casefold() != "meny" or fresh.retailer.casefold() != "meny":
+        return False
+    if cached.id == fresh.id:
+        return True
+    return bool(
+        cached.valid_until
+        and cached.valid_from == fresh.valid_from
+        and cached.valid_until == fresh.valid_until
+        and cached.page_count == fresh.page_count
+    )
+
+
+async def _refresh_transient_reader_urls_once(
+    publications: list[Publication],
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> list[Publication] | None:
+    """Refresh MENY's signed iPaper URLs without replacing verified offers.
+
+    The persistent serving snapshot deliberately survives provider gaps, but it
+    can outlive iPaper's CDN signature. Fetch only the lightweight MENY reader
+    HTML, merge fresh page URLs into the already verified publication and keep
+    Luna/pricing/hotspot data untouched. Failure preserves the last usable
+    snapshot and lets the normal background refresh retry.
+    """
+    if not _needs_transient_reader_refresh(publications):
+        return publications
+
+    owns_client = client is None
+    if client is None:
+        client = httpx.AsyncClient(
+            timeout=10,
+            follow_redirects=True,
+            headers={
+                "User-Agent": "Mozilla/5.0 BaggerShopping/0.21",
+                "Accept-Language": "da-DK,da;q=0.9",
+            },
+        )
+
+    try:
+        response = await client.get(MENY_FLYER_URL)
+        response.raise_for_status()
+        fresh = parse_meny_flyer_html(response.text, str(response.url))
+    except Exception:
+        return None
+    finally:
+        if owns_client:
+            await client.aclose()
+
+    if fresh.page_count <= 0 or len(fresh.page_image_urls) != fresh.page_count:
+        return None
+
+    result: list[Publication] = []
+    changed = False
+    for publication in publications:
+        if not _has_transient_reader_urls(publication) or not _same_meny_release(publication, fresh):
+            result.append(publication)
+            continue
+
+        image_replacements = dict(zip(publication.page_image_urls, fresh.page_image_urls))
+        offers = [
+            offer.model_copy(update={"image_url": image_replacements[offer.image_url]}, deep=True)
+            if offer.image_url in image_replacements
+            else offer
+            for offer in publication.structured_offers
+        ]
+        result.append(publication.model_copy(update={
+            "status": fresh.status,
+            "source_url": fresh.source_url,
+            "reader_url": fresh.reader_url,
+            "reader_kind": fresh.reader_kind,
+            "page_count": fresh.page_count,
+            "page_image_urls": list(fresh.page_image_urls),
+            "structured_offers": offers,
+        }, deep=True))
+        changed = True
+
+    if not changed:
+        return None
+
+    _replace_publication_cache(result)
+    return result
+
+
 def _replace_publication_cache(publications: list[Publication], *, now: float | None = None) -> None:
     global _publication_cache, _publication_cache_time, _publications_cache
     _publications_cache = publications
@@ -196,7 +302,7 @@ async def _publications() -> list[Publication]:
         if now - _publication_cache_time < _CACHE_TTL_SECONDS:
             return _publications_cache
         fallback = _stale_publication_fallback()
-        if fallback:
+        if fallback and not _needs_transient_reader_refresh(fallback):
             _schedule_publication_refresh()
             return fallback
 
@@ -207,12 +313,22 @@ async def _publications() -> list[Publication]:
                 return _publications_cache
             fallback = _stale_publication_fallback()
             if fallback:
+                if _needs_transient_reader_refresh(fallback):
+                    refreshed_reader = await _refresh_transient_reader_urls_once(fallback)
+                    if refreshed_reader:
+                        _schedule_publication_refresh()
+                        return refreshed_reader
                 _schedule_publication_refresh()
                 return fallback
 
         cached = _usable_publications(load_verified_publications())
         if cached:
             _replace_publication_cache(cached, now=now)
+            if _needs_transient_reader_refresh(cached):
+                refreshed_reader = await _refresh_transient_reader_urls_once(cached)
+                if refreshed_reader:
+                    _schedule_publication_refresh()
+                    return refreshed_reader
             _schedule_publication_refresh()
             return cached
 
@@ -301,7 +417,7 @@ def _offer_favorite_candidates(offer: Offer) -> list[str]:
             _favorite_candidate_name(
                 variant.name,
                 variant.quantity if variant.quantity is not None else offer.quantity,
-                variant.unit or offer.unit,
+                unit=variant.unit or offer.unit,
             )
             for variant in offer.variants
         ),
