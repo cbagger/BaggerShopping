@@ -329,7 +329,10 @@ def _normalize_customer_publication(
     *,
     today: date | None = None,
 ) -> Publication:
-    """Repair serving-only validity/status without changing source identity."""
+    """Repair MENY serving-only validity/status without changing source identity."""
+    if publication.retailer.casefold() != "meny":
+        return publication
+
     today = today or date.today()
     valid_from, valid_until = _meny_week_validity(publication)
     start = _parse_publication_date(valid_from)
@@ -351,7 +354,7 @@ def _normalize_customer_publication(
     if status != publication.status:
         updates["status"] = status
 
-    if publication.retailer.casefold() == "meny" and (valid_from or valid_until):
+    if valid_from or valid_until:
         offers: list[Offer] = []
         offers_changed = False
         for offer in publication.structured_offers:
