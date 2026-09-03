@@ -12,6 +12,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from .households import LEGACY_HOUSEHOLD_ID, current_household, read_household
+from .samsung import SamsungFoodClient, SamsungFoodError
+from .samsung_request_policy import family_samsung_client
 
 
 router = APIRouter(prefix="/api/mobile/v1", tags=["mobile-offer-metadata"])
@@ -292,12 +294,8 @@ async def _active_items_for_one_time_binding() -> list[object]:
             household = await read_household(context)
             return list(household.get("items", []))
 
-        from .samsung_request_policy import family_samsung_client
-
         client = await family_samsung_client(context)
         if client is None:
-            from .samsung import SamsungFoodClient
-
             client = SamsungFoodClient()
         payload = await client.get_list()
         return list(payload.items)
@@ -477,9 +475,13 @@ async def rename_shopping_item(item_id: str, request: RenameShoppingItemRequest)
         }
 
     from .grpc_web import _build_sync_items_update_request
-    from .samsung import SamsungFoodClient, SamsungFoodError
-
-    client = SamsungFoodClient()
+    # Use the household's selected Samsung list and family-scoped auth state.
+    # Falling back to the legacy client here made offer application read the
+    # global list ID even when this family had completed its own integration,
+    # which returned shoppingList.notFound and rolled back the offer metadata.
+    client = await family_samsung_client(context)
+    if client is None:
+        client = SamsungFoodClient()
     try:
         item = await client._find_item(item_id)
         old_name = item.name
