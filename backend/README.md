@@ -96,6 +96,12 @@ noVNC websocket is served on the same HTTPS origin, so no VNC port is exposed.
 The Samsung token is written directly to the family's QNAP auth-state file;
 the password and CAPTCHA input never enter Kurv or the mobile API.
 
+The broker also checks each connected family's saved token hourly. After three
+days it uses the same persistent browser profile to renew the session in the
+background, serialized with interactive logins. A real Samsung verification
+prompt still requires the family owner, but normal short-lived token rotation
+does not disconnect the shopping list.
+
 
 ## v0.4 Mobile API
 
