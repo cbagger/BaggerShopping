@@ -230,12 +230,14 @@ struct APIClient {
     }
 
     func fetchOfferPublications() async throws -> PublicationsResponse {
-        let data = try await perform(request(path: "/api/mobile/v1/offers/publications"))
+        var publicationRequest = try request(path: "/api/mobile/v1/offers/publications")
+        publicationRequest.cachePolicy = .reloadIgnoringLocalCacheData
+        let data = try await perform(publicationRequest)
         let response = try JSONDecoder().decode(PublicationsResponse.self, from: data)
         let visible = response.publications.filter {
             RetailerPreferences.shared.isEnabled($0.retailer)
         }
-        return PublicationsResponse(ok: response.ok, publications: visible)
+        return PublicationsResponse(ok: response.ok, publications: visible, refreshPending: response.refreshPending)
     }
 
     func fetchFlyerNotificationRetailers() async throws -> FlyerNotificationRetailersResponse {

@@ -2,6 +2,21 @@ import XCTest
 @testable import BaggerShopping
 
 final class PerformanceCacheTests: XCTestCase {
+    func testEmptyServerShelfReplacesOldDiskCache() throws {
+        FlyerPublicationCache.save([try decodePublication()])
+        FlyerPublicationCache.save([])
+        XCTAssertEqual(FlyerPublicationCache.load()?.publications.count, 0)
+    }
+
+    func testPublicationRefreshSignalAndOlderServerCompatibility() throws {
+        let pending = try JSONDecoder().decode(PublicationsResponse.self,
+            from: Data(#"{"ok":true,"publications":[],"refresh_pending":true}"#.utf8))
+        XCTAssertEqual(pending.refreshPending, true)
+        let older = try JSONDecoder().decode(PublicationsResponse.self,
+            from: Data(#"{"ok":true,"publications":[]}"#.utf8))
+        XCTAssertNil(older.refreshPending)
+    }
+
     func testFlyerPublicationCacheReturnsRecentlySavedShelf() throws {
         let publication = try decodePublication()
         FlyerPublicationCache.save([publication])

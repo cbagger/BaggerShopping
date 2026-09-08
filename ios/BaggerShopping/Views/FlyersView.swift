@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit
 
 struct FlyersView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var navigation: AppNavigation
     @State private var publications: [OfferPublication] = FlyerPublicationCache.load()?.publications ?? []
     @State private var isLoading = false
@@ -52,7 +53,19 @@ struct FlyersView: View {
                 }
             }
             .navigationTitle("Aviser")
-            .task { await load() }
+            .task(id: scenePhase) {
+                guard scenePhase == .active else { return }
+                await load()
+            }
+            .overlay(alignment: .top) {
+                if isLoading && !publications.isEmpty {
+                    Text("Opdaterer aviser …")
+                        .font(.caption)
+                        .padding(8)
+                        .background(.regularMaterial, in: Capsule())
+                        .allowsHitTesting(false)
+                }
+            }
             .onChange(of: navigation.flyerRoute?.id) { _, _ in
                 openRequestedFlyerIfAvailable()
             }
@@ -61,13 +74,23 @@ struct FlyersView: View {
     }
 
     @MainActor private func load() async {
+        guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
         do {
-            let fetched = try await api.fetchOfferPublications().publications
-            publications = fetched
-            FlyerPublicationCache.save(fetched)
+            // Follow the server's background refresh instead of treating its
+            // first stale snapshot as the final result. Bound retries and let
+            // SwiftUI cancel the work when this screen leaves the foreground.
+            for attempt in 0..<12 {
+                try Task.checkCancellation()
+                let response = try await api.fetchOfferPublications()
+                try Task.checkCancellation()
+                publications = response.publications
+                FlyerPublicationCache.save(response.publications)
+                if response.refreshPending != true { break }
+                if attempt < 11 { try await Task.sleep(for: .seconds(3)) }
+            }
             openRequestedFlyerIfAvailable()
         } catch {
             if publications.isEmpty { errorMessage = error.localizedDescription }

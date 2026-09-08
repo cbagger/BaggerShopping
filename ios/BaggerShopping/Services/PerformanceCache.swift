@@ -9,7 +9,6 @@ enum FlyerPublicationCache {
     private static let key = "kurv-cached-flyer-publications-v1"
 
     static func save(_ publications: [OfferPublication]) {
-        guard !publications.isEmpty else { return }
         let cached = CachedFlyerPublications(savedAt: Date(), publications: publications)
         guard let data = try? JSONEncoder().encode(cached) else { return }
         UserDefaults.standard.set(data, forKey: key)

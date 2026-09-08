@@ -53,10 +53,11 @@ final class AppModel: ObservableObject {
     func bootstrap() async {
         geofence.sync(stores: stores.stores)
         if tokenConfigured {
-            householdProfile = try? await api.fetchHouseholdProfile()
-            await flushPendingCheckedMutations()
-            await refresh()
-            await syncSharedCategories()
+            async let profile = api.fetchHouseholdProfile()
+            async let categories: Void = syncSharedCategories()
+            await resumeFromBackground()
+            householdProfile = try? await profile
+            await categories
         }
     }
 
@@ -326,8 +327,11 @@ final class AppModel: ObservableObject {
     }
 
     func resumeFromBackground() async {
-        await flushPendingCheckedMutations()
-        await refresh()
+        // Pending checks are overlaid by refresh(), so fetching the list need
+        // not wait for a slow write queue. Both operations retain their guards.
+        async let pending: Void = flushPendingCheckedMutations()
+        async let list: Void = refresh()
+        _ = await (pending, list)
     }
 
     func flushPendingCheckedMutations() async {
