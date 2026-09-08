@@ -1468,9 +1468,11 @@ private struct CustomQuantityView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Antal") {
+                Section {
                     TextField("Eksempelvis 120", text: $quantityText)
                         .keyboardType(.numberPad)
+                } header: {
+                    Text("Antal")
                 } footer: {
                     Text("Indtast et helt tal mellem 1 og 999.")
                 }
