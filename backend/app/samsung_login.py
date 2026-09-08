@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from .households import HouseholdContext, require_household, require_owner, update_household
+from .households import HouseholdContext, load_store, require_household, require_owner, update_household
 from .samsung_broker_auth import broker_key as shared_broker_key
 
 router = APIRouter(prefix="/api/mobile/v1/integrations/samsung-food", tags=["samsung-login"])
@@ -148,6 +148,18 @@ async def broker_session(login_token: str) -> dict[str, Any]:
         # therefore not reopen or inspect the family session.
         session["token_hash"] = _hash(secrets.token_urlsafe(32))
         _save(store)
+        household = load_store().get("households", {}).get(session["household_id"], {})
+        integration = (
+            household.get("integrations", {}).get("samsung_food", {})
+            if isinstance(household, dict)
+            else {}
+        )
+        existing_lists = []
+        if isinstance(integration.get("list_id"), str) and integration["list_id"]:
+            existing_lists.append({
+                "id": integration["list_id"],
+                "name": integration.get("list_name") or "Indkøbsliste",
+            })
         return {
             "session_id": session["id"],
             "household_id": session["household_id"],
@@ -155,6 +167,7 @@ async def broker_session(login_token: str) -> dict[str, Any]:
             "browser_profile": session["paths"]["browser_profile"],
             "auth_state": session["paths"]["auth_state"],
             "start_url": "https://app.samsungfood.com",
+            "existing_lists": existing_lists,
         }
 
 

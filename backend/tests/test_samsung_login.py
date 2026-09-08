@@ -56,3 +56,13 @@ def test_family_login_session_is_one_time_and_activates_selected_list(monkeypatc
     assert integration["list_id"] == "list-2"
     assert integration["storage_scope"] == "family-bagger"
     assert integration["auth_state_path"].endswith("/family-bagger/samsung-food/auth-state.json")
+
+    reconnected = client.post("/api/mobile/v1/integrations/samsung-food/login/start", headers=AUTH)
+    reconnect_token = reconnected.json()["login_url"].rsplit("/", 1)[-1]
+    reconnect_claim = client.get(
+        f"/api/mobile/v1/integrations/samsung-food/broker/session/{reconnect_token}"
+    )
+    assert reconnect_claim.status_code == 200
+    assert reconnect_claim.json()["existing_lists"] == [
+        {"id": "list-2", "name": "Sommerhus"}
+    ]

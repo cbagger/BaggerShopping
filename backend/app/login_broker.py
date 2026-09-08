@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import ipaddress
 import json
@@ -18,9 +19,16 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.async_api import BrowserContext, Playwright, async_playwright
 
+from .samsung_auth_refresh import family_auth_targets, refresh_family_auth
+
 MOBILE_API = os.getenv("MOBILE_API_INTERNAL_BASE", "http://mobile-api:8081").rstrip("/")
 BROKER_KEY = os.getenv("SAMSUNG_LOGIN_BROKER_KEY", "")
-SESSION_TIMEOUT = 15 * 60
+AUTH_REFRESH_INITIAL_DELAY_SECONDS = max(
+    1, int(os.getenv("SAMSUNG_AUTH_REFRESH_INITIAL_DELAY_SECONDS", "10"))
+)
+AUTH_REFRESH_INTERVAL_SECONDS = max(
+    300, int(os.getenv("SAMSUNG_AUTH_REFRESH_INTERVAL_SECONDS", "3600"))
+)
 NOVNC_ROOT = Path(os.getenv("NOVNC_ROOT", "/usr/share/novnc"))
 TOKEN_COOKIE = "kurv_samsung_login"
 
@@ -30,6 +38,7 @@ class ActiveLogin:
     session_id: str
     household_id: str
     secret: str
+    login_token_hash: str
     expires_at: int
     auth_state: Path
     context: BrowserContext
@@ -43,19 +52,28 @@ if NOVNC_ROOT.exists():
 LOCK = asyncio.Lock()
 ACTIVE: ActiveLogin | None = None
 PLAYWRIGHT: Playwright | None = None
+AUTH_REFRESH_TASK: asyncio.Task[None] | None = None
 
 
 @app.on_event("startup")
 async def startup() -> None:
-    global PLAYWRIGHT
+    global AUTH_REFRESH_TASK, PLAYWRIGHT
     if not BROKER_KEY:
         raise RuntimeError("SAMSUNG_LOGIN_BROKER_KEY mangler")
     PLAYWRIGHT = await async_playwright().start()
+    AUTH_REFRESH_TASK = asyncio.create_task(_auth_refresh_loop())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global ACTIVE, PLAYWRIGHT
+    global ACTIVE, AUTH_REFRESH_TASK, PLAYWRIGHT
+    if AUTH_REFRESH_TASK:
+        AUTH_REFRESH_TASK.cancel()
+        try:
+            await AUTH_REFRESH_TASK
+        except asyncio.CancelledError:
+            pass
+        AUTH_REFRESH_TASK = None
     if ACTIVE:
         await ACTIVE.context.close()
         ACTIVE = None
@@ -81,6 +99,19 @@ def _current(request: Request, session_id: str) -> ActiveLogin:
     if not supplied or not secrets.compare_digest(supplied, ACTIVE.secret):
         raise HTTPException(status_code=401, detail="Login-sessionen tilhører ikke denne browser")
     return ACTIVE
+
+
+def _hash(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _same_browser_login(request: Request, active: ActiveLogin, login_token: str) -> bool:
+    supplied = request.cookies.get(TOKEN_COOKIE, "")
+    return bool(
+        supplied
+        and secrets.compare_digest(supplied, active.secret)
+        and secrets.compare_digest(_hash(login_token), active.login_token_hash)
+    )
 
 
 def _cookie_secure_for_public_url(value: str | None = None) -> bool:
@@ -165,17 +196,66 @@ document.getElementById('done').onclick=async()=>{{
 }};</script></body></html>"""
 
 
+def _session_page(active: ActiveLogin) -> HTMLResponse:
+    response = HTMLResponse(_page(active.session_id))
+    response.set_cookie(
+        TOKEN_COOKIE,
+        active.secret,
+        httponly=True,
+        secure=_cookie_secure_for_public_url(),
+        samesite="strict",
+        max_age=max(1, active.expires_at - int(time.time())),
+    )
+    return response
+
+
+async def _auth_refresh_loop() -> None:
+    await asyncio.sleep(AUTH_REFRESH_INITIAL_DELAY_SECONDS)
+    while True:
+        for target in family_auth_targets():
+            try:
+                async with LOCK:
+                    if ACTIVE:
+                        continue
+                    result = await refresh_family_auth(target)
+                if result != "current":
+                    print({
+                        "samsung_auth_maintenance": result,
+                        "household_id": target.household_id,
+                    }, flush=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print({
+                    "samsung_auth_maintenance": "failed",
+                    "household_id": target.household_id,
+                    "error": str(exc),
+                }, flush=True)
+        await asyncio.sleep(AUTH_REFRESH_INTERVAL_SECONDS)
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"ok": True, "active_session": ACTIVE.session_id if ACTIVE else None}
 
 
 @app.get("/session/{login_token}", response_class=HTMLResponse)
-async def open_session(login_token: str) -> HTMLResponse:
+async def open_session(login_token: str, request: Request) -> HTMLResponse:
     global ACTIVE
     async with LOCK:
         if ACTIVE and ACTIVE.expires_at > int(time.time()):
-            raise HTTPException(status_code=409, detail="En anden familie er ved at logge ind. Prøv igen om få minutter.")
+            if _same_browser_login(request, ACTIVE, login_token):
+                return _session_page(ACTIVE)
+
+            # A valid cookie proves this is the browser which owns the active
+            # session. Let it replace an abandoned attempt immediately instead
+            # of reporting that another family is logging in for 15 minutes.
+            supplied = request.cookies.get(TOKEN_COOKIE, "")
+            if not supplied or not secrets.compare_digest(supplied, ACTIVE.secret):
+                raise HTTPException(
+                    status_code=409,
+                    detail="En anden familie er ved at logge ind. Prøv igen om få minutter.",
+                )
         if ACTIVE:
             await ACTIVE.context.close()
             ACTIVE = None
@@ -194,8 +274,15 @@ async def open_session(login_token: str) -> HTMLResponse:
         secret = secrets.token_urlsafe(32)
         ACTIVE = ActiveLogin(
             session_id=claim["session_id"], household_id=claim["household_id"],
-            secret=secret, expires_at=claim["expires_at"], auth_state=auth_state, context=context,
-            discovered_lists={},
+            secret=secret, login_token_hash=_hash(login_token),
+            expires_at=claim["expires_at"], auth_state=auth_state, context=context,
+            discovered_lists={
+                value["id"]: value["name"]
+                for value in claim.get("existing_lists", [])
+                if isinstance(value, dict)
+                and isinstance(value.get("id"), str)
+                and isinstance(value.get("name"), str)
+            },
         )
         page = context.pages[0] if context.pages else await context.new_page()
 
@@ -222,16 +309,7 @@ async def open_session(login_token: str) -> HTMLResponse:
 
         page.on("response", inspect_response)
         await page.goto(claim["start_url"], wait_until="domcontentloaded", timeout=90_000)
-        response = HTMLResponse(_page(ACTIVE.session_id))
-        response.set_cookie(
-            TOKEN_COOKIE,
-            secret,
-            httponly=True,
-            secure=_cookie_secure_for_public_url(),
-            samesite="strict",
-            max_age=SESSION_TIMEOUT,
-        )
-        return response
+        return _session_page(ACTIVE)
 
 
 async def _list_choices(active: ActiveLogin) -> list[dict[str, str]]:
