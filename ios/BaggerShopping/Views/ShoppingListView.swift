@@ -5,6 +5,11 @@ private struct ShoppingItemRenameTarget: Identifiable {
     let item: ShoppingItem
 }
 
+private struct ShoppingItemQuantityTarget: Identifiable {
+    let id = UUID()
+    let item: ShoppingItem
+}
+
 private struct NearbyStorePickerView: View {
     let stores: [StoreVisitContext]
     let onSelect: (StoreVisitContext) -> Void
@@ -99,6 +104,7 @@ struct ShoppingListView: View {
     @State private var newItem = ""
     @State private var selectedRetailerFilters: Set<String> = []
     @State private var renameTarget: ShoppingItemRenameTarget?
+    @State private var quantityTarget: ShoppingItemQuantityTarget?
     @State private var offerTarget: ShoppingItemOfferTarget?
     @State private var offerPreviewTarget: ShoppingItemOfferPreviewTarget?
     @State private var showCheckedItems = false
@@ -263,6 +269,10 @@ struct ShoppingListView: View {
             .navigationBarTitleDisplayMode(activeStoreMode == nil ? .large : .inline)
             .sheet(item: $renameTarget) { target in
                 RenameShoppingItemView(item: target.item)
+                    .environmentObject(model)
+            }
+            .sheet(item: $quantityTarget) { target in
+                CustomQuantityView(item: target.item)
                     .environmentObject(model)
             }
             .sheet(item: $offerTarget) { target in
@@ -1328,6 +1338,12 @@ struct ShoppingListView: View {
                                 }
                             }
                         }
+
+                        Button {
+                            quantityTarget = ShoppingItemQuantityTarget(item: item)
+                        } label: {
+                            Label("Indtast antal", systemImage: "number")
+                        }
                     }
 
                     if model.hasCategoryOverride(for: item) {
@@ -1428,6 +1444,59 @@ struct ShoppingListView: View {
         case .active, .none:
             return nil
         }
+    }
+}
+
+private struct CustomQuantityView: View {
+    let item: ShoppingItem
+
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var model: AppModel
+    @State private var quantityText: String
+
+    init(item: ShoppingItem) {
+        self.item = item
+        let currentQuantity = item.quantity ?? 1
+        _quantityText = State(initialValue: currentQuantity.formatted(.number.precision(.fractionLength(0))))
+    }
+
+    private var quantity: Int? {
+        guard let value = Int(quantityText), (1...999).contains(value) else { return nil }
+        return value
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Eksempelvis 120", text: $quantityText)
+                        .keyboardType(.numberPad)
+                } header: {
+                    Text("Antal")
+                } footer: {
+                    Text("Indtast et helt tal mellem 1 og 999.")
+                }
+            }
+            .navigationTitle("Indtast antal")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Annuller") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Gem") {
+                        guard let quantity else { return }
+                        Task {
+                            await model.setQuantity(item, quantity: Double(quantity))
+                            dismiss()
+                        }
+                    }
+                    .disabled(quantity == nil)
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
     }
 }
 
