@@ -710,6 +710,7 @@ async def publications():
     return {
         "ok": True,
         "publications": [_publication_payload(publication) for publication in items],
+        "refresh_pending": _publication_refresh_task is not None and not _publication_refresh_task.done(),
         "offer_count": sum(len(publication.structured_offers) for publication in items),
         "retailers": [
             retailer for retailer in RETAILER_ORDER

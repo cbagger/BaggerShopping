@@ -368,6 +368,12 @@ struct OfferVariant: Codable, Identifiable, Hashable {
 struct PublicationsResponse: Codable {
     let ok: Bool
     let publications: [OfferPublication]
+    var refreshPending: Bool? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case ok, publications
+        case refreshPending = "refresh_pending"
+    }
 }
 
 struct OfferSearchResponse: Codable {
