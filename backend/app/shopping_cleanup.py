@@ -5,6 +5,7 @@ from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from .samsung import SamsungFoodClient, SamsungFoodError
+from .samsung_request_policy import family_samsung_client
 from .mobile_offer_metadata import (
     load_offer_metadata_store,
     offer_metadata_key,
@@ -17,8 +18,11 @@ TIMEZONE = ZoneInfo("Europe/Copenhagen")
 
 
 async def delete_checked_items() -> dict[str, int]:
-    legacy_worker_context()
-    client = SamsungFoodClient()
+    context = legacy_worker_context()
+    client = await family_samsung_client(context)
+    if client is None:
+        client = SamsungFoodClient()
+
     current = await client.get_list()
     checked = [item for item in current.items if item.checked is True and item.id]
     deleted = 0
