@@ -139,7 +139,7 @@ def _page_request_body(
         guards._strict_page_instructions()
     )
     return {
-        "model": str(config.get("model") or "gpt-5.6-luna"),
+        "model": str(config.get("model") or "gpt-6-luna"),
         "input": [
             {"role": "developer", "content": [{
                 "type": "input_text",
@@ -341,7 +341,7 @@ def _crop_request_body(
     if image_url:
         content.append({"type": "input_image", "image_url": image_url, "detail": detail})
     return {
-        "model": str(config.get("model") or "gpt-5.6-luna"),
+        "model": str(config.get("model") or "gpt-6-luna"),
         "input": [
             {"role": "developer", "content": [{
                 "type": "input_text",

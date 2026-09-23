@@ -265,10 +265,10 @@ def test_legacy_default_prices_migrate_without_overriding_custom_rates(monkeypat
 
     migrated = luna.load_config()
     assert migrated["config_version"] == 3
-    assert migrated["input_usd_per_million"] == 0.20
-    assert migrated["cached_input_usd_per_million"] == 0.02
-    assert migrated["cache_write_usd_per_million"] == 0.25
-    assert migrated["output_usd_per_million"] == 1.20
+    assert migrated["input_usd_per_million"] == 0.10
+    assert migrated["cached_input_usd_per_million"] == 0.01
+    assert migrated["cache_write_usd_per_million"] == 0.125
+    assert migrated["output_usd_per_million"] == 0.50
 
     config_path.write_text(json.dumps({
         "config_version": 2,
@@ -299,7 +299,7 @@ def test_cached_and_cache_write_tokens_are_accounted_at_their_own_rates():
         "cache_write_tokens": 100,
         "output_tokens": 200,
     }
-    assert luna._usage_cost_dkk(usage, luna.DEFAULT_CONFIG) == pytest.approx(0.002359)
+    assert luna._usage_cost_dkk(usage, luna.DEFAULT_CONFIG) == pytest.approx(0.00104)
 
     store = {}
     luna._record_usage(store, usage, luna.DEFAULT_CONFIG)
@@ -307,7 +307,7 @@ def test_cached_and_cache_write_tokens_are_accounted_at_their_own_rates():
     assert row["cached_input_tokens"] == 600
     assert row["cache_write_tokens"] == 100
     assert row["uncached_input_tokens"] == 300
-    assert row["estimated_cost_dkk"] == pytest.approx(0.002359)
+    assert row["estimated_cost_dkk"] == pytest.approx(0.00104)
 
 
 def test_mocked_response_is_cached_once_with_usage_and_pricing_index(monkeypatch, tmp_path):
@@ -348,7 +348,7 @@ def test_mocked_response_is_cached_once_with_usage_and_pricing_index(monkeypatch
         assert request.headers["authorization"] == "Bearer test-key"
         return httpx.Response(200, json={
             "id": "resp_test",
-            "model": "gpt-5.6-luna",
+            "model": "gpt-6-luna",
             "usage": {"input_tokens": 1000, "output_tokens": 100},
             "output": [{"type": "message", "content": [
                 {"type": "output_text", "text": json.dumps(facts)}

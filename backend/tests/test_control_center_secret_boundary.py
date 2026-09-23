@@ -29,7 +29,7 @@ def test_luna_heartbeat_exposes_operational_facts_not_credentials(monkeypatch):
         lambda: {
             "enabled": True,
             "apply_results": True,
-            "model": "gpt-5.6-luna",
+            "model": "gpt-6-luna",
             "api_key_configured": True,
             "usage": {"requests": 42, "estimated_cost_dkk": 1.23},
             "records": {"completed": 5},
@@ -51,7 +51,7 @@ def test_luna_heartbeat_exposes_operational_facts_not_credentials(monkeypatch):
 
     assert status == "running"
     assert metrics["api_key_configured"] is True
-    assert metrics["model"] == "gpt-5.6-luna"
+    assert metrics["model"] == "gpt-6-luna"
     assert metrics["enabled"] is True
     assert metrics["usage"]["requests"] == 42
     assert openai_secret not in encoded
