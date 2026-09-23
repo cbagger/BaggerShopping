@@ -25,7 +25,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "config_version": CONFIG_VERSION,
     "enabled": False,
     "apply_results": True,
-    "model": "gpt-5.6-luna",
+    "model": "gpt-6-luna",
     # Cost-first hard guard. Persisted QNAP config may override this, but a new
     # installation cannot silently spend beyond this monthly amount.
     "monthly_budget_dkk": 20.0,
@@ -43,13 +43,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "proactive_variant_crops": False,
     "page_audit_max_failures": 2,
     "crop_max_output_tokens": 1200,
-    # GPT-5.6 Luna pricing. Keep every rate configurable so an operator can
+    # GPT-6 Luna pricing. Keep every rate configurable so an operator can
     # update accounting without a deploy. Cached and cache-write tokens must be
     # separated from ordinary input or the local DKK estimate becomes noisy.
-    "input_usd_per_million": 0.20,
-    "cached_input_usd_per_million": 0.02,
-    "cache_write_usd_per_million": 0.25,
-    "output_usd_per_million": 1.20,
+    "input_usd_per_million": 0.10,
+    "cached_input_usd_per_million": 0.01,
+    "cache_write_usd_per_million": 0.125,
+    "output_usd_per_million": 0.50,
     "usd_to_dkk": 7.0,
 }
 
@@ -419,7 +419,7 @@ def _request_body(candidate: Candidate, config: dict[str, Any]) -> dict[str, Any
     if image_url:
         content.append({"type": "input_image", "image_url": image_url, "detail": detail})
     return {
-        "model": str(config.get("model") or "gpt-5.6-luna"),
+        "model": str(config.get("model") or "gpt-6-luna"),
         "input": [
             {
                 "role": "developer",

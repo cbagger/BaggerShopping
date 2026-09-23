@@ -91,7 +91,7 @@ def test_page_request_keeps_quality_contract_but_caches_only_stable_prefix():
     context = json.loads(body["input"][1]["content"][0]["text"])
     assert context["targets"][0]["offer_id"] == offer.id
     assert body["input"][1]["content"][1]["detail"] == "high"
-    assert body["model"] == "gpt-5.6-luna"
+    assert body["model"] == "gpt-6-luna"
     assert body["reasoning"] == {"effort": "low"}
 
 
@@ -181,7 +181,7 @@ def test_page_audit_stages_visual_only_member_price_until_crop(monkeypatch, tmp_
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={
             "id": "resp_page",
-            "model": "gpt-5.6-luna",
+            "model": "gpt-6-luna",
             "usage": {"input_tokens": 1500, "output_tokens": 250},
             "output": [{"type": "message", "content": [
                 {"type": "output_text", "text": json.dumps(page_result)}
