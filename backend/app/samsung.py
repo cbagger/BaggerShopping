@@ -40,6 +40,10 @@ class SamsungFoodError(RuntimeError):
     pass
 
 
+class SamsungListNotFoundError(SamsungFoodError):
+    pass
+
+
 class SamsungItemNotFoundError(SamsungFoodError):
     pass
 
@@ -60,31 +64,22 @@ class SamsungFoodClient:
 
     async def get_list(self) -> ShoppingListResponse:
         token = await self._token()
-        url = f"{settings.samsung_food_api_base}/list/v2/{self.list_id}"
-
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-            "User-Agent": "bagger-shopping/0.3",
-        }
-
-        async with httpx.AsyncClient(
-            timeout=settings.request_timeout_seconds,
-            follow_redirects=True,
-        ) as client:
-            response = await client.get(url, headers=headers)
+        response = await self.read_list_response(self.list_id, token)
 
         if response.status_code == 401:
             token = await self.auth.get_token(force_refresh=True)
-            headers["Authorization"] = f"Bearer {token}"
-            async with httpx.AsyncClient(
-                timeout=settings.request_timeout_seconds,
-                follow_redirects=True,
-            ) as client:
-                response = await client.get(url, headers=headers)
+            response = await self.read_list_response(self.list_id, token)
 
         if response.status_code >= 400:
-            raise SamsungFoodError(
+            error_type = SamsungFoodError
+            if response.status_code in (400, 404):
+                try:
+                    error = response.json()
+                except ValueError:
+                    error = None
+                if isinstance(error, dict) and error.get("code") == "shoppingList.notFound":
+                    error_type = SamsungListNotFoundError
+            raise error_type(
                 f"Samsung Food READ failed: HTTP {response.status_code}: "
                 f"{response.text[:500]}"
             )
@@ -92,6 +87,20 @@ class SamsungFoodClient:
         normalized = self._normalize_list(response.json())
         self._remember_item_snapshot(normalized.items)
         return normalized
+
+    @staticmethod
+    async def read_list_response(list_id: str, token: str) -> httpx.Response:
+        url = f"{settings.samsung_food_api_base}/list/v2/{list_id}"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": "bagger-shopping/0.3",
+        }
+        async with httpx.AsyncClient(
+            timeout=settings.request_timeout_seconds,
+            follow_redirects=True,
+        ) as client:
+            return await client.get(url, headers=headers)
 
     def _remember_item_snapshot(self, items: list[ShoppingItem]) -> None:
         by_id = {

@@ -92,3 +92,28 @@ def test_request_only_auth_never_launches_browser(monkeypatch, tmp_path):
 
     with pytest.raises(AuthInteractionRequired):
         asyncio.run(auth.get_token())
+
+
+def test_missing_samsung_list_does_not_claim_session_expired(monkeypatch):
+    from app.samsung import SamsungListNotFoundError
+
+    class Client:
+        async def get_list(self):
+            raise SamsungListNotFoundError("shoppingList.notFound")
+
+    async def household(_):
+        return {"id": "family-bagger", "list_backend": "samsung"}
+
+    async def client(_):
+        return Client()
+
+    async def set_health(_, **fields):
+        return {"status": fields["status_value"], "error_message": fields["error_message"]}
+
+    monkeypatch.setattr(mobile_main, "read_household", household)
+    monkeypatch.setattr(mobile_main, "family_samsung_client", client)
+    monkeypatch.setattr(mobile_main, "_set_integration_health", set_health)
+
+    status = asyncio.run(mobile_main.samsung_integration_status(legacy_context()))
+    assert status.status == "requires_reconnect"
+    assert "kan ikke finde den valgte liste" in status.error_message

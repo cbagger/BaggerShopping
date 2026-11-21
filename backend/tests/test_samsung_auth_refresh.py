@@ -92,3 +92,21 @@ def test_aging_unchanged_token_stays_due_for_next_refresh(monkeypatch, tmp_path)
 
     assert asyncio.run(samsung_auth_refresh.refresh_family_auth(target)) == "unchanged"
     assert saved == []
+
+
+def test_get_me_rejects_grpc_unauthenticated_even_when_http_is_200(monkeypatch, tmp_path):
+    import httpx
+
+    from app.auth import SamsungAuthManager
+
+    real_client = httpx.AsyncClient
+
+    def client(**kwargs):
+        trailer = b"grpc-status: 16\r\n"
+        content = b"\x80" + len(trailer).to_bytes(4, "big") + trailer
+        transport = httpx.MockTransport(lambda _: httpx.Response(200, content=content))
+        return real_client(transport=transport, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    manager = SamsungAuthManager(state_file=tmp_path / "auth.json")
+    assert asyncio.run(manager.token_valid("expired")) is False

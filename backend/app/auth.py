@@ -9,6 +9,7 @@ import httpx
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 from .config import settings
+from .grpc_web import parse_grpc_web_response
 
 
 class AuthError(RuntimeError):
@@ -81,7 +82,16 @@ class SamsungAuthManager:
             follow_redirects=True,
         ) as client:
             r = await client.post(url, headers=headers, content=b"\x00\x00\x00\x00\x00")
-        return r.status_code == 200
+        if r.status_code == 401:
+            return False
+        r.raise_for_status()
+        parsed = parse_grpc_web_response(r.content)
+        status = r.headers.get("grpc-status", str(parsed.grpc_status))
+        if status == "16":
+            return False
+        if status != "0" or not parsed.message:
+            raise AuthError("Samsung Food kunne ikke bekræfte sessionen.")
+        return True
 
     async def get_token(self, force_refresh: bool = False) -> str:
         # 1) Persistent state from a previous successful login

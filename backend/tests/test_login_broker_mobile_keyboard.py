@@ -63,3 +63,58 @@ def test_same_browser_can_reopen_active_login_instead_of_getting_family_conflict
 
     assert response.status_code == 200
     assert "Kurv · Samsung Food-login" in response.body.decode()
+
+
+def test_discard_unreadable_existing_list_before_asking_family_to_choose(monkeypatch):
+    import httpx
+
+    async def choices(_):
+        return [{"id": "old-list", "name": "Indkøbsliste"}, {"id": "new-list", "name": "Indkøbsliste"}]
+
+    async def read(list_id, token):
+        assert token == "browser-session"
+        return httpx.Response(400 if list_id == "old-list" else 200)
+
+    monkeypatch.setattr(login_broker, "_list_choices", choices)
+    monkeypatch.setattr(login_broker.SamsungFoodClient, "read_list_response", read)
+
+    assert asyncio.run(login_broker._readable_lists(None, "browser-session")) == [
+        {"id": "new-list", "name": "Indkøbsliste"},
+    ]
+
+
+def test_expired_interactive_session_no_longer_blocks_maintenance(monkeypatch):
+    from types import SimpleNamespace
+
+    import pytest
+
+    calls = []
+
+    async def close():
+        calls.append("close")
+
+    async def refresh(target):
+        calls.append(target)
+        return "current"
+
+    sleep_calls = 0
+
+    async def sleep(_):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(login_broker, "ACTIVE", SimpleNamespace(
+        expires_at=time.time() - 1,
+        context=SimpleNamespace(close=close),
+    ))
+    monkeypatch.setattr(login_broker, "family_auth_targets", lambda: ["family"])
+    monkeypatch.setattr(login_broker, "refresh_family_auth", refresh)
+    monkeypatch.setattr(login_broker.asyncio, "sleep", sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(login_broker._auth_refresh_loop())
+
+    assert login_broker.ACTIVE is None
+    assert calls == ["close", "family"]

@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.async_api import BrowserContext, Playwright, async_playwright
 
+from .samsung import SamsungFoodClient
 from .samsung_auth_refresh import family_auth_targets, refresh_family_auth
 
 MOBILE_API = os.getenv("MOBILE_API_INTERNAL_BASE", "http://mobile-api:8081").rstrip("/")
@@ -148,7 +149,7 @@ button{{border:0;border-radius:12px;padding:10px 13px;font-weight:700;background
 #keyboardInput{{min-width:0;flex:1;border:1px solid #6d9b84;border-radius:12px;padding:10px 12px;font-size:16px;background:#fff;color:#111;outline:none}}
 #keyboardPanel button{{padding:10px 11px;white-space:nowrap}}
 #screen{{flex:1;min-height:0;background:#222;position:relative;z-index:1}}
-</style></head><body><header><strong>Kurv · Samsung Food-login</strong><span id="status">Logger ind direkte hos Samsung</span>
+</style></head><body><header><strong>Kurv · Samsung Food-login</strong><span id="status">Åbn familiens liste i Samsung Food</span>
 <button id="keyboardToggle" type="button">⌨︎ Tastatur</button><button id="done" type="button">Jeg er færdig</button>
 <div id="keyboardPanel"><input id="keyboardInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Skriv her …">
 <button id="sendText" type="button">Send</button><button id="backspace" type="button">⌫</button><button id="tabKey" type="button">Tab</button><button id="enterKey" type="button">↵</button></div>
@@ -210,13 +211,17 @@ def _session_page(active: ActiveLogin) -> HTMLResponse:
 
 
 async def _auth_refresh_loop() -> None:
+    global ACTIVE
     await asyncio.sleep(AUTH_REFRESH_INITIAL_DELAY_SECONDS)
     while True:
         for target in family_auth_targets():
             try:
                 async with LOCK:
-                    if ACTIVE:
+                    if ACTIVE and ACTIVE.expires_at > time.time():
                         continue
+                    if ACTIVE:
+                        await ACTIVE.context.close()
+                        ACTIVE = None
                     result = await refresh_family_auth(target)
                 if result != "current":
                     print({
@@ -332,6 +337,25 @@ async def _list_choices(active: ActiveLogin) -> list[dict[str, str]]:
     return [{"id": key, "name": value} for key, value in choices.items()]
 
 
+async def _readable_lists(active: ActiveLogin, token: str) -> list[dict[str, str]]:
+    choices = await _list_choices(active)
+    readable = []
+    for choice in choices[:20]:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{6,200}", choice["id"]):
+            continue
+        try:
+            response = await SamsungFoodClient.read_list_response(choice["id"], token)
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail="Samsung Food kunne ikke kontrollere listen. Prøv igen.") from exc
+        if response.status_code == 200:
+            readable.append(choice)
+        elif response.status_code == 401:
+            raise HTTPException(status_code=409, detail="Samsung Food har afvist sessionen. Afslut login i browseren.")
+        elif response.status_code == 429 or response.status_code >= 500:
+            raise HTTPException(status_code=502, detail="Samsung Food kunne ikke kontrollere listen. Prøv igen.")
+    return readable
+
+
 @app.post("/session/{session_id}/complete")
 async def complete_session(session_id: str, request: Request) -> dict:
     global ACTIVE
@@ -341,9 +365,9 @@ async def complete_session(session_id: str, request: Request) -> dict:
         token = next((item.get("value") for item in cookies if item.get("name") == "whisk.USER_TOKEN"), None)
         if not token:
             raise HTTPException(status_code=409, detail="Samsung-login er ikke færdigt endnu")
-        lists = await _list_choices(active)
+        lists = await _readable_lists(active, token)
         if not lists:
-            raise HTTPException(status_code=409, detail="Åbn Lister i Samsung Food og vælg mindst én indkøbsliste")
+            raise HTTPException(status_code=409, detail="Åbn familiens indkøbsliste under Lister i Samsung Food, og prøv igen.")
         temporary = active.auth_state.with_suffix(".tmp")
         temporary.write_text(json.dumps({"token": token, "updated_at": time.time(), "source": "interactive-broker"}, indent=2), "utf-8")
         temporary.replace(active.auth_state)
