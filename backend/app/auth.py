@@ -4,6 +4,7 @@ import json
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
@@ -18,6 +19,12 @@ class AuthError(RuntimeError):
 
 class AuthInteractionRequired(AuthError):
     pass
+
+
+def _require_samsung_account_origin(url: str) -> None:
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.hostname != "account.samsung.com" or parsed.port not in (None, 443):
+        raise AuthInteractionRequired("Samsung-login kræver en bekræftet Samsung Account-side.")
 
 
 @dataclass
@@ -185,8 +192,11 @@ class SamsungAuthManager:
                 await page.wait_for_timeout(1500)
 
                 token = await self._extract_token_from_context(context)
-                if token:
+                if token and await self.token_valid(token):
                     return token
+                if token:
+                    await context.clear_cookies(name="whisk.USER_TOKEN")
+                    await page.reload(wait_until="domcontentloaded")
 
                 # Open Samsung Food login wall.
                 try:
@@ -226,6 +236,7 @@ class SamsungAuthManager:
                         "Samsung login page did not expose an email field."
                     )
 
+                _require_samsung_account_origin(login_page.url)
                 await email_input.fill(settings.samsung_account_email or "")
 
                 next_candidates = [
@@ -253,6 +264,7 @@ class SamsungAuthManager:
                         "CAPTCHA, 2FA or device approval may be required."
                     ) from exc
 
+                _require_samsung_account_origin(login_page.url)
                 await password_input.fill(settings.samsung_account_password or "")
 
                 submit_candidates = [

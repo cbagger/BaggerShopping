@@ -101,8 +101,12 @@ it after three days. When Samsung rejects a token during normal use, the mobile
 API also asks the broker to renew it from the existing family browser profile.
 The broker validates the replacement before writing it to the family's auth
 file. Mobile requests cannot launch Chromium directly. Concurrent requests
-share the result, and a live interactive browser takes priority. If Samsung
-requires a new verification, the owner completes it directly with Samsung.
+share the result, and a live interactive browser takes priority. For the
+legacy family, the broker can also sign in again using the existing QNAP
+Samsung account settings when no valid session remains. It uses an isolated
+browser profile and saves the token only after Samsung returns the family's
+bound shopping list. Automatic credential attempts are at least six hours
+apart. Any verification Samsung requires is completed directly with Samsung.
 
 
 ## v0.4 Mobile API
