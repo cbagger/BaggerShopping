@@ -14,15 +14,19 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from playwright.async_api import BrowserContext, Playwright, async_playwright
+from pydantic import BaseModel, Field
 
+from .auth import SamsungAuthManager
+
+from .samsung import SamsungFoodClient
 from .samsung_auth_refresh import family_auth_targets, refresh_family_auth
+from .samsung_broker_auth import broker_key
 
 MOBILE_API = os.getenv("MOBILE_API_INTERNAL_BASE", "http://mobile-api:8081").rstrip("/")
-BROKER_KEY = os.getenv("SAMSUNG_LOGIN_BROKER_KEY", "")
 AUTH_REFRESH_INITIAL_DELAY_SECONDS = max(
     1, int(os.getenv("SAMSUNG_AUTH_REFRESH_INITIAL_DELAY_SECONDS", "10"))
 )
@@ -53,13 +57,14 @@ LOCK = asyncio.Lock()
 ACTIVE: ActiveLogin | None = None
 PLAYWRIGHT: Playwright | None = None
 AUTH_REFRESH_TASK: asyncio.Task[None] | None = None
+RECENT_REFRESH: dict[str, tuple[float, float, str]] = {}
+REFRESH_COOLDOWN_SECONDS = 60
 
 
 @app.on_event("startup")
 async def startup() -> None:
     global AUTH_REFRESH_TASK, PLAYWRIGHT
-    if not BROKER_KEY:
-        raise RuntimeError("SAMSUNG_LOGIN_BROKER_KEY mangler")
+    broker_key()
     PLAYWRIGHT = await async_playwright().start()
     AUTH_REFRESH_TASK = asyncio.create_task(_auth_refresh_loop())
 
@@ -148,7 +153,7 @@ button{{border:0;border-radius:12px;padding:10px 13px;font-weight:700;background
 #keyboardInput{{min-width:0;flex:1;border:1px solid #6d9b84;border-radius:12px;padding:10px 12px;font-size:16px;background:#fff;color:#111;outline:none}}
 #keyboardPanel button{{padding:10px 11px;white-space:nowrap}}
 #screen{{flex:1;min-height:0;background:#222;position:relative;z-index:1}}
-</style></head><body><header><strong>Kurv · Samsung Food-login</strong><span id="status">Logger ind direkte hos Samsung</span>
+</style></head><body><header><strong>Kurv · Samsung Food-login</strong><span id="status">Åbn familiens liste i Samsung Food</span>
 <button id="keyboardToggle" type="button">⌨︎ Tastatur</button><button id="done" type="button">Jeg er færdig</button>
 <div id="keyboardPanel"><input id="keyboardInput" type="text" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Skriv her …">
 <button id="sendText" type="button">Send</button><button id="backspace" type="button">⌫</button><button id="tabKey" type="button">Tab</button><button id="enterKey" type="button">↵</button></div>
@@ -209,12 +214,58 @@ def _session_page(active: ActiveLogin) -> HTMLResponse:
     return response
 
 
+async def _close_expired_login() -> None:
+    global ACTIVE
+    if ACTIVE and ACTIVE.expires_at <= time.time():
+        await ACTIVE.context.close()
+        ACTIVE = None
+
+
+class FamilyRefreshRequest(BaseModel):
+    household_id: str = Field(min_length=1, max_length=120)
+    observed_at: float = Field(ge=0, allow_inf_nan=False)
+
+
+@app.post("/internal/samsung-auth/refresh")
+async def refresh_for_mobile(
+    request: FamilyRefreshRequest,
+    key: str | None = Header(default=None, alias="X-Kurv-Broker-Key"),
+) -> dict[str, str]:
+    if not key or not secrets.compare_digest(key, broker_key()):
+        raise HTTPException(status_code=401, detail="Ugyldig login-broker")
+    async with LOCK:
+        await _close_expired_login()
+        if ACTIVE:
+            raise HTTPException(status_code=503, detail="Samsung-browseren er optaget")
+        target = next((target for target in family_auth_targets()
+                       if target.household_id == request.household_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Samsung-forbindelsen findes ikke")
+
+        state = SamsungAuthManager(state_file=target.auth_state).load_state()
+        if (state.updated_at or 0) > request.observed_at:
+            return {"status": "refreshed"}
+        previous = RECENT_REFRESH.get(target.household_id)
+        if previous and previous[0] == request.observed_at and time.monotonic() - previous[1] < REFRESH_COOLDOWN_SECONDS:
+            return {"status": previous[2]}
+
+        try:
+            result = await refresh_family_auth(target, force=True)
+        except Exception as exc:
+            # Avoid relaunching Chromium for each simultaneous phone request.
+            RECENT_REFRESH[target.household_id] = (request.observed_at, time.monotonic(), "unavailable")
+            raise HTTPException(status_code=503, detail="Kunne ikke forny Samsung Food lige nu") from exc
+        RECENT_REFRESH[target.household_id] = (request.observed_at, time.monotonic(), result)
+        return {"status": result}
+
+
 async def _auth_refresh_loop() -> None:
     await asyncio.sleep(AUTH_REFRESH_INITIAL_DELAY_SECONDS)
     while True:
         for target in family_auth_targets():
             try:
                 async with LOCK:
+                    await _close_expired_login()
                     if ACTIVE:
                         continue
                     result = await refresh_family_auth(target)
@@ -332,6 +383,25 @@ async def _list_choices(active: ActiveLogin) -> list[dict[str, str]]:
     return [{"id": key, "name": value} for key, value in choices.items()]
 
 
+async def _readable_lists(active: ActiveLogin, token: str) -> list[dict[str, str]]:
+    choices = await _list_choices(active)
+    readable = []
+    for choice in choices[:20]:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{6,200}", choice["id"]):
+            continue
+        try:
+            response = await SamsungFoodClient.read_list_response(choice["id"], token)
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail="Samsung Food kunne ikke kontrollere listen. Prøv igen.") from exc
+        if response.status_code == 200:
+            readable.append(choice)
+        elif response.status_code == 401:
+            raise HTTPException(status_code=409, detail="Samsung Food har afvist sessionen. Afslut login i browseren.")
+        elif response.status_code == 429 or response.status_code >= 500:
+            raise HTTPException(status_code=502, detail="Samsung Food kunne ikke kontrollere listen. Prøv igen.")
+    return readable
+
+
 @app.post("/session/{session_id}/complete")
 async def complete_session(session_id: str, request: Request) -> dict:
     global ACTIVE
@@ -341,16 +411,16 @@ async def complete_session(session_id: str, request: Request) -> dict:
         token = next((item.get("value") for item in cookies if item.get("name") == "whisk.USER_TOKEN"), None)
         if not token:
             raise HTTPException(status_code=409, detail="Samsung-login er ikke færdigt endnu")
-        lists = await _list_choices(active)
+        lists = await _readable_lists(active, token)
         if not lists:
-            raise HTTPException(status_code=409, detail="Åbn Lister i Samsung Food og vælg mindst én indkøbsliste")
+            raise HTTPException(status_code=409, detail="Åbn familiens indkøbsliste under Lister i Samsung Food, og prøv igen.")
         temporary = active.auth_state.with_suffix(".tmp")
         temporary.write_text(json.dumps({"token": token, "updated_at": time.time(), "source": "interactive-broker"}, indent=2), "utf-8")
         temporary.replace(active.auth_state)
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(
                 f"{MOBILE_API}/api/mobile/v1/integrations/samsung-food/broker/session/{session_id}/complete",
-                headers={"X-Kurv-Broker-Key": BROKER_KEY}, json={"lists": lists},
+                headers={"X-Kurv-Broker-Key": broker_key()}, json={"lists": lists},
             )
         if response.status_code != 200:
             raise HTTPException(status_code=502, detail="QNAP kunne ikke afslutte login-sessionen")

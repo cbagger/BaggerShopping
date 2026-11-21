@@ -22,7 +22,8 @@ from .samsung_login import router as samsung_login_router
 from .households import HouseholdContext, read_household, require_household, require_owner, router as households_router, update_household
 from .flyer_push import router as flyer_push_router
 from .samsung_request_policy import family_samsung_client
-from .samsung import SamsungItemNotFoundError
+from .auth import AuthInteractionRequired
+from .samsung import SamsungItemNotFoundError, SamsungListNotFoundError
 
 
 class MobileSettings(BaseSettings):
@@ -586,12 +587,24 @@ async def samsung_integration_status(
                     list_name=payload.get("name") or record.get("list_name") or "Indkøbsliste",
                     list_id=payload.get("list_id") or record.get("list_id"),
                 )
-        except Exception:
+        except SamsungListNotFoundError:
             record = await _set_integration_health(
                 context,
                 status_value="requires_reconnect",
-                error_message="Kurv kunne ikke kontakte Samsung Food. Familiens varer er ikke slettet.",
+                error_message="Samsung Food kan ikke finde den valgte liste. Åbn forbindelsen igen, og vælg familiens indkøbsliste.",
             )
+        except Exception as exc:
+            if isinstance(exc, AuthInteractionRequired) or isinstance(exc.__cause__, AuthInteractionRequired):
+                record = await _set_integration_health(
+                    context,
+                    status_value="requires_reconnect",
+                    error_message="Samsung Food-sessionen er udløbet. Åbn forbindelsen igen.",
+                )
+            else:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Kunne ikke hente status fra Samsung Food. Prøv igen om lidt.",
+                ) from exc
     else:
         # Persist the family-owned integration envelope even for families that
         # choose to use Kurv without Samsung Food.

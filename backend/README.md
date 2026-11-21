@@ -96,11 +96,17 @@ noVNC websocket is served on the same HTTPS origin, so no VNC port is exposed.
 The Samsung token is written directly to the family's QNAP auth-state file;
 the password and CAPTCHA input never enter Kurv or the mobile API.
 
-The broker also checks each connected family's saved token hourly. After three
-days it uses the same persistent browser profile to renew the session in the
-background, serialized with interactive logins. A real Samsung verification
-prompt still requires the family owner, but normal short-lived token rotation
-does not disconnect the shopping list.
+The broker checks each connected family's saved token hourly and tries to renew
+it after three days. When Samsung rejects a token during normal use, the mobile
+API also asks the broker to renew it from the existing family browser profile.
+The broker validates the replacement before writing it to the family's auth
+file. Mobile requests cannot launch Chromium directly. Concurrent requests
+share the result, and a live interactive browser takes priority. For the
+legacy family, the broker can also sign in again using the existing QNAP
+Samsung account settings when no valid session remains. It uses an isolated
+browser profile and saves the token only after Samsung returns the family's
+bound shopping list. Automatic credential attempts are at least six hours
+apart. Any verification Samsung requires is completed directly with Samsung.
 
 
 ## v0.4 Mobile API

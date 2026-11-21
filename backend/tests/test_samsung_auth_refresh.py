@@ -92,3 +92,76 @@ def test_aging_unchanged_token_stays_due_for_next_refresh(monkeypatch, tmp_path)
 
     assert asyncio.run(samsung_auth_refresh.refresh_family_auth(target)) == "unchanged"
     assert saved == []
+
+
+def test_get_me_rejects_grpc_unauthenticated_even_when_http_is_200(monkeypatch, tmp_path):
+    import httpx
+
+    from app.auth import SamsungAuthManager
+
+    real_client = httpx.AsyncClient
+
+    def client(**kwargs):
+        trailer = b"grpc-status: 16\r\n"
+        content = b"\x80" + len(trailer).to_bytes(4, "big") + trailer
+        transport = httpx.MockTransport(lambda _: httpx.Response(200, content=content))
+        return real_client(transport=transport, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    manager = SamsungAuthManager(state_file=tmp_path / "auth.json")
+    assert asyncio.run(manager.token_valid("expired")) is False
+
+
+def test_expired_family_browser_logs_in_using_existing_account_once(monkeypatch, tmp_path):
+    import httpx
+
+    saved, attempts = [], []
+
+    class Manager:
+        def __init__(self, *, browser_user_data_dir, **_):
+            self.profile = browser_user_data_dir
+
+        def load_state(self):
+            return AuthState("expired", 100, "interactive-broker")
+
+        async def token_valid(self, token):
+            return token == "new-session"
+
+        async def _token_from_persistent_browser(self):
+            return None
+
+        async def _login_with_credentials(self):
+            attempts.append(self.profile.name)
+            return "new-session"
+
+        def save_state(self, state):
+            saved.append(state)
+
+    async def read(list_id, token):
+        assert token == "new-session"
+        return httpx.Response(200, json={"list": {"id": list_id}})
+
+    monkeypatch.setattr(samsung_auth_refresh, "SamsungAuthManager", Manager)
+    monkeypatch.setattr(samsung_auth_refresh.settings, "samsung_account_email", "family@example.test")
+    monkeypatch.setattr(samsung_auth_refresh.settings, "samsung_account_password", "fixture")
+    monkeypatch.setattr(samsung_auth_refresh.SamsungFoodClient, "read_list_response", read)
+
+    target = FamilyAuthTarget("family-bagger", tmp_path / "auth.json", tmp_path / "browser", "family-list")
+    other = FamilyAuthTarget("another-family", tmp_path / "other.json", tmp_path / "other", "other-list")
+    assert asyncio.run(samsung_auth_refresh.refresh_family_auth(other)) == "interaction_required"
+    assert asyncio.run(samsung_auth_refresh.refresh_family_auth(target)) == "refreshed"
+    assert saved[0].token == "new-session"
+    assert saved[0].source == "automatic-account-login"
+    assert asyncio.run(samsung_auth_refresh.refresh_family_auth(target)) == "interaction_required"
+    assert attempts == ["automatic-account-profile"]
+
+
+def test_relogin_token_must_have_exact_bound_list_access(monkeypatch, tmp_path):
+    import httpx
+
+    async def read(_, __):
+        return httpx.Response(200, json={"list": {"id": "different-list"}})
+
+    monkeypatch.setattr(samsung_auth_refresh.SamsungFoodClient, "read_list_response", read)
+    target = FamilyAuthTarget("family-bagger", tmp_path / "auth.json", tmp_path / "browser", "family-list")
+    assert asyncio.run(samsung_auth_refresh._can_read_bound_list(target, "new-session")) is False
