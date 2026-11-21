@@ -50,7 +50,7 @@ def family_auth_targets() -> list[FamilyAuthTarget]:
     return targets
 
 
-async def refresh_family_auth(target: FamilyAuthTarget) -> str:
+async def refresh_family_auth(target: FamilyAuthTarget, *, force: bool = False) -> str:
     """Refresh an aging family token from its persistent Samsung browser."""
 
     manager = SamsungAuthManager(
@@ -61,12 +61,12 @@ async def refresh_family_auth(target: FamilyAuthTarget) -> str:
     state = manager.load_state()
     current_valid = await manager.token_valid(state.token)
     age = time.time() - (state.updated_at or 0)
-    if current_valid and age < REFRESH_AFTER_SECONDS:
+    if current_valid and not force and age < REFRESH_AFTER_SECONDS:
         return "current"
 
     token = await manager._token_from_persistent_browser()
     if not token or not await manager.token_valid(token):
-        return "interaction_required"
+        return "unchanged" if current_valid else "interaction_required"
 
     # Do not move updated_at forward when Samsung returned the exact same aging
     # token. The next pass will keep trying until Samsung actually rotates it.

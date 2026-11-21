@@ -117,3 +117,26 @@ def test_missing_samsung_list_does_not_claim_session_expired(monkeypatch):
     status = asyncio.run(mobile_main.samsung_integration_status(legacy_context()))
     assert status.status == "requires_reconnect"
     assert "kan ikke finde den valgte liste" in status.error_message
+
+
+def test_rejected_family_token_is_renewed_by_broker_without_browser_on_mobile(monkeypatch, tmp_path):
+    from app.auth import AuthState
+
+    manager = samsung_request_policy.RequestOnlySamsungAuthManager(
+        household_id="family-bagger", state_file=tmp_path / "auth.json",
+        browser_user_data_dir=tmp_path / "profile", allow_credential_fallback=False,
+    )
+    manager.save_state(AuthState("expired", 100, "test"))
+
+    async def validate(token):
+        return token == "fresh"
+
+    async def refresh(observed_at):
+        assert observed_at == 100
+        manager.save_state(AuthState("fresh", 101, "browser-session-maintenance"))
+        return "refreshed"
+
+    monkeypatch.setattr(manager, "token_valid", validate)
+    monkeypatch.setattr(manager, "_request_broker_refresh", refresh)
+    assert asyncio.run(manager.get_token()) == "fresh"
+    assert not manager.browser_user_data_dir.exists()

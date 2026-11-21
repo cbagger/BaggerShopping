@@ -118,3 +118,36 @@ def test_expired_interactive_session_no_longer_blocks_maintenance(monkeypatch):
 
     assert login_broker.ACTIVE is None
     assert calls == ["close", "family"]
+
+
+def test_mobile_renewal_checks_key_and_coalesces_requests_for_the_same_token(monkeypatch, tmp_path):
+    from app.auth import AuthState, SamsungAuthManager
+    from app.samsung_auth_refresh import FamilyAuthTarget
+    from fastapi.testclient import TestClient
+
+    target = FamilyAuthTarget("family-bagger", tmp_path / "auth.json", tmp_path / "browser")
+    manager = SamsungAuthManager(state_file=target.auth_state)
+    manager.save_state(AuthState("expired", 100, "test"))
+    calls = []
+
+    async def refresh(value, *, force):
+        assert force
+        calls.append(value)
+        manager.save_state(AuthState("fresh", 101, "browser-session-maintenance"))
+        return "refreshed"
+
+    monkeypatch.setattr(login_broker, "ACTIVE", None)
+    monkeypatch.setattr(login_broker, "RECENT_REFRESH", {})
+    monkeypatch.setattr(login_broker, "broker_key", lambda: "unit-test-key")
+    monkeypatch.setattr(login_broker, "family_auth_targets", lambda: [target])
+    monkeypatch.setattr(login_broker, "refresh_family_auth", refresh)
+
+    client = TestClient(login_broker.app)
+    url = "/internal/samsung-auth/refresh"
+    payload = {"household_id": "family-bagger", "observed_at": 100}
+    assert client.post(url, json=payload).status_code == 401
+    assert calls == []
+    headers = {"X-Kurv-Broker-Key": "unit-test-key"}
+    assert client.post(url, json=payload, headers=headers).json() == {"status": "refreshed"}
+    assert client.post(url, json=payload, headers=headers).json() == {"status": "refreshed"}
+    assert calls == [target]
