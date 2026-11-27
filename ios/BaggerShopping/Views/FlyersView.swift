@@ -5,7 +5,6 @@ struct FlyersView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var navigation: AppNavigation
     @State private var publications: [OfferPublication] = FlyerPublicationCache.load()?.publications ?? []
-    @State private var externalFlyers: [OfficialFlyer] = FlyerPublicationCache.load()?.externalFlyers ?? []
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedPublication: OfferPublication?
@@ -14,9 +13,9 @@ struct FlyersView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if isLoading && publications.isEmpty && externalFlyers.isEmpty {
+                if isLoading && publications.isEmpty {
                     ProgressView("Henter aktuelle aviser …")
-                } else if let errorMessage, publications.isEmpty && externalFlyers.isEmpty {
+                } else if let errorMessage, publications.isEmpty {
                     ContentUnavailableView("Kunne ikke hente aviser", systemImage: "wifi.exclamationmark", description: Text(errorMessage))
                 } else {
                     GeometryReader { geometry in
@@ -28,30 +27,6 @@ struct FlyersView: View {
                         )
 
                         ScrollView {
-                            if !externalFlyers.isEmpty {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    ForEach(externalFlyers) { flyer in
-                                        Link(destination: flyer.url) {
-                                            HStack(spacing: 12) {
-                                                Image(systemName: "newspaper")
-                                                Text(flyer.retailer)
-                                                    .fontWeight(.semibold)
-                                                Spacer()
-                                                Label("Åbn avis", systemImage: "arrow.up.right")
-                                                    .font(.subheadline)
-                                            }
-                                            .padding(12)
-                                            .background(
-                                                Color(uiColor: .secondarySystemGroupedBackground),
-                                                in: RoundedRectangle(cornerRadius: 12)
-                                            )
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                }
-                                .padding(.horizontal, horizontalPadding)
-                                .padding(.top, 12)
-                            }
                             LazyVGrid(
                                 columns: [
                                     GridItem(.fixed(cardWidth), spacing: columnSpacing, alignment: .top),
@@ -112,7 +87,6 @@ struct FlyersView: View {
                 let response = try await api.fetchOfferPublications()
                 try Task.checkCancellation()
                 publications = response.publications
-                externalFlyers = response.externalFlyers ?? []
                 FlyerPublicationCache.save(response)
                 if response.refreshPending != true { break }
                 if attempt < 11 { try await Task.sleep(for: .seconds(3)) }
@@ -437,11 +411,14 @@ private struct FlyerPage: View {
     let additionsDisabled: Bool
     let select: (GroceryOffer) -> Void
     let report: (GroceryOffer, String) -> Void
+    @State private var pageImage: UIImage?
+    @State private var imageFailed = false
 
     var body: some View {
         GeometryReader { proxy in
             ZoomableFlyerPage(
-                url: url,
+                image: pageImage,
+                imageFailed: imageFailed,
                 offers: offers,
                 select: select,
                 report: report,
@@ -451,11 +428,51 @@ private struct FlyerPage: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
             .background(Color.black)
         }
+        .task(id: url) { await loadImage() }
+    }
+
+    @MainActor private func loadImage() async {
+        pageImage = nil
+        imageFailed = false
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            try Task.checkCancellation()
+            guard let response = response as? HTTPURLResponse,
+                  (200..<300).contains(response.statusCode),
+                  let image = UIImage(data: data) else {
+                imageFailed = true
+                return
+            }
+            pageImage = image
+        } catch {
+            if !Task.isCancelled { imageFailed = true }
+        }
+    }
+}
+
+enum FlyerPageGeometry {
+    static func fittedImage(_ image: CGSize, in container: CGSize) -> CGRect {
+        let scale = min(container.width / image.width, container.height / image.height)
+        let size = CGSize(width: image.width * scale, height: image.height * scale)
+        return CGRect(
+            x: (container.width - size.width) / 2,
+            y: (container.height - size.height) / 2,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    static func markerCenter(in image: CGRect, x: CGFloat, y: CGFloat, width: CGFloat, height: CGFloat) -> CGPoint {
+        CGPoint(
+            x: image.minX + image.width * (x + width / 2),
+            y: image.minY + image.height * (y + height / 2)
+        )
     }
 }
 
 private struct FlyerPageCanvas: View {
-    let url: URL
+    let image: UIImage?
+    let imageFailed: Bool
     let offers: [GroceryOffer]
     let select: (GroceryOffer) -> Void
     let report: (GroceryOffer, String) -> Void
@@ -466,35 +483,33 @@ private struct FlyerPageCanvas: View {
         ZStack {
             Color.black
 
-            AsyncImage(url: url) { phase in
-                if let image = phase.image {
-                    image
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: size.width, height: size.height)
-                        .overlay {
-                            hotspots(in: size)
-                                .allowsHitTesting(hotspotsEnabled)
-                        }
-                } else if phase.error != nil {
-                    ContentUnavailableView(
-                        "Siden kunne ikke hentes",
-                        systemImage: "photo.badge.exclamationmark"
-                    )
-                    .foregroundStyle(.white)
-                } else {
-                    ProgressView()
-                        .tint(.white)
-                }
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: size.width, height: size.height)
+                    .overlay {
+                        hotspots(in: FlyerPageGeometry.fittedImage(image.size, in: size))
+                            .allowsHitTesting(hotspotsEnabled)
+                    }
+            } else if imageFailed {
+                ContentUnavailableView(
+                    "Siden kunne ikke hentes",
+                    systemImage: "photo.badge.exclamationmark"
+                )
+                .foregroundStyle(.white)
+            } else {
+                ProgressView()
+                    .tint(.white)
             }
-            .frame(width: size.width, height: size.height)
         }
         .frame(width: size.width, height: size.height)
     }
 
     func withHotspotsEnabled(_ enabled: Bool) -> FlyerPageCanvas {
         FlyerPageCanvas(
-            url: url,
+            image: image,
+            imageFailed: imageFailed,
             offers: offers,
             select: select,
             report: report,
@@ -504,7 +519,8 @@ private struct FlyerPageCanvas: View {
     }
 
     func hotspotHitRects() -> [CGRect] {
-        let layout = hotspotLayout(in: size)
+        guard let image else { return [] }
+        let imageFrame = FlyerPageGeometry.fittedImage(image.size, in: size)
         let buttonSize: CGFloat = 44
 
         return offers.compactMap { offer in
@@ -513,29 +529,26 @@ private struct FlyerPageCanvas: View {
                   let w = offer.hotspotWidth,
                   let h = offer.hotspotHeight else { return nil }
 
-            let centerX = layout.offsetX + layout.width * (x + w / 2)
-            let centerY = layout.offsetY + layout.height * (y + h / 2)
+            let center = FlyerPageGeometry.markerCenter(in: imageFrame, x: x, y: y, width: w, height: h)
             return CGRect(
-                x: centerX - buttonSize / 2,
-                y: centerY - buttonSize / 2,
+                x: center.x - buttonSize / 2,
+                y: center.y - buttonSize / 2,
                 width: buttonSize,
                 height: buttonSize
             )
         }
     }
 
-    @ViewBuilder private func hotspots(in container: CGSize) -> some View {
-        let layout = hotspotLayout(in: container)
+    private func hotspots(in imageFrame: CGRect) -> some View {
         let buttonSize: CGFloat = 44
 
-        ZStack(alignment: .topLeading) {
+        return ZStack(alignment: .topLeading) {
             ForEach(offers) { offer in
                 if let x = offer.hotspotX,
                    let y = offer.hotspotY,
                    let w = offer.hotspotWidth,
                    let h = offer.hotspotHeight {
-                    let centerX = layout.offsetX + layout.width * (x + w / 2)
-                    let centerY = layout.offsetY + layout.height * (y + h / 2)
+                    let center = FlyerPageGeometry.markerCenter(in: imageFrame, x: x, y: y, width: w, height: h)
 
                     Button { select(offer) } label: {
                         Image(systemName: "plus")
@@ -554,8 +567,8 @@ private struct FlyerPageCanvas: View {
                     .buttonStyle(.plain)
                     .frame(width: buttonSize, height: buttonSize)
                     .offset(
-                        x: centerX - buttonSize / 2,
-                        y: centerY - buttonSize / 2
+                        x: center.x - buttonSize / 2,
+                        y: center.y - buttonSize / 2
                     )
                     .accessibilityLabel("Tilføj \(offer.productName)")
                     .accessibilityValue(
@@ -577,29 +590,13 @@ private struct FlyerPageCanvas: View {
                 }
             }
         }
-        .frame(width: container.width, height: container.height, alignment: .topLeading)
-    }
-
-    private func hotspotLayout(in container: CGSize) -> (
-        width: CGFloat,
-        height: CGFloat,
-        offsetX: CGFloat,
-        offsetY: CGFloat
-    ) {
-        let ratio = 694.0 / 1007.0
-        let width = min(container.width, container.height * ratio)
-        let height = width / ratio
-        return (
-            width,
-            height,
-            (container.width - width) / 2,
-            (container.height - height) / 2
-        )
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
     }
 }
 
 private struct ZoomableFlyerPage: UIViewRepresentable {
-    let url: URL
+    let image: UIImage?
+    let imageFailed: Bool
     let offers: [GroceryOffer]
     let select: (GroceryOffer) -> Void
     let report: (GroceryOffer, String) -> Void
@@ -609,7 +606,8 @@ private struct ZoomableFlyerPage: UIViewRepresentable {
     func makeCoordinator() -> Coordinator {
         Coordinator(
             canvas: FlyerPageCanvas(
-                url: url,
+                image: image,
+                imageFailed: imageFailed,
                 offers: offers,
                 select: select,
                 report: report,
@@ -675,7 +673,8 @@ private struct ZoomableFlyerPage: UIViewRepresentable {
 
         context.coordinator.update(
             canvas: FlyerPageCanvas(
-                url: url,
+                image: image,
+                imageFailed: imageFailed,
                 offers: offers,
                 select: select,
                 report: report,
