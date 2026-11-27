@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from datetime import date, datetime
@@ -9,7 +10,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from .flyer_publications import RETAILER_ORDER, fetch_all_publications
+from .flyer_publications import RETAILER_ORDER, SPAR_IPAPER_SOURCE, fetch_all_publications
 from .retailer_sources import is_active_retailer
 from .flyer_intelligence import (
     feedback_key,
@@ -27,9 +28,11 @@ from .meny_flyer import (
 )
 from .offer_serialization import customer_offer_payload
 from .product_identity import MatchResult, active_family_favorite_match, analyze, compare
+from . import tilbudsugen
 
 
 router = APIRouter(prefix="/api/mobile/v1/offers", tags=["offers"])
+_log = logging.getLogger(__name__)
 
 _CACHE_TTL_SECONDS = 15 * 60
 _publication_cache: Publication | None = None
@@ -114,8 +117,15 @@ def _usable_publications(candidates: list[Publication]) -> list[Publication]:
         if is_active_retailer(candidate.retailer)
         and candidate.status != "expired"
         and not _reader_problems(candidate)
-        and not _health_problems(candidate)
+        and (
+            not _health_problems(candidate)
+            or _is_spar_reader_only(candidate)
+        )
     ]
+
+
+def _is_spar_reader_only(publication: Publication) -> bool:
+    return publication.content_source == SPAR_IPAPER_SOURCE and not publication.structured_offers
 
 
 def _stale_publication_fallback() -> list[Publication]:
@@ -381,6 +391,10 @@ def _reader_problems(publication: Publication, *, today: date | None = None) -> 
         problems.append("avisen er udløbet")
     if publication.page_count <= 0 or len(publication.page_image_urls) != publication.page_count:
         problems.append("sidebilleder mangler")
+    elif publication.content_source == SPAR_IPAPER_SOURCE:
+        expires = httpx.URL(publication.page_image_urls[0]).params.get("expires", "")
+        if expires.isdecimal() and int(expires) <= time.time():
+            problems.append("sidebilledernes links er udløbet")
     return problems
 
 
@@ -706,7 +720,14 @@ async def offers_health():
 
 @router.get("/publications")
 async def publications():
-    items = await _publications()
+    try:
+        items = await _publications()
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        items = []
+    native_retailers = {p.retailer for p in items if p.status in {"current", "upcoming"}}
+    searchable_retailers = {p.retailer for p in items if p.status in {"current", "upcoming"} and not _health_problems(p)}
     return {
         "ok": True,
         "publications": [_publication_payload(publication) for publication in items],
@@ -716,35 +737,72 @@ async def publications():
             retailer for retailer in RETAILER_ORDER
             if any(publication.retailer == retailer for publication in items)
         ],
+        "external_flyers": [
+            {"retailer": retailer, "url": url}
+            for retailer, (_, url) in tilbudsugen.RETAILERS.items()
+            if retailer not in native_retailers
+        ],
+        "external_search_retailers": [
+            retailer for retailer in tilbudsugen.RETAILERS if retailer not in searchable_retailers
+        ],
     }
 
 
 @router.get("/search")
 async def search_offers(
     q: str = Query(min_length=1, max_length=100),
-    retailer: str | None = Query(default=None, max_length=40),
+    retailer: str | None = Query(default=None, max_length=240),
+    include_external: bool = False,
 ):
     term = " ".join(q.split())
     if not term:
         raise HTTPException(status_code=400, detail="Skriv et søgeord")
     selected = {value.strip().casefold() for value in (retailer or "").split(",") if value.strip()}
+    try:
+        catalog = await _publications()
+    except HTTPException as exc:
+        if exc.status_code != 503 or not include_external or (
+            selected and not any(name.casefold() in selected for name in tilbudsugen.RETAILERS)
+        ):
+            raise
+        catalog = []
     items = [
-        p for p in await _publications()
+        p for p in catalog
         if p.status in {"current", "upcoming"}
+        and not _is_spar_reader_only(p)
         and (not selected or p.retailer.casefold() in selected)
     ]
-    if not items:
+    native = {p.retailer for p in items if p.structured_offers}
+    external = [
+        retailer for retailer in tilbudsugen.RETAILERS
+        if include_external and retailer not in native and (not selected or retailer.casefold() in selected)
+    ]
+    if not items and not external:
         raise HTTPException(status_code=404, detail="Der er ingen aktuel eller kommende avis for den valgte butik")
+    unavailable = []
+    external_offers = []
+    if external:
+        try:
+            external_offers = await tilbudsugen.fetch_offers(term.replace(",", " "), external)
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, AttributeError) as exc:
+            _log.warning("Tilbudsugens søgning fejlede (%s)", type(exc).__name__)
+            if not items:
+                raise HTTPException(status_code=503, detail="Tilbudsugen kunne ikke svare. Prøv igen om lidt.") from exc
+            unavailable = external
     ranked: dict[tuple, tuple[int, Offer, MatchResult, str]] = {}
-    for publication in items:
-        for offer in publication.structured_offers:
-            match = _search_match_result(term, offer)
-            if match is not None:
-                score, matched, identity = match
-                key = _search_deduplication_key(matched)
-                previous = ranked.get(key)
-                if previous is None or score > previous[0] or len(matched.variants) > len(previous[1].variants):
-                    ranked[key] = (score, matched, identity, publication.status)
+    candidates = [
+        (offer, publication.status) for publication in items for offer in publication.structured_offers
+    ] + external_offers
+    for offer, status in candidates:
+        match = _search_match_result(term, offer)
+        if match is not None:
+            score, matched, identity = match
+            key = _search_deduplication_key(matched)
+            if matched.quality_source == tilbudsugen.SOURCE:
+                key = (*key, matched.id)
+            previous = ranked.get(key)
+            if previous is None or score > previous[0] or len(matched.variants) > len(previous[1].variants):
+                ranked[key] = (score, matched, identity, status)
     ordered = sorted(
         ranked.values(),
         key=lambda value: (
@@ -754,13 +812,15 @@ async def search_offers(
         ),
     )
     offers = [_offer_payload(offer, identity, publication_status) for _, offer, identity, publication_status in ordered]
+    searched_retailers = {item.retailer for item in items} | set(external)
     return {
         "ok": True,
         "query": term,
-        "retailer": items[0].retailer if len({item.retailer for item in items}) == 1 else "Alle butikker",
-        "publication": _publication_payload(items[0]) if len(items) == 1 else None,
+        "retailer": next(iter(searched_retailers)) if len(searched_retailers) == 1 else "Alle butikker",
+        "publication": _publication_payload(items[0]) if len(items) == 1 and not external else None,
         "offer_count": len(offers),
         "offers": offers,
+        "unavailable_retailers": unavailable,
     }
 
 

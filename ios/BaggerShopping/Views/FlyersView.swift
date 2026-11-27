@@ -5,6 +5,7 @@ struct FlyersView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var navigation: AppNavigation
     @State private var publications: [OfferPublication] = FlyerPublicationCache.load()?.publications ?? []
+    @State private var externalFlyers: [OfficialFlyer] = FlyerPublicationCache.load()?.externalFlyers ?? []
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedPublication: OfferPublication?
@@ -13,9 +14,9 @@ struct FlyersView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if isLoading && publications.isEmpty {
+                if isLoading && publications.isEmpty && externalFlyers.isEmpty {
                     ProgressView("Henter aktuelle aviser …")
-                } else if let errorMessage, publications.isEmpty {
+                } else if let errorMessage, publications.isEmpty && externalFlyers.isEmpty {
                     ContentUnavailableView("Kunne ikke hente aviser", systemImage: "wifi.exclamationmark", description: Text(errorMessage))
                 } else {
                     GeometryReader { geometry in
@@ -27,6 +28,30 @@ struct FlyersView: View {
                         )
 
                         ScrollView {
+                            if !externalFlyers.isEmpty {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ForEach(externalFlyers) { flyer in
+                                        Link(destination: flyer.url) {
+                                            HStack(spacing: 12) {
+                                                Image(systemName: "newspaper")
+                                                Text(flyer.retailer)
+                                                    .fontWeight(.semibold)
+                                                Spacer()
+                                                Label("Åbn avis", systemImage: "arrow.up.right")
+                                                    .font(.subheadline)
+                                            }
+                                            .padding(12)
+                                            .background(
+                                                Color(uiColor: .secondarySystemGroupedBackground),
+                                                in: RoundedRectangle(cornerRadius: 12)
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                                .padding(.horizontal, horizontalPadding)
+                                .padding(.top, 12)
+                            }
                             LazyVGrid(
                                 columns: [
                                     GridItem(.fixed(cardWidth), spacing: columnSpacing, alignment: .top),
@@ -87,7 +112,8 @@ struct FlyersView: View {
                 let response = try await api.fetchOfferPublications()
                 try Task.checkCancellation()
                 publications = response.publications
-                FlyerPublicationCache.save(response.publications)
+                externalFlyers = response.externalFlyers ?? []
+                FlyerPublicationCache.save(response)
                 if response.refreshPending != true { break }
                 if attempt < 11 { try await Task.sleep(for: .seconds(3)) }
             }

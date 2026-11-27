@@ -84,6 +84,7 @@ class Offer(BaseModel):
     hotspot_height: float | None = None
     raw_text: str
     safe_to_add: bool = False
+    minimum_purchase_quantity: int | None = None
     variants: list[OfferVariant] = Field(default_factory=list)
     hotspot_confidence: float = 0.0
     variant_confidence: float = 0.0

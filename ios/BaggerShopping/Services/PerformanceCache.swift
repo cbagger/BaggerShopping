@@ -3,13 +3,24 @@ import Foundation
 struct CachedFlyerPublications: Codable {
     let savedAt: Date
     let publications: [OfferPublication]
+    var externalFlyers: [OfficialFlyer]? = nil
+    var externalSearchRetailers: [String]? = nil
 }
 
 enum FlyerPublicationCache {
     private static let key = "kurv-cached-flyer-publications-v1"
 
     static func save(_ publications: [OfferPublication]) {
-        let cached = CachedFlyerPublications(savedAt: Date(), publications: publications)
+        save(PublicationsResponse(ok: true, publications: publications))
+    }
+
+    static func save(_ response: PublicationsResponse) {
+        let cached = CachedFlyerPublications(
+            savedAt: Date(),
+            publications: response.publications,
+            externalFlyers: response.externalFlyers,
+            externalSearchRetailers: response.externalSearchRetailers
+        )
         guard let data = try? JSONEncoder().encode(cached) else { return }
         UserDefaults.standard.set(data, forKey: key)
     }
@@ -23,15 +34,24 @@ enum FlyerPublicationCache {
         let visible = cached.publications.filter {
             RetailerPreferences.shared.isEnabled($0.retailer)
         }
-        return CachedFlyerPublications(savedAt: cached.savedAt, publications: visible)
+        return CachedFlyerPublications(
+            savedAt: cached.savedAt, publications: visible,
+            externalFlyers: cached.externalFlyers?.filter {
+                $0.url.scheme == "https" && RetailerPreferences.shared.isEnabled($0.retailer)
+            },
+            externalSearchRetailers: cached.externalSearchRetailers?.filter {
+                RetailerPreferences.shared.isEnabled($0)
+            }
+        )
     }
 }
 
 enum OfferRetailerShelf {
-    static func retailers(from publications: [OfferPublication]) -> [String] {
-        publications
+    static func retailers(from publications: [OfferPublication], external: [String] = []) -> [String] {
+        let native = publications
             .filter { ["current", "upcoming"].contains($0.status) && $0.searchable }
             .map(\.retailer)
+        return (native + external)
             .reduce(into: []) { result, retailer in
                 guard RetailerPreferences.shared.isEnabled(retailer),
                       !result.contains(retailer) else { return }
@@ -41,7 +61,7 @@ enum OfferRetailerShelf {
 
     static func cachedRetailers(fallback: [String] = ["MENY"]) -> [String] {
         guard let cached = FlyerPublicationCache.load() else { return fallback }
-        let retailers = retailers(from: cached.publications)
+        let retailers = retailers(from: cached.publications, external: cached.externalSearchRetailers ?? [])
         return retailers.isEmpty ? fallback : retailers
     }
 }

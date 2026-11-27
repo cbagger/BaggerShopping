@@ -1,6 +1,14 @@
 name: BaggerShopping
 options:
   bundleIdPrefix: dk.chewbagger
+schemes:
+  BaggerShopping:
+    build:
+      targets:
+        BaggerShopping: all
+    test:
+      targets:
+        - BaggerShoppingTests
 targets:
   BaggerShopping:
     type: application
@@ -12,6 +20,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dk.chewbagger.BaggerShopping
         PRODUCT_NAME: Kurv
+        PRODUCT_MODULE_NAME: BaggerShopping
         SWIFT_VERSION: 5.0
         INFOPLIST_FILE: BaggerShopping/Info.plist
         CODE_SIGN_STYLE: Automatic
@@ -35,3 +44,4 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dk.chewbagger.BaggerShoppingTests
         SWIFT_VERSION: 5.0
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Kurv.app/Kurv"

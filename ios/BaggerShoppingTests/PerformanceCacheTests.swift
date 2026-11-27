@@ -27,6 +27,21 @@ final class PerformanceCacheTests: XCTestCase {
         XCTAssertEqual(cached.publications.first?.retailer, "365discount")
     }
 
+    func testOfficialFlyersAndSearchFiltersSurviveCacheReload() throws {
+        let response = try JSONDecoder().decode(PublicationsResponse.self, from: Data(#"""
+        {
+          "ok":true,
+          "publications":[],
+          "external_flyers":[{"retailer":"REMA 1000","url":"https://shop.rema1000.dk/avisvarer"}],
+          "external_search_retailers":["365discount","REMA 1000","Netto"]
+        }
+        """#.utf8))
+        FlyerPublicationCache.save(response)
+        let cached = try XCTUnwrap(FlyerPublicationCache.load())
+        XCTAssertEqual(cached.externalFlyers?.first?.url.host, "shop.rema1000.dk")
+        XCTAssertEqual(OfferRetailerShelf.cachedRetailers(), ["365discount", "REMA 1000", "Netto"])
+    }
+
     func testFlyerPublicationCacheDoesNotRestoreRetiredRetailer() throws {
         let active = try decodePublication()
         let retired = try decodePublication(retailer: "Kvickly", id: "shared-kvickly-week")

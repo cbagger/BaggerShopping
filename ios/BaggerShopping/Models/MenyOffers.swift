@@ -72,6 +72,7 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
     let hotspotHeight: Double?
     let rawText: String
     let safeToAdd: Bool
+    let minimumPurchaseQuantity: Int?
     let variants: [OfferVariant]
     let identityMatch: ProductIdentityMatch?
     let productIdentity: ProductIdentityAnalysis?
@@ -114,6 +115,7 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
         case displayHotspotHeight = "display_hotspot_height"
         case rawText = "raw_text"
         case safeToAdd = "safe_to_add"
+        case minimumPurchaseQuantity = "minimum_purchase_quantity"
         case variants
         case identityMatch = "identity_match"
         case productIdentity = "product_identity"
@@ -170,6 +172,7 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
 
         rawText = try values.decodeIfPresent(String.self, forKey: .rawText) ?? ""
         safeToAdd = try values.decodeIfPresent(Bool.self, forKey: .safeToAdd) ?? false
+        minimumPurchaseQuantity = try values.decodeIfPresent(Int.self, forKey: .minimumPurchaseQuantity)
         variants = try values.decodeIfPresent([OfferVariant].self, forKey: .variants) ?? []
         identityMatch = try values.decodeIfPresent(ProductIdentityMatch.self, forKey: .identityMatch)
         productIdentity = try values.decodeIfPresent(ProductIdentityAnalysis.self, forKey: .productIdentity)
@@ -227,6 +230,7 @@ struct GroceryOffer: Codable, Identifiable, Hashable {
 
         try values.encode(rawText, forKey: .rawText)
         try values.encode(safeToAdd, forKey: .safeToAdd)
+        try values.encodeIfPresent(minimumPurchaseQuantity, forKey: .minimumPurchaseQuantity)
         try values.encode(variants, forKey: .variants)
         try values.encodeIfPresent(identityMatch, forKey: .identityMatch)
         try values.encodeIfPresent(productIdentity, forKey: .productIdentity)
@@ -365,14 +369,24 @@ struct OfferVariant: Codable, Identifiable, Hashable {
     }
 }
 
+struct OfficialFlyer: Codable, Identifiable {
+    var id: String { retailer }
+    let retailer: String
+    let url: URL
+}
+
 struct PublicationsResponse: Codable {
     let ok: Bool
     let publications: [OfferPublication]
     var refreshPending: Bool? = nil
+    var externalFlyers: [OfficialFlyer]? = nil
+    var externalSearchRetailers: [String]? = nil
 
     enum CodingKeys: String, CodingKey {
         case ok, publications
         case refreshPending = "refresh_pending"
+        case externalFlyers = "external_flyers"
+        case externalSearchRetailers = "external_search_retailers"
     }
 }
 
@@ -383,10 +397,12 @@ struct OfferSearchResponse: Codable {
     let publication: OfferPublication?
     let offerCount: Int
     let offers: [GroceryOffer]
+    var unavailableRetailers: [String]? = nil
 
     enum CodingKeys: String, CodingKey {
         case ok, query, retailer, publication, offers
         case offerCount = "offer_count"
+        case unavailableRetailers = "unavailable_retailers"
     }
 }
 

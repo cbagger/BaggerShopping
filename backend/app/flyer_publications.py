@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import re
 from datetime import date, datetime, timedelta
+from html import unescape
+from urllib.parse import urljoin
 
 import httpx
 
@@ -15,6 +19,9 @@ from .member_pricing_sources import (
 )
 from .meny_flyer import Offer, Publication
 from .retailer_sources import RETAILER_ORDER, SOURCES
+
+
+SPAR_IPAPER_SOURCE = "spar-ipaper"
 
 
 def _tjek_offer_validity(rows: object) -> dict[str, tuple[str | None, str | None]]:
@@ -108,12 +115,77 @@ async def _fetch_meny_publication(*, client: httpx.AsyncClient) -> Publication:
     return publication
 
 
+async def _fetch_spar_reader(
+    source: raw.RetailerSource,
+    url: str,
+    *,
+    client: httpx.AsyncClient,
+) -> Publication | None:
+    try:
+        response = await client.get(url)
+        response.raise_for_status()
+        publication = raw.parse_meny_flyer_html(response.text, str(response.url))
+    except (httpx.HTTPError, ValueError):
+        return None
+
+    if not publication.page_image_urls or not publication.page_texts:
+        return None
+    validity = re.search(
+        r"\bavisen gælder\s+(fra .{1,45}? til og med .{1,45}?)\s+(20\d{2})\b",
+        publication.page_texts[0].casefold(),
+    )
+    if not validity:
+        return None
+    valid_from, valid_until = raw.validity_from_text(validity[1], today=date(int(validity[2]), 1, 1))
+    if not valid_from or not valid_until:
+        return None
+    status = raw._status(valid_from, valid_until)
+    if status == "expired":
+        return None
+
+    # Both reader aliases can point to the same issue at rollover.
+    release_url = publication.page_image_urls[0].split("?", 1)[0]
+    publication.id = hashlib.sha256(f"{source.retailer}|{release_url}".encode()).hexdigest()[:20]
+    publication.retailer = source.retailer
+    title = re.search(r"<title>\s*([^<]+)</title>", response.text, re.IGNORECASE)
+    publication.title = unescape(title[1]).strip() if title else "SPAR ugens avis"
+    publication.valid_from = valid_from
+    publication.valid_until = valid_until
+    publication.status = status
+    publication.content_source = SPAR_IPAPER_SOURCE
+
+    chunks: list[dict] = []
+    for chunk_url in publication.enrichment_urls:
+        try:
+            chunk = await client.get(chunk_url)
+            chunk.raise_for_status()
+            payload = chunk.json()
+        except (httpx.HTTPError, ValueError):
+            # A missing chunk would silently omit a whole section from search.
+            return publication
+        if not isinstance(payload, dict):
+            return publication
+        chunks.append(payload)
+
+    publication.structured_offers = enrich_ipaper_offers(
+        publication, raw.parse_enrichment_chunks(publication, chunks),
+    )
+    return publication
+
+
 async def fetch_retailer_publications(
     source: raw.RetailerSource,
     *,
     client: httpx.AsyncClient,
 ) -> list[Publication]:
     """Fetch one retailer through the explicit provider-enrichment pipeline."""
+    if source.retailer == "SPAR" and not source.tjek_dealer_id:
+        current, upcoming = await asyncio.gather(
+            _fetch_spar_reader(source, source.landing_url, client=client),
+            _fetch_spar_reader(source, urljoin(source.landing_url, "SPARnsteuge/"), client=client),
+        )
+        return list({item.id: item for item in (upcoming, current) if item is not None}.values())
+
     landing: httpx.Response | None = None
     try:
         landing = await client.get(source.landing_url)
@@ -379,27 +451,46 @@ def _customer_ready_publications(
     *,
     today: date | None = None,
 ) -> list[Publication]:
-    """Drop superseded MENY snapshots and normalize customer-visible dates.
-
-    MENY/iPaper invalidates the previous release's signed CDN URLs as soon as
-    the reader rotates. A verified serving-cache row for that old release is
-    therefore not a safe stale-while-revalidate bridge. Only the MENY release
-    that is still present in the live deterministic source may reach Mobile API.
-    Other retailers keep the existing stable-cache behavior.
-    """
+    """Use live iPaper pages and publish SPAR prices only after verification."""
     live_meny_ids = {
         publication.id
         for publication in source_publications
         if publication.retailer.casefold() == "meny"
+    }
+    live_spar = {
+        publication.id: publication
+        for publication in source_publications
+        if publication.content_source == SPAR_IPAPER_SOURCE
     }
     result: list[Publication] = []
     for publication in publications:
         if publication.retailer.casefold() == "meny":
             if not live_meny_ids or publication.id not in live_meny_ids:
                 continue
-        normalized = _normalize_customer_publication(publication, today=today)
-        if normalized.status != "expired":
-            result.append(normalized)
+            normalized = _normalize_customer_publication(publication, today=today)
+            if normalized.status != "expired":
+                result.append(normalized)
+        elif publication.content_source == SPAR_IPAPER_SOURCE:
+            fresh = live_spar.pop(publication.id, None)
+            if fresh is not None:
+                image_urls = dict(zip(publication.page_image_urls, fresh.page_image_urls))
+                offers = [
+                    offer.model_copy(update={"image_url": image_urls[offer.image_url]})
+                    if offer.image_url in image_urls else offer
+                    for offer in publication.structured_offers
+                ]
+                result.append(publication.model_copy(update={
+                    "page_image_urls": fresh.page_image_urls,
+                    "reader_url": fresh.reader_url,
+                    "status": fresh.status,
+                    "structured_offers": offers,
+                }))
+        else:
+            result.append(publication)
+    result.extend(
+        publication.model_copy(update={"structured_offers": []})
+        for publication in live_spar.values()
+    )
     return result
 
 
@@ -410,7 +501,10 @@ async def fetch_all_publications(*, client: httpx.AsyncClient | None = None) -> 
         publications = apply_cached_enrichment(source_publications)
     except Exception:
         # AI cache/telemetry must never make deterministic flyer data unavailable.
-        publications = source_publications
+        publications = [
+            publication for publication in source_publications
+            if publication.content_source != SPAR_IPAPER_SOURCE
+        ]
     return _customer_ready_publications(publications, source_publications)
 
 
