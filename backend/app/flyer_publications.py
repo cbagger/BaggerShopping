@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 from datetime import date, datetime, timedelta
 from html import unescape
@@ -10,6 +11,7 @@ from urllib.parse import urljoin
 
 import httpx
 
+from . import dayli_flyers
 from . import flyer_adapters as raw
 from .luna_overlay import apply_cached_enrichment
 from .member_pricing_sources import (
@@ -22,6 +24,37 @@ from .retailer_sources import RETAILER_ORDER, SOURCES
 
 
 SPAR_IPAPER_SOURCE = "spar-ipaper"
+_TJEK_HOSTS = frozenset({"squid-api.tjek.com", "etilbudsavis.dk", "www.etilbudsavis.dk"})
+_tjek_unauthorized_hosts: set[str] = set()
+_log = logging.getLogger(__name__)
+
+
+class _PublicationClient(httpx.AsyncClient):
+    """Keep a source disabled for this process after an authorization failure."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._source_locks = {host: asyncio.Lock() for host in _TJEK_HOSTS}
+        self.event_hooks["request"].append(self._check_source)
+        self.event_hooks["response"].append(self._record_unauthorized)
+
+    async def _check_source(self, request: httpx.Request) -> None:
+        if request.url.host in _tjek_unauthorized_hosts:
+            raise httpx.RequestError("Source paused after HTTP 401", request=request)
+
+    async def _record_unauthorized(self, response: httpx.Response) -> None:
+        host = response.request.url.host
+        if response.status_code != 401 or host not in _TJEK_HOSTS or host in _tjek_unauthorized_hosts:
+            return
+        _tjek_unauthorized_hosts.add(host)
+        _log.warning("Publication source %s paused after HTTP 401 until worker restart", host)
+
+    async def send(self, request: httpx.Request, **kwargs) -> httpx.Response:
+        lock = self._source_locks.get(request.url.host)
+        if lock is None:
+            return await super().send(request, **kwargs)
+        async with lock:
+            return await super().send(request, **kwargs)
 
 
 def _tjek_offer_validity(rows: object) -> dict[str, tuple[str | None, str | None]]:
@@ -329,7 +362,7 @@ async def fetch_raw_publications(*, client: httpx.AsyncClient | None = None) -> 
     """Fetch deterministic provider publications without the cached Luna overlay."""
     owns_client = client is None
     if client is None:
-        client = httpx.AsyncClient(
+        client = _PublicationClient(
             timeout=25,
             follow_redirects=True,
             headers={
@@ -339,9 +372,13 @@ async def fetch_raw_publications(*, client: httpx.AsyncClient | None = None) -> 
         )
 
     try:
-        tasks = [_fetch_meny_publication(client=client)] + [
-            fetch_retailer_publications(source, client=client)
-            for source in SOURCES
+        tasks = [
+            _fetch_meny_publication(client=client),
+            dayli_flyers.fetch_publications(client),
+            *(
+                fetch_retailer_publications(source, client=client)
+                for source in SOURCES if source.retailer not in dayli_flyers.RETAILER_NAMES
+            ),
         ]
         outcomes = await asyncio.gather(*tasks, return_exceptions=True)
         result: list[Publication] = []
