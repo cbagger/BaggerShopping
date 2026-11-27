@@ -726,7 +726,6 @@ async def publications():
         if exc.status_code != 503:
             raise
         items = []
-    native_retailers = {p.retailer for p in items if p.status in {"current", "upcoming"}}
     searchable_retailers = {p.retailer for p in items if p.status in {"current", "upcoming"} and not _health_problems(p)}
     return {
         "ok": True,
@@ -737,11 +736,7 @@ async def publications():
             retailer for retailer in RETAILER_ORDER
             if any(publication.retailer == retailer for publication in items)
         ],
-        "external_flyers": [
-            {"retailer": retailer, "url": url}
-            for retailer, (_, url) in tilbudsugen.RETAILERS.items()
-            if retailer not in native_retailers
-        ],
+        "external_flyers": [],
         "external_search_retailers": [
             retailer for retailer in tilbudsugen.RETAILERS if retailer not in searchable_retailers
         ],

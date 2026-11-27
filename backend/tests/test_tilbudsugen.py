@@ -69,7 +69,7 @@ def test_mobile_search_opt_in_official_links_and_provider_failure(monkeypatch):
     monkeypatch.setattr(tilbudsugen, "fetch_offers", search)
     catalogue = asyncio.run(mobile_offers.publications())
     assert catalogue["external_search_retailers"] == ["365discount", "REMA 1000", "Netto"]
-    assert all(row["url"].startswith("https://") for row in catalogue["external_flyers"])
+    assert catalogue["external_flyers"] == []
 
     with pytest.raises(HTTPException) as exc:
         asyncio.run(mobile_offers.search_offers(q="oksekød", retailer="Netto"))
