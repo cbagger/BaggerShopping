@@ -9,6 +9,7 @@ struct OffersView: View {
     @State private var hasSearched = false
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var unavailableRetailers: [String] = []
     @State private var addedOfferID: String?
     @State private var pendingOffer: GroceryOffer?
     @State private var previewOffer: GroceryOffer?
@@ -41,6 +42,7 @@ struct OffersView: View {
                                     offers = []
                                     hasSearched = false
                                     errorMessage = nil
+                                    unavailableRetailers = []
                                     searchIsFocused = true
                                 } label: {
                                     Image(systemName: "xmark.circle.fill")
@@ -75,6 +77,12 @@ struct OffersView: View {
                             .onChange(of: selectedRetailers) {
                                 scheduleFilterSearch()
                             }
+                    }
+
+                    if !unavailableRetailers.isEmpty {
+                        Text("Kunne ikke søge hos \(unavailableRetailers.joined(separator: ", ")).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
 
                     if isLoading && offers.isEmpty {
@@ -150,8 +158,10 @@ struct OffersView: View {
     @MainActor
     private func loadRetailers() async {
         guard let response = try? await api.fetchOfferPublications() else { return }
-        FlyerPublicationCache.save(response.publications)
-        retailers = OfferRetailerShelf.retailers(from: response.publications)
+        FlyerPublicationCache.save(response)
+        retailers = OfferRetailerShelf.retailers(
+            from: response.publications, external: response.externalSearchRetailers ?? []
+        )
         selectedRetailers.formIntersection(retailers)
     }
 
@@ -205,6 +215,7 @@ struct OffersView: View {
 
         hasSearched = true
         errorMessage = nil
+        unavailableRetailers = []
         addedOfferID = nil
 
         let cached = useCache ? OfferSearchCache.load(query: term, retailers: retailerSnapshot) : nil
@@ -218,7 +229,10 @@ struct OffersView: View {
             let response = try await api.searchOffers(query: term, retailers: Array(retailerSnapshot))
             guard term == query.trimmingCharacters(in: .whitespacesAndNewlines),
                   retailerSnapshot == selectedRetailers else { return }
-            OfferSearchCache.save(response.offers, query: term, retailers: retailerSnapshot)
+            unavailableRetailers = response.unavailableRetailers ?? []
+            if unavailableRetailers.isEmpty {
+                OfferSearchCache.save(response.offers, query: term, retailers: retailerSnapshot)
+            }
             offers = OfferSearchRanker.rank(response.offers, for: term)
             errorMessage = nil
         } catch {
@@ -237,6 +251,7 @@ struct OffersView: View {
             offers = []
             hasSearched = false
             errorMessage = nil
+            unavailableRetailers = []
             return
         }
         filterSearchTask = Task {
@@ -316,12 +331,19 @@ private struct OfferCard: View {
                     HStack(spacing: 6) {
                         Text(offer.retailer).fontWeight(.semibold)
                         if let page = offer.pageNumber { Text("· Side \(page)") }
+                        if offer.qualitySource == "tilbudsugen", let brand = offer.brand {
+                            Text("· \(brand)")
+                        }
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                     if offer.memberPrice != nil {
                         MemberPriceBadge(offer: offer, compact: true)
+                    }
+                    if let minimum = offer.minimumPurchaseQuantity {
+                        Text("Ved køb af \(minimum) stk.")
+                            .font(.caption.weight(.semibold))
                     }
 
                     if let from = offer.validFrom, let until = offer.validUntil {
@@ -367,6 +389,13 @@ private struct OfferCard: View {
                 .buttonStyle(.borderedProminent)
                 .tint(wasAdded ? .green : .accentColor)
                 .disabled(wasAdded || additionDisabled)
+            }
+            if offer.qualitySource == "tilbudsugen" {
+                Link(destination: offer.sourceURL) {
+                    Label("Se avis hos \(offer.retailer)", systemImage: "arrow.up.right")
+                        .font(.caption)
+                }
+                .accessibilityHint("Tilbudsdata fra Tilbudsugen")
             }
         }
         .padding(14)

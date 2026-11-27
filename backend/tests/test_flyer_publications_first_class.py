@@ -1,7 +1,11 @@
 import asyncio
+import json
+
+import httpx
 
 from app import flyer_adapters, flyer_publications
 from app.meny_flyer import Offer, Publication
+from app.mobile_offers import _publication_payload, _usable_publications
 
 
 def _publication(*, retailer="føtex", identity="pub-1") -> Publication:
@@ -16,6 +20,51 @@ def _publication(*, retailer="føtex", identity="pub-1") -> Publication:
         page_count=1,
         page_image_urls=["https://example.test/page-1.jpg"],
     )
+
+
+def test_spar_uses_its_own_reader_and_hides_prices_until_verified():
+    source = next(source for source in flyer_publications.SOURCES if source.retailer == "SPAR")
+    settings = {
+        "pages": [1],
+        "pageTexts": ["AVISEN GÆLDER FRA FREDAG 27. NOVEMBER TIL OG MED TORSDAG 3. DECEMBER 2099."],
+        "aws": {"url": "https://cdn.ipaper.io/paper", "policy": "token=fresh"},
+        "enrichments": {"chunkUrls": {"1": "https://cdn.ipaper.io/chunk"}},
+    }
+    requests = []
+
+    def handle(request):
+        requests.append(request.url.host)
+        if request.url.path == "/":
+            html = "<title>SPAR uge 49</title>"
+            html += "<script>window.staticSettings = " + json.dumps(settings, ensure_ascii=False) + "</script>"
+            return httpx.Response(200, text=html)
+        if request.url.path == "/chunk":
+            return httpx.Response(200, json={"enrichments": [{
+                "type": 13, "pageIndex": 0, "name": "Lurpak", "price": 10.95,
+                "x": 0.2, "y": 0.2, "width": 0.2, "height": 0.2,
+            }]})
+        return httpx.Response(200, text="<title>Næste uges tilbudsavis kommer snart</title>")
+
+    async def fetch():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+            return await flyer_publications.fetch_retailer_publications(source, client=client)
+
+    publications = asyncio.run(fetch())
+    assert set(requests) == {"ugensavis.spar.dk", "cdn.ipaper.io"}
+    (source_publication,) = publications
+    assert source_publication.title == "SPAR uge 49"
+    assert source_publication.status == "upcoming"
+    assert source_publication.valid_until == "03.12.2099"
+    assert [offer.product_name for offer in source_publication.structured_offers] == ["Lurpak"]
+
+    (pending,) = _usable_publications(flyer_publications._customer_ready_publications([], publications))
+    assert pending.structured_offers == []
+    assert _publication_payload(pending)["searchable"] is False
+
+    (verified,) = _usable_publications(
+        flyer_publications._customer_ready_publications(publications, publications)
+    )
+    assert _publication_payload(verified)["searchable"] is True
 
 
 def test_tjek_pipeline_preserves_structured_member_price_context():

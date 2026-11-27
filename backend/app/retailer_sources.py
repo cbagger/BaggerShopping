@@ -61,9 +61,8 @@ SOURCES: tuple[RetailerSource, ...] = (
     ),
     RetailerSource(
         "SPAR",
-        "https://spar.dk/ugensavis",
-        ("ipaper.io", "view.publitas.com", "spar.dk"),
-        tjek_dealer_id="88ddE",
+        "https://ugensavis.spar.dk/",
+        ("ugensavis.spar.dk",),
     ),
     RetailerSource(
         "SuperBrugsen",

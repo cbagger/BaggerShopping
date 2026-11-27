@@ -237,7 +237,17 @@ struct APIClient {
         let visible = response.publications.filter {
             RetailerPreferences.shared.isEnabled($0.retailer)
         }
-        return PublicationsResponse(ok: response.ok, publications: visible, refreshPending: response.refreshPending)
+        return PublicationsResponse(
+            ok: response.ok,
+            publications: visible,
+            refreshPending: response.refreshPending,
+            externalFlyers: response.externalFlyers?.filter {
+                $0.url.scheme == "https" && RetailerPreferences.shared.isEnabled($0.retailer)
+            },
+            externalSearchRetailers: response.externalSearchRetailers?.filter {
+                RetailerPreferences.shared.isEnabled($0)
+            }
+        )
     }
 
     func fetchFlyerNotificationRetailers() async throws -> FlyerNotificationRetailersResponse {
@@ -282,11 +292,11 @@ struct APIClient {
             )
         }
 
-        var queryItems = [URLQueryItem(name: "q", value: term)]
-        let retailerQuery = effectiveRetailers.joined(separator: ",")
-        if retailerQuery.count <= 40 {
-            queryItems.append(URLQueryItem(name: "retailer", value: retailerQuery))
-        }
+        let queryItems = [
+            URLQueryItem(name: "q", value: term),
+            URLQueryItem(name: "retailer", value: effectiveRetailers.joined(separator: ",")),
+            URLQueryItem(name: "include_external", value: "true")
+        ]
 
         let data = try await perform(
             request(
@@ -305,7 +315,8 @@ struct APIClient {
             retailer: response.retailer,
             publication: response.publication,
             offerCount: visibleOffers.count,
-            offers: visibleOffers
+            offers: visibleOffers,
+            unavailableRetailers: response.unavailableRetailers?.filter { effectiveSet.contains($0) }
         )
     }
 
